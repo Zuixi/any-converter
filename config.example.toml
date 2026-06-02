@@ -1,0 +1,57 @@
+# any-converter example configuration
+#
+# Run with: any-converter serve --config config.example.toml
+
+[server]
+host = "127.0.0.1"
+port = 8080
+# Optional client API key — clients must send `Authorization: Bearer <api_key>`
+# api_key = "sk-client-key"
+
+# Upstream provider definitions
+[[providers]]
+name = "openai"
+format = "openai_chat"
+base_url = "https://api.openai.com"
+api_key = "sk-proj-your-openai-key"
+
+[providers.model_map]
+# Exact match: remap client model name to upstream model
+"claude-sonnet-4" = "gpt-4.1"
+# Wildcard fallback when no exact match is found
+"*" = "gpt-4.1-mini"
+
+[[providers]]
+name = "anthropic"
+format = "claude"
+base_url = "https://api.anthropic.com"
+api_key = "sk-ant-your-anthropic-key"
+
+[providers.model_map]
+"gpt-4.1" = "claude-sonnet-4-20250514"
+
+[[providers]]
+name = "gemini"
+format = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+api_key = "AIza-your-gemini-key"
+
+[providers.model_map]
+"*" = "gemini-2.0-flash"
+
+# Route table: maps client-facing API format to upstream provider
+[[routes]]
+client_format = "claude"
+provider = "openai"
+
+[[routes]]
+client_format = "openai_chat"
+provider = "openai"
+
+[[routes]]
+client_format = "openai_responses"
+provider = "openai"
+
+[[routes]]
+client_format = "gemini"
+provider = "gemini"
