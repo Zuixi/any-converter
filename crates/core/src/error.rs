@@ -22,7 +22,4 @@ pub enum ConvertError {
 
     #[error("stream state error: {0}")]
     StreamState(String),
-
-    #[error("{0}")]
-    Other(String),
 }

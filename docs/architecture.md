@@ -1,6 +1,23 @@
 # Any Converter Architecture
 
-> Progressive disclosure guide: each section adds more detail. Start at the top and drill down as needed.
+> **What will I learn?** The full system architecture, from bird's-eye view to component internals.
+>
+> **Prerequisites:** Read [`docs/onboarding.md`](./onboarding.md) first if you are new to this project.
+>
+> **Progressive disclosure guide:** each section adds more detail. Start at the top and drill down as needed.
+
+---
+
+## Reading Paths
+
+| Goal | Read these sections |
+|------|---------------------|
+| **30-second overview** | Section 1 only |
+| **Understand components** | Sections 1–2 |
+| **Implement a new format** | Sections 1, 3.1–3.3, then [`crates/core/AGENTS.md`](../crates/core/AGENTS.md) |
+| **Understand the server** | Sections 1, 4, then [`crates/server/AGENTS.md`](../crates/server/AGENTS.md) |
+| **Understand the CLI** | Sections 1, 5, then [`crates/cli/AGENTS.md`](../crates/cli/AGENTS.md) |
+| **Full deep dive** | All sections |
 
 ---
 
@@ -16,23 +33,26 @@
 | **HTTP Proxy** | `any-converter-server` crate | Transparent API gateway             |
 
 
-### 1.1 Core Design Pattern: Canonical IR
+### 1.1 Core Design Pattern: Pairwise Converters
 
-Instead of writing N² format-to-format converters, we use a **typed Intermediate Representation**:
+Each (source, target) format pair has a **dedicated converter** that translates requests, responses, and streaming events directly:
 
 ```
-┌─────────────┐     ┌─────────────────────┐     ┌─────────────┐
-│ Client      │     │ Canonical IR        │     │ Target      │
-│ Format JSON │ ──▶ │ (typed Rust structs)│ ──▶ │ Format JSON │
-│             │     │                     │     │             │
-│  OpenAI     │     │ CanonicalRequest    │     │   Claude    │
-│  Claude     │     │ CanonicalResponse   │     │   Gemini    │
-│  Gemini     │     │ CanonicalStreamEvent│     │  OpenAI     │
-│  ...        │     │                     │     │   ...       │
-└─────────────┘     └─────────────────────┘     └─────────────┘
+┌─────────────┐                              ┌─────────────┐
+│ Client      │     ┌────────────────────┐   │ Target      │
+│ Format JSON │ ──▶ │ Pairwise Converter │──▶│ Format JSON │
+│             │     │ (direct mapping)   │   │             │
+│  OpenAI     │     └────────────────────┘   │   Claude    │
+│  Claude     │                              │   Gemini    │
+│  Gemini     │     For streaming:           │  OpenAI     │
+│  ...        │     parse → canonical → emit │   ...       │
+└─────────────┘                              └─────────────┘
 ```
 
-**Benefit:** Adding a new format requires only **2 adapters** (parse + serialize), not N new converters.
+**Benefits:**
+- No data loss from lossy IR normalization
+- Each converter optimized for its specific pair
+- Streaming reuses `CanonicalStreamEvent` as a lightweight intermediate
 
 ---
 
@@ -51,8 +71,8 @@ Instead of writing N² format-to-format converters, we use a **typed Intermediat
 │    HTTP Proxy Server       │       │    Conversion Engine       │
 │  (Axum + reqwest + tokio)  │  ◄──  │   (pure serde library)     │
 │                            │       │                            │
-│  • Router                  │       │  • Canonical IR            │
-│  • Request Pipeline        │       │  • Format Adapters         │
+│  • Router                  │       │  • Pairwise Converters     │
+│  • Request Pipeline        │       │  • Stream Adapters         │
 │  • Proxy Forwarder         │       │  • SSE Utilities           │
 │  • Auth                    │       │                            │
 └────────────────────────────┘       └────────────────────────────┘
@@ -72,89 +92,68 @@ Instead of writing N² format-to-format converters, we use a **typed Intermediat
 
 ## 3. Component: Conversion Engine
 
-The Conversion Engine is a **pure library** with zero async or network dependencies. It contains four subsystems:
+The Conversion Engine is a **pure library** with zero async or network dependencies. It contains three subsystems:
 
-### 3.1 IR Subsystem (Intermediate Representation)
+### 3.1 Pairwise Converter Subsystem
 
-The IR defines a **universal schema** for LLM chat requests and responses:
+Each supported format pair has a dedicated converter module implementing `FormatConverter`:
 
+```rust
+pub trait FormatConverter: Send + Sync {
+    fn convert_request(&self, input: &[u8]) -> Result<Vec<u8>, ConvertError>;
+    fn convert_response(&self, input: &[u8]) -> Result<Vec<u8>, ConvertError>;
+    fn convert_stream_event(
+        &self,
+        event: &SseEvent,
+        state_in: &mut StreamState,
+        state_out: &mut StreamState,
+    ) -> Result<Vec<String>, ConvertError>;
+}
+```
 
-| IR Type                | Purpose                            | Key Fields                                              |
+**Converter modules** (12 total):
+
+| Source \ Target | Claude | OpenAI Chat | OpenAI Responses | Gemini |
+|-----------------|--------|-------------|------------------|--------|
+| **Claude**      | identity | `claude_to_chat` | `claude_to_resp` | `claude_to_gemini` |
+| **OpenAI Chat** | `chat_to_claude` | identity | `chat_to_resp` | `chat_to_gemini` |
+| **OpenAI Resp** | `resp_to_claude` | `resp_to_chat` | identity | `resp_to_gemini` |
+| **Gemini**      | `gemini_to_claude` | `gemini_to_chat` | `gemini_to_resp` | identity |
+
+Identity conversions (same format) pass through raw bytes without parsing.
+
+### 3.2 Streaming Types
+
+Streaming still uses lightweight canonical types as an intermediate between parse and emit:
+
+| Type                   | Purpose                            | Key Fields                                              |
 | ---------------------- | ---------------------------------- | ------------------------------------------------------- |
-| `CanonicalRequest`     | Normalized chat completion request | `model`, `system`, `turns`, `tools`, `params`, `stream` |
-| `CanonicalResponse`    | Normalized completion response     | `id`, `model`, `content`, `stop_reason`, `usage`        |
 | `CanonicalStreamEvent` | One SSE delta in canonical form    | `TextDelta`, `ToolCallStart`, `ToolCallDelta`, `Done`   |
 | `StreamState`          | Mutable accumulator for streaming  | `accumulated_text`, `accumulated_tool_calls`, `phase`   |
+| `StopReason`           | Why generation stopped             | `EndTurn`, `MaxTokens`, `ToolUse`, etc.                 |
+| `Usage`                | Token counts                       | `input_tokens`, `output_tokens`, optional cache fields  |
 
+**Stream conversion flow:**
 
-**Core abstraction — `ContentBlock`:**
-
-```rust
-pub enum ContentBlock {
-    Text { text: String },
-    Image { source: ImageSource },
-    ToolUse { id: String, name: String, input: Value },
-    ToolResult { tool_use_id: String, content: Vec<ContentBlock>, is_error: bool },
-    Thinking { text: String, signature: Option<String> },
-}
 ```
-
-This recursive enum unifies all provider content types (text, images, tool calls, tool results, reasoning chains) into a single type.
-
-### 3.2 Adapter Subsystem
-
-Each supported LLM API format implements two traits:
-
-`**FormatAdapter**` — non-streaming request/response conversion:
-
-```rust
-pub trait FormatAdapter {
-    type Request: DeserializeOwned + Serialize;
-    type Response: DeserializeOwned + Serialize;
-
-    fn parse_request(json: &[u8]) -> Result<Self::Request, ConvertError>;
-    fn request_to_canonical(req: Self::Request) -> Result<CanonicalRequest, ConvertError>;
-    fn request_from_canonical(req: &CanonicalRequest) -> Result<Self::Request, ConvertError>;
-
-    fn parse_response(json: &[u8]) -> Result<Self::Response, ConvertError>;
-    fn response_to_canonical(resp: Self::Response) -> Result<CanonicalResponse, ConvertError>;
-    fn response_from_canonical(resp: &CanonicalResponse) -> Result<Self::Response, ConvertError>;
-}
+Source SSE → StreamAdapter::parse_sse_event → Vec<CanonicalStreamEvent>
+    → StreamAdapter::emit_sse_event → Target SSE lines
 ```
-
-`**StreamAdapter**` — streaming SSE conversion:
-
-```rust
-pub trait StreamAdapter {
-    fn parse_sse_event(event: &SseEvent, state: &mut StreamState)
-        -> Result<Vec<CanonicalStreamEvent>, ConvertError>;
-    fn emit_sse_event(event: &CanonicalStreamEvent, state: &mut StreamState)
-        -> Result<Vec<String>, ConvertError>;
-}
-```
-
-Each format has its own adapter module (Claude, OpenAI Chat, OpenAI Responses, Gemini) containing:
-
-- **Wire-format types** — structs matching the provider's JSON schema
-- **Adapter implementation** — `FormatAdapter` + `StreamAdapter` for that format
 
 ### 3.3 Conversion Dispatch
 
-The top-level API is a **match dispatcher** that routes to the correct adapter pair:
+The top-level API routes to the correct pairwise converter:
 
-```
-convert_request(input, from, to)
-  ├── parse_request_to_canonical(input, from)  → CanonicalRequest
-  └── serialize_request_from_canonical(ir, to) → Vec<u8>
+```rust
+pub fn convert_request(input: &[u8], from: Format, to: Format) -> Result<Vec<u8>, ConvertError>;
+pub fn convert_response(input: &[u8], from: Format, to: Format) -> Result<Vec<u8>, ConvertError>;
+pub fn convert_stream_event(
+    event: &SseEvent, from: Format, to: Format,
+    state_in: &mut StreamState, state_out: &mut StreamState,
+) -> Result<Vec<String>, ConvertError>;
 ```
 
-For streaming:
-
-```
-convert_stream_event(event, from, to, state_in, state_out)
-  ├── parse_sse_event(event, from, state_in)   → Vec<CanonicalStreamEvent>
-  └── emit_sse_event(canonical, to, state_out) → Vec<String>
-```
+Internally, `get_converter(from, to)` returns a `Box<dyn FormatConverter>` for the pair.
 
 **Dual state design:** Streaming conversion carries two `StreamState` instances because input and output formats may both need independent accumulation. For example:
 
@@ -255,20 +254,20 @@ The Router maps incoming HTTP paths to detected client formats:
                 ┌───────────────────────────────────────────────┘     
                 │                                                     
                 ▼                                                     
-         ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        
-         │   Convert   │───▶│   Convert   │───▶│  Response   │        
-         │ (upstream   │    │  (client    │    │  to client  │        
-         │  → canon)   │    │   format)   │    │             │        
-         └─────────────┘    └─────────────┘    └─────────────┘        
+         ┌─────────────┐    ┌─────────────┐                           
+         │   Pairwise  │───▶│  Response   │                           
+         │  Converter  │    │  to client  │                           
+         │  (direct)   │    │             │                           
+         └─────────────┘    └─────────────┘                           
 ```
 
 **Pipeline stages:**
 
 1. **Router** — detect client format from URL path
 2. **Auth** — validate client API key (if configured); build upstream auth headers
-3. **Convert** — transform request body to upstream format; patch model name using `model_map`
+3. **Convert** — pairwise converter transforms request body to upstream format; patch model name using `model_map`
 4. **Proxy** — forward to upstream provider
-5. **Convert back** — transform upstream response to client format
+5. **Convert back** — pairwise converter transforms upstream response to client format
 6. **Namespace patch** — restore namespaced tool names for OpenAI Responses API
 
 ### 4.4 Proxy Forwarder
@@ -287,7 +286,7 @@ Two forwarding paths:
 - POST converted body to upstream URL
 - Read response as async byte stream
 - Buffer chunks into complete SSE blocks
-- Convert each block through the Conversion Engine
+- Convert each block through the pairwise converter
 - Stream converted SSE lines back to client via async channel
 
 **Key design choices:**
@@ -329,38 +328,24 @@ A thin wrapper that wires the Conversion Engine and HTTP Proxy Server to command
 
 ### 6.1 Non-Streaming Request/Response
 
-**Request Flow:**
+**Request Flow (Direct Pairwise):**
 
 ```
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│   Client    │   │   Client    │   │   Target    │   │   Upstream  │
-│  (OpenAI    │──▶│   Format    │──▶│   Format    │──▶│  Provider   │
-│   Chat)     │   │   Adapter   │   │   Adapter   │   │             │
-└─────────────┘   └──────┬──────┘   └─────────────┘   └─────────────┘
-                         │                                           
-                         ▼                                           
-                  ┌─────────────┐                                    
-                  │  Canonical  │                                    
-                  │     IR      │                                    
-                  │  (request)  │                                    
-                  └─────────────┘                                    
+┌─────────────┐   ┌────────────────────┐   ┌─────────────┐
+│   Client    │   │ Pairwise Converter │   │   Upstream  │
+│  (OpenAI    │──▶│  (direct JSON-to-  │──▶│  Provider   │
+│   Chat)     │   │   JSON mapping)    │   │  (Claude)   │
+└─────────────┘   └────────────────────┘   └─────────────┘
 ```
 
 **Response Flow (reverse):**
 
 ```
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│   Upstream  │   │   Target    │   │   Client    │   │   Client    │
-│  Provider   │──▶│   Format    │──▶│   Format    │──▶│  (OpenAI    │
-│             │   │   Adapter   │   │   Adapter   │   │   Chat)     │
-└─────────────┘   └──────┬──────┘   └─────────────┘   └─────────────┘
-                         │                                           
-                         ▼                                           
-                  ┌─────────────┐                                    
-                  │  Canonical  │                                    
-                  │     IR      │                                    
-                  │ (response)  │                                    
-                  └─────────────┘                                    
+┌─────────────┐   ┌────────────────────┐   ┌─────────────┐
+│   Upstream  │   │ Pairwise Converter │   │   Client    │
+│  Provider   │──▶│  (direct JSON-to-  │──▶│  (OpenAI    │
+│  (Claude)   │   │   JSON mapping)    │   │   Chat)     │
+└─────────────┘   └────────────────────┘   └─────────────┘
 ```
 
 ### 6.2 Streaming Tool Call Conversion
@@ -405,9 +390,9 @@ When a `finish_reason: "tool_calls"` arrives, the adapter emits a complete `resp
 
 | Decision                                        | Rationale                                                                                             |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Canonical IR** (not direct format→format)     | O(N) adapter count instead of O(N²). Centralized testing for edge cases.                              |
+| **Pairwise converters** (not hub-and-spoke IR)  | No data loss from IR normalization. Each converter can preserve format-specific fields.                |
+| **Canonical stream events** (lightweight IR)    | Streaming deltas are inherently similar across formats; a canonical event avoids N² stream parsers.    |
 | **Separate Conversion Engine crate**            | Pure library, no async runtime dependency. Testable in isolation without network.                     |
-| **Typed IR structs** (not `serde_json::Value`)  | Compile-time safety, IDE autocomplete, zero-cost validation.                                          |
 | **StreamState for accumulation**                | Tool call arguments span multiple SSE chunks; state must persist across `convert_stream_event` calls. |
 | **Dual StreamState** (`state_in` + `state_out`) | Input and output formats may both need independent accumulation during streaming.                     |
 | **Panic boundaries** (`catch_unwind`)           | Malformed upstream data must not crash the proxy server.                                              |
@@ -421,14 +406,14 @@ When a `finish_reason: "tool_calls"` arrives, the adapter emits a complete `resp
 ## 8. Testing Strategy
 
 
-| Layer                  | Scope                        | What to Verify                                                    |
-| ---------------------- | ---------------------------- | ----------------------------------------------------------------- |
-| **IR unit tests**      | Individual IR types          | Roundtrip serialization, edge cases, field omission               |
-| **Adapter unit tests** | Each format adapter          | Parse correctness, canonical roundtrip, field mapping             |
-| **Stream tests**       | Each format's stream adapter | SSE block → canonical events → SSE lines                          |
-| **Integration tests**  | Full conversion pipeline     | End-to-end request/response/stream conversion across format pairs |
-| **Server tests**       | Router + handlers            | Route detection, auth rejection, missing route handling           |
-| **Proxy tests**        | Forwarder logic              | URL building, SSE block extraction, buffer drain                  |
+| Layer                   | Scope                        | What to Verify                                                    |
+| ----------------------- | ---------------------------- | ----------------------------------------------------------------- |
+| **IR unit tests**       | StopReason, Usage, StreamState | Roundtrip serialization, conversion helpers                       |
+| **Stream adapter tests**| Each format's stream adapter | SSE block → canonical events → SSE lines                          |
+| **Converter tests**     | Pairwise converters          | Request/response JSON roundtrip, field mapping                    |
+| **Integration tests**   | Full conversion pipeline     | End-to-end request/response/stream conversion across format pairs |
+| **Server tests**        | Router + handlers            | Route detection, auth rejection, missing route handling           |
+| **Proxy tests**         | Forwarder logic              | URL building, SSE block extraction, buffer drain                  |
 
 
 Run all tests:
@@ -443,21 +428,23 @@ cargo test --workspace
 
 ### 9.1 Adding a New LLM API Format
 
-1. **Add variant** to the `Format` enum in the Conversion Engine
-2. **Create adapter module** under `formats/{new_format}/`:
-  - Define **wire-format types** matching the provider's JSON schema
-  - Implement `**FormatAdapter`** — parse/serialize requests and responses
-  - Implement `**StreamAdapter**` — parse/emit SSE events
-3. **Register** in the conversion dispatch match arms
-4. **Add server route** (if the format has distinct HTTP paths) in the Router
-5. **Add auth headers** in the Auth component
-6. **Add tests** for all new adapter methods
+1. **Add variant** to the `Format` enum in `convert.rs`
+2. **Create format module** under `formats/{new_format}/`:
+   - Define **wire-format types** matching the provider's JSON schema (`types.rs`)
+   - Implement **`StreamAdapter`** for SSE parsing and emitting (`stream.rs`)
+3. **Create converter modules** in `converters/`:
+   - One module per existing format in each direction (e.g., for 4 existing formats: 8 new modules)
+   - Each implements `FormatConverter` for direct request/response and streaming conversion
+4. **Register** all converters in `converters/mod.rs` `get_converter`
+5. **Add server route** (if the format has distinct HTTP paths) in the Router
+6. **Add auth headers** in the Auth component
+7. **Add tests** for all new converter methods
 
-### 9.2 Adding a New IR Field
+### 9.2 Adding Format-Specific Fields
 
-1. Add the field to the relevant IR type
-2. Update **all format adapters** to map the field to/from their wire format
-3. Add **roundtrip tests** for each adapter
+1. Update the relevant converter(s) to handle the new field
+2. Only converters that involve the affected format need changes
+3. Add tests for the new field mapping
 
 ---
 
@@ -466,7 +453,6 @@ cargo test --workspace
 ### Conversion Engine Public API
 
 ```rust
-// Top-level conversion
 pub fn convert_request(input: &[u8], from: Format, to: Format) -> Result<Vec<u8>, ConvertError>;
 pub fn convert_response(input: &[u8], from: Format, to: Format) -> Result<Vec<u8>, ConvertError>;
 pub fn convert_stream_event(
@@ -477,7 +463,6 @@ pub fn convert_stream_event(
     state_out: &mut StreamState,
 ) -> Result<Vec<String>, ConvertError>;
 
-// Format enumeration
 pub enum Format {
     OpenAIChat,
     Claude,
@@ -485,7 +470,6 @@ pub enum Format {
     Gemini,
 }
 
-// Error type
 pub enum ConvertError {
     Json(serde_json::Error),
     UnsupportedConversion { from: String, to: String },
@@ -501,10 +485,8 @@ pub enum ConvertError {
 ### HTTP Proxy Server Public API
 
 ```rust
-// Start the server
 pub async fn run(config: ServerConfig) -> Result<(), Box<dyn std::error::Error>>;
 
-// Configuration types
 pub struct ServerConfig {
     pub server: ServerSettings,
     pub providers: Vec<ProviderConfig>,
@@ -517,7 +499,7 @@ pub struct ProviderConfig {
     pub format: Format,
     pub base_url: String,
     pub api_key: String,
-    pub model_map: HashMap<String, String>,  // client_model → upstream_model
+    pub model_map: HashMap<String, String>,
 }
 
 pub struct RouteConfig {
@@ -525,4 +507,3 @@ pub struct RouteConfig {
     pub provider: String,
 }
 ```
-

@@ -5,12 +5,25 @@ use super::{StopReason, Usage};
 /// Canonical stream event — format-agnostic representation of SSE deltas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CanonicalStreamEvent {
-    Start { id: String, model: String },
+    Start {
+        id: String,
+        model: String,
+    },
     TextDelta(String),
-    ToolCallStart { index: u32, id: String, name: String },
-    ToolCallDelta { index: u32, arguments_delta: String },
+    ToolCallStart {
+        index: u32,
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        index: u32,
+        arguments_delta: String,
+    },
     ThinkingDelta(String),
-    Done { stop_reason: StopReason, usage: Option<Usage> },
+    Done {
+        stop_reason: StopReason,
+        usage: Option<Usage>,
+    },
 }
 
 /// Accumulated tool call data during streaming.
@@ -29,6 +42,7 @@ pub struct StreamState {
     pub model: Option<String>,
     pub block_index: u32,
     pub tool_call_index: u32,
+    pub finish_reason: Option<StopReason>,
     pub accumulated_usage: Option<Usage>,
     pub accumulated_text: String,
     pub accumulated_tool_calls: Vec<AccumulatedToolCall>,
@@ -46,6 +60,17 @@ pub enum StreamPhase {
 }
 
 impl StreamState {
+    /// Create a new `StreamState` with default values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use any_converter_core::ir::StreamState;
+    ///
+    /// let mut state = StreamState::new();
+    /// assert_eq!(state.block_index, 0);
+    /// assert!(!state.done);
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
@@ -97,7 +122,11 @@ mod tests {
 
         let done = CanonicalStreamEvent::Done {
             stop_reason: StopReason::EndTurn,
-            usage: Some(Usage { input_tokens: 10, output_tokens: 5, ..Default::default() }),
+            usage: Some(Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..Default::default()
+            }),
         };
         if let CanonicalStreamEvent::Done { stop_reason, usage } = &done {
             assert_eq!(stop_reason, &StopReason::EndTurn);

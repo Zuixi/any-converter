@@ -41,12 +41,27 @@ src/
 - Use `?` propagation; `Box<dyn std::error::Error>` ensures any error prints its `Display` message.
 - Avoid panics. All errors should result in a readable stderr message and non-zero exit code.
 
-### 6. Tracing Setup
-- Initialize `tracing_subscriber` with `EnvFilter` at startup.
-- Default level: `info`. Override via `RUST_LOG` env var.
+### 6. Logging Setup
+- Uses the `log` crate (facade) with a custom `MultiLogger` implementation in `logging.rs`.
+- Supports multi-output: console (stdout/stderr), file (daily rotation, JSON/pretty format).
+- Console and file outputs are independently configurable via `LoggingConfig` / `ConsoleConfig` / `LogFileConfig`.
+- Default level: `info`. Override via `LoggingConfig.level` in TOML config.
+- Logger is set globally via `log::set_boxed_logger` — no guards needed.
 
 ## Common Pitfalls
 
 - **Argument conflicts**: `--config` conflicts with `--port`, `--provider`, `--format`, `--base_url`, `--upstream_key`. Enforced by clap `conflicts_with_all` — do NOT bypass.
 - **Format enum duplication**: `CliFormat` is a clap `ValueEnum` that mirrors `core::convert::Format`. Any new format requires updating BOTH enums and the `to_format()` mapping.
 - **Large stdin payloads**: Currently reads entire stdin into `Vec<u8>` or `String`. For multi-GB streams this will OOM. The current scope (JSON API payloads) makes this acceptable; if streaming large files becomes a requirement, refactor to chunked reading.
+
+## Documentation Maintenance
+
+Before concluding work on this crate, verify:
+
+- [ ] **This AGENTS.md** — Did you add/modify crate constraints, architecture, or pitfalls?
+- [ ] **Root AGENTS.md** — Did you introduce a new crate-level pattern that affects cross-crate routing?
+- [ ] **`../docs/memory/known-gotchas.md`** — Did you discover a new edge case specific to this crate?
+- [ ] **`../docs/architecture.md`** — Did you change this crate's public interface or data flow?
+- [ ] **`../CHANGELOG.md`** — Is this a user-visible change?
+
+**Rule:** If any box is checked, update the corresponding file before ending the session.

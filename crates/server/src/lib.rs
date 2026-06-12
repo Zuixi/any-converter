@@ -3,8 +3,9 @@ pub mod config;
 pub mod handlers;
 pub mod proxy;
 pub mod router;
+pub mod usage;
 
-use tracing::info;
+use log::info;
 
 use crate::config::ServerConfig;
 use crate::router::create_router;

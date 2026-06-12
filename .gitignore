@@ -7,3 +7,8 @@ Cargo.lock
 config.toml
 /logs
 /docs/memory
+
+
+.claude/**
+.cursor/**
+.vscode/**

@@ -1,7 +1,7 @@
 use crate::error::ConvertError;
 use crate::formats::StreamAdapter;
 use crate::ir::*;
-use crate::sse::{format_sse_data, is_openai_done, SseEvent};
+use crate::sse::{SseEvent, format_sse_data, is_openai_done};
 
 use super::types::*;
 
@@ -15,12 +15,10 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
         if is_openai_done(&event.data) {
             state.done = true;
             state.phase = StreamPhase::Done;
-            let stop_reason = match state.block_index {
-                1 => StopReason::EndTurn,
-                2 => StopReason::MaxTokens,
-                3 => StopReason::ToolUse,
-                4 => StopReason::ContentFilter,
-                _ => StopReason::EndTurn,
+            let stop_reason = if !state.accumulated_tool_calls.is_empty() {
+                StopReason::ToolUse
+            } else {
+                state.finish_reason.clone().unwrap_or(StopReason::EndTurn)
             };
             return Ok(vec![CanonicalStreamEvent::Done {
                 stop_reason,
@@ -28,8 +26,8 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
             }]);
         }
 
-        let chunk: OpenAIChatStreamChunk = serde_json::from_str(&event.data)
-            .map_err(|e| ConvertError::SseParse(e.to_string()))?;
+        let chunk: OpenAIChatStreamChunk =
+            serde_json::from_str(&event.data).map_err(|e| ConvertError::SseParse(e.to_string()))?;
 
         let mut events = Vec::new();
 
@@ -86,13 +84,13 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
             }
 
             if let Some(finish_reason) = &choice.finish_reason {
-                state.block_index = match finish_reason.as_str() {
-                    "stop" => 1,
-                    "length" => 2,
-                    "tool_calls" => 3,
-                    "content_filter" => 4,
-                    _ => 1,
-                };
+                state.finish_reason = Some(match finish_reason.as_str() {
+                    "stop" => StopReason::EndTurn,
+                    "length" => StopReason::MaxTokens,
+                    "tool_calls" => StopReason::ToolUse,
+                    "content_filter" => StopReason::ContentFilter,
+                    _ => StopReason::EndTurn,
+                });
             }
         }
 
@@ -221,10 +219,7 @@ fn stream_ids(state: &StreamState) -> Result<(String, String), ConvertError> {
         .response_id
         .clone()
         .unwrap_or_else(|| format!("chatcmpl-{}", uuid::Uuid::new_v4()));
-    let model = state
-        .model
-        .clone()
-        .unwrap_or_else(|| "gpt-4o".into());
+    let model = state.model.clone().unwrap_or_else(|| "gpt-4o".into());
     Ok((id, model))
 }
 
@@ -273,7 +268,11 @@ mod tests {
         let mut state = StreamState::new();
         let data = r#"{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#;
         let events = parse_data(data, &mut state);
-        assert!(events.iter().any(|e| matches!(e, CanonicalStreamEvent::Start { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, CanonicalStreamEvent::Start { .. }))
+        );
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[1], CanonicalStreamEvent::TextDelta(t) if t == "Hello"));
     }
@@ -304,18 +303,58 @@ mod tests {
         let mut state = StreamState::new();
         let data = r#"{"id":"chatcmpl-3","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
         parse_data(data, &mut state);
-        assert_eq!(state.block_index, 1);
+        assert_eq!(state.finish_reason, Some(StopReason::EndTurn));
     }
 
     #[test]
     fn test_parse_done_sentinel() {
         let mut state = StreamState::new();
-        state.block_index = 3; // tool_calls finish reason
+        state.finish_reason = Some(StopReason::ToolUse);
         let events = parse_data("[DONE]", &mut state);
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0],
-            CanonicalStreamEvent::Done { stop_reason: StopReason::ToolUse, .. }
+            CanonicalStreamEvent::Done {
+                stop_reason: StopReason::ToolUse,
+                ..
+            }
+        ));
+        assert!(state.done);
+    }
+
+    #[test]
+    fn test_parse_done_sentinel_infers_tool_use_from_state() {
+        let mut state = StreamState::new();
+        state.accumulated_tool_calls.push(AccumulatedToolCall {
+            index: 0,
+            id: "call_1".into(),
+            name: "search".into(),
+            arguments: "{}".into(),
+        });
+        let events = parse_data("[DONE]", &mut state);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            CanonicalStreamEvent::Done {
+                stop_reason: StopReason::ToolUse,
+                ..
+            }
+        ));
+        assert!(state.done);
+    }
+
+    #[test]
+    fn test_parse_done_sentinel_defaults_to_end_turn() {
+        let mut state = StreamState::new();
+        // No finish_reason, no tool calls — should default to EndTurn.
+        let events = parse_data("[DONE]", &mut state);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            CanonicalStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                ..
+            }
         ));
         assert!(state.done);
     }
@@ -400,7 +439,12 @@ mod tests {
 
         let block = emitted[0].trim();
         let event = parse_sse_block(block).unwrap();
-        let parsed = OpenAIChatStreamAdapter::parse_sse_event(&event, &mut StreamState::new()).unwrap();
-        assert!(parsed.iter().any(|e| matches!(e, CanonicalStreamEvent::Start { .. })));
+        let parsed =
+            OpenAIChatStreamAdapter::parse_sse_event(&event, &mut StreamState::new()).unwrap();
+        assert!(
+            parsed
+                .iter()
+                .any(|e| matches!(e, CanonicalStreamEvent::Start { .. }))
+        );
     }
 }

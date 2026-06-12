@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use any_converter_core::convert::{convert_request, convert_response, convert_stream_event, Format};
+use any_converter_core::convert::{
+    Format, convert_request, convert_response, convert_stream_event,
+};
 use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
@@ -23,6 +25,7 @@ enum CliFormat {
 }
 
 impl CliFormat {
+    #[allow(clippy::wrong_self_convention)]
     fn to_format(self) -> Format {
         match self {
             CliFormat::OpenaiChat => Format::OpenAIChat,
@@ -97,8 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             stdin,
             response,
         } => {
-            // Lightweight logging for offline conversion commands
-            let (_guards, _) = logging::init_tracing(&LoggingConfig::default())?;
+            logging::init_logging(&LoggingConfig::default())?;
 
             let input = read_input(input_file.as_deref(), stdin)?;
             let from_fmt = from.to_format();
@@ -114,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Stream { from, to } => {
-            let (_guards, _) = logging::init_tracing(&LoggingConfig::default())?;
+            logging::init_logging(&LoggingConfig::default())?;
 
             let mut input = String::new();
             io::stdin().read_to_string(&mut input)?;
@@ -154,7 +156,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 let fmt = format.ok_or("--format is required when not using --config")?;
                 let base = base_url.ok_or("--base-url is required when not using --config")?;
-                let key = upstream_key.ok_or("--upstream-key is required when not using --config")?;
+                let key =
+                    upstream_key.ok_or("--upstream-key is required when not using --config")?;
                 let provider_format = fmt.to_format();
 
                 ServerConfig {
@@ -170,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         api_key: key,
                         model_map: HashMap::new(),
                     }],
+                    model_routes: vec![],
                     routes: vec![RouteConfig {
                         client_format: provider_format,
                         provider,
@@ -179,8 +183,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            // Full logging with file output + disk management for serve mode
-            let (_guards, log_dir) = logging::init_tracing(&server_config.logging)?;
+            let validation_errors = server_config.validate();
+            if !validation_errors.is_empty() {
+                for err in &validation_errors {
+                    eprintln!("config error: {err}");
+                }
+                return Err(
+                    format!("{} config validation error(s)", validation_errors.len()).into(),
+                );
+            }
+
+            let log_dir = logging::init_logging(&server_config.logging)?;
 
             if let Some(dir) = log_dir {
                 let max_bytes = server_config.logging.max_disk_mb * 1024 * 1024;
@@ -194,7 +207,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn read_input(input_file: Option<&std::path::Path>, stdin: bool) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn read_input(
+    input_file: Option<&std::path::Path>,
+    stdin: bool,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     match input_file {
         Some(path) if !stdin => Ok(std::fs::read(path)?),
         _ => {

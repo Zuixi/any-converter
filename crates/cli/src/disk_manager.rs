@@ -7,19 +7,16 @@ use std::time::Duration;
 /// (by modification time) until total usage is below `max_bytes`.
 ///
 /// Runs every 5 minutes. Errors are logged but never crash the server.
-pub fn spawn_disk_manager(
-    dir: PathBuf,
-    max_bytes: u64,
-) -> tokio::task::JoinHandle<()> {
+pub fn spawn_disk_manager(dir: PathBuf, max_bytes: u64) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
         loop {
             interval.tick().await;
             if let Err(e) = enforce_quota(&dir, max_bytes) {
-                tracing::warn!(
-                    dir = %dir.display(),
-                    error = %e,
-                    "disk quota enforcement failed"
+                log::warn!(
+                    "disk quota enforcement failed dir={} error={}",
+                    dir.display(),
+                    e
                 );
             }
         }
@@ -50,18 +47,18 @@ fn enforce_quota(dir: &Path, max_bytes: u64) -> std::io::Result<()> {
         }
         match std::fs::remove_file(&entry.path) {
             Ok(()) => {
-                tracing::info!(
-                    path = %entry.path.display(),
-                    size = entry.size,
-                    "removed old log file for disk quota"
+                log::info!(
+                    "removed old log file for disk quota path={} size={}",
+                    entry.path.display(),
+                    entry.size
                 );
                 freed += entry.size;
             }
             Err(e) => {
-                tracing::warn!(
-                    path = %entry.path.display(),
-                    error = %e,
-                    "failed to remove old log file"
+                log::warn!(
+                    "failed to remove old log file path={} error={}",
+                    entry.path.display(),
+                    e
                 );
             }
         }
@@ -157,6 +154,6 @@ mod tests {
     fn test_collect_log_files_missing_dir() {
         let entries = collect_log_files(Path::new("/tmp/nonexistent_any_conv_dir_12345"));
         assert!(entries.is_ok());
-        assert!(entries.ok().map_or(false, |e| e.is_empty()));
+        assert!(entries.ok().is_some_and(|e| e.is_empty()));
     }
 }

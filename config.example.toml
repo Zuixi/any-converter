@@ -8,27 +8,28 @@ port = 8080
 # Optional client API key — clients must send `Authorization: Bearer <api_key>`
 # api_key = "sk-client-key"
 
-# Upstream provider definitions
+# ── Provider Definitions ─────────────────────────────────────────────
+# Each provider is an upstream LLM endpoint with its own API key and format.
+
 [[providers]]
 name = "openai"
 format = "openai_chat"
 base_url = "https://api.openai.com"
 api_key = "sk-proj-your-openai-key"
 
-[providers.model_map]
-# Exact match: remap client model name to upstream model
-"claude-sonnet-4" = "gpt-4.1"
-# Wildcard fallback when no exact match is found
-"*" = "gpt-4.1-mini"
-
 [[providers]]
 name = "anthropic"
 format = "claude"
 base_url = "https://api.anthropic.com"
 api_key = "sk-ant-your-anthropic-key"
+# Model map supports wildcard patterns; longest match wins
+# model_map = { "claude-opus-*" = "claude-opus-4-20250514", "claude-*" = "claude-sonnet-4-20250514" }
 
-[providers.model_map]
-"gpt-4.1" = "claude-sonnet-4-20250514"
+[[providers]]
+name = "deepseek"
+format = "openai_chat"
+base_url = "https://api.deepseek.com"
+api_key = "sk-your-deepseek-key"
 
 [[providers]]
 name = "gemini"
@@ -36,22 +37,68 @@ format = "gemini"
 base_url = "https://generativelanguage.googleapis.com"
 api_key = "AIza-your-gemini-key"
 
-[providers.model_map]
-"*" = "gemini-2.0-flash"
+# ── Model Routes (recommended) ──────────────────────────────────────
+# Route requests to providers based on model name (glob patterns).
+# First match wins. Supports failover via multiple providers.
 
-# Route table: maps client-facing API format to upstream provider
-[[routes]]
-client_format = "claude"
+[[model_routes]]
+pattern = "claude-*"
+provider = "anthropic"
+
+[[model_routes]]
+pattern = "gpt-*"
 provider = "openai"
 
-[[routes]]
-client_format = "openai_chat"
+[[model_routes]]
+pattern = "o1-*"
 provider = "openai"
 
-[[routes]]
-client_format = "openai_responses"
+[[model_routes]]
+pattern = "o3-*"
 provider = "openai"
 
-[[routes]]
-client_format = "gemini"
+[[model_routes]]
+pattern = "deepseek-*"
+provider = "deepseek"
+
+[[model_routes]]
+pattern = "gemini-*"
 provider = "gemini"
+
+# Failover example: try openai first, then deepseek as backup
+# [[model_routes]]
+# pattern = "gpt-*"
+# providers = ["openai", "deepseek"]
+# strategy = "priority"
+
+# Wildcard fallback: any unmatched model goes to openai
+[[model_routes]]
+pattern = "*"
+provider = "openai"
+upstream_model = "gpt-4.1-mini"
+
+# ── Legacy Routes (backward compatible) ─────────────────────────────
+# Format-based routing. Used as fallback when no model_routes are configured.
+# If model_routes is set, these are only used when no model pattern matches.
+
+# [[routes]]
+# client_format = "claude"
+# provider = "openai"
+
+# ── Logging ──────────────────────────────────────────────────────────
+
+[logging]
+level = "info"
+dir = "./logs"          # Also enables usage logging (usage.YYYY-MM-DD.jsonl)
+max_disk_mb = 500
+
+[logging.console]
+enabled = true
+output = "stdout"
+format = "pretty"
+
+# [[logging.files]]
+# name = "general"
+# level = "info"
+# format = "json"
+# rotation = "daily"

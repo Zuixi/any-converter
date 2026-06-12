@@ -1,5 +1,5 @@
-# code map
+# Agent Entrypoint
 
-memory about project can refer to [this file](./memory/AGENTS.md)
-
-project desing can refer to [this directory](./design/)
+> **Redirect:** The single agent entrypoint is [`../AGENTS.md`](../AGENTS.md).
+>
+> This file exists only to prevent broken links from old references. Do not add content here.

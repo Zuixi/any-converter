@@ -1,16 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use super::ContentBlock;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CanonicalResponse {
-    pub id: String,
-    pub model: String,
-    pub content: Vec<ContentBlock>,
-    pub stop_reason: StopReason,
-    pub usage: Usage,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StopReason {
     EndTurn,
@@ -22,23 +11,34 @@ pub enum StopReason {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Usage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_read_tokens: Option<u32>,
+    pub cache_read_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_write_tokens: Option<u32>,
+    pub cache_write_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_tokens: Option<u32>,
+    pub reasoning_tokens: Option<u64>,
 }
 
 impl Usage {
-    pub fn total_tokens(&self) -> u32 {
+    pub fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens
     }
 }
 
 impl StopReason {
+    /// Convert to the OpenAI Chat stop reason string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use any_converter_core::ir::StopReason;
+    ///
+    /// assert_eq!(StopReason::EndTurn.to_openai_chat(), "stop");
+    /// assert_eq!(StopReason::MaxTokens.to_openai_chat(), "length");
+    /// assert_eq!(StopReason::ToolUse.to_openai_chat(), "tool_calls");
+    /// ```
     pub fn to_openai_chat(&self) -> &'static str {
         match self {
             StopReason::EndTurn => "stop",
@@ -106,13 +106,22 @@ mod tests {
 
     #[test]
     fn test_usage_total() {
-        let usage = Usage { input_tokens: 100, output_tokens: 50, ..Default::default() };
+        let usage = Usage {
+            input_tokens: 100,
+            output_tokens: 50,
+            ..Default::default()
+        };
         assert_eq!(usage.total_tokens(), 150);
     }
 
     #[test]
     fn test_stop_reason_openai_roundtrip() {
-        let reasons = [StopReason::EndTurn, StopReason::MaxTokens, StopReason::ToolUse, StopReason::ContentFilter];
+        let reasons = [
+            StopReason::EndTurn,
+            StopReason::MaxTokens,
+            StopReason::ToolUse,
+            StopReason::ContentFilter,
+        ];
         for reason in &reasons {
             let s = reason.to_openai_chat();
             let back = StopReason::from_openai_chat(s);
@@ -122,7 +131,12 @@ mod tests {
 
     #[test]
     fn test_stop_reason_claude_roundtrip() {
-        let reasons = [StopReason::EndTurn, StopReason::MaxTokens, StopReason::ToolUse, StopReason::StopSequence];
+        let reasons = [
+            StopReason::EndTurn,
+            StopReason::MaxTokens,
+            StopReason::ToolUse,
+            StopReason::StopSequence,
+        ];
         for reason in &reasons {
             let s = reason.to_claude();
             let back = StopReason::from_claude(s);
@@ -136,19 +150,5 @@ mod tests {
         assert_eq!(StopReason::from_gemini("MAX_TOKENS"), StopReason::MaxTokens);
         assert_eq!(StopReason::from_gemini("SAFETY"), StopReason::ContentFilter);
         assert_eq!(StopReason::from_gemini("UNKNOWN"), StopReason::EndTurn);
-    }
-
-    #[test]
-    fn test_response_serialization() {
-        let resp = CanonicalResponse {
-            id: "resp_123".into(),
-            model: "gpt-4".into(),
-            content: vec![ContentBlock::Text { text: "Hello!".into() }],
-            stop_reason: StopReason::EndTurn,
-            usage: Usage { input_tokens: 10, output_tokens: 5, ..Default::default() },
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        let back: CanonicalResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(resp, back);
     }
 }

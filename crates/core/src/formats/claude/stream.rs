@@ -1,7 +1,7 @@
 use crate::error::ConvertError;
 use crate::formats::StreamAdapter;
 use crate::ir::*;
-use crate::sse::{format_sse_event, SseEvent};
+use crate::sse::{SseEvent, format_sse_event};
 
 use super::types::*;
 
@@ -47,10 +47,9 @@ impl StreamAdapter for ClaudeStreamAdapter {
                 arguments_delta,
             } => emit_tool_call_delta(arguments_delta, state),
             CanonicalStreamEvent::ThinkingDelta(thinking) => emit_thinking_delta(thinking, state),
-            CanonicalStreamEvent::Done {
-                stop_reason,
-                usage,
-            } => emit_done(stop_reason, usage.as_ref(), state),
+            CanonicalStreamEvent::Done { stop_reason, usage } => {
+                emit_done(stop_reason, usage.as_ref(), state)
+            }
         }
     }
 }
@@ -59,9 +58,8 @@ fn parse_message_start(
     data: &str,
     state: &mut StreamState,
 ) -> Result<Vec<CanonicalStreamEvent>, ConvertError> {
-    let parsed: ClaudeMessageStartEvent = serde_json::from_str(data).map_err(|e| {
-        ConvertError::SseParse(format!("message_start parse error: {e}"))
-    })?;
+    let parsed: ClaudeMessageStartEvent = serde_json::from_str(data)
+        .map_err(|e| ConvertError::SseParse(format!("message_start parse error: {e}")))?;
 
     state.response_id = Some(parsed.message.id.clone());
     state.model = Some(parsed.message.model.clone());
@@ -88,9 +86,8 @@ fn parse_content_block_start(
     data: &str,
     state: &mut StreamState,
 ) -> Result<Vec<CanonicalStreamEvent>, ConvertError> {
-    let parsed: ClaudeContentBlockStartEvent = serde_json::from_str(data).map_err(|e| {
-        ConvertError::SseParse(format!("content_block_start parse error: {e}"))
-    })?;
+    let parsed: ClaudeContentBlockStartEvent = serde_json::from_str(data)
+        .map_err(|e| ConvertError::SseParse(format!("content_block_start parse error: {e}")))?;
 
     state.block_index = parsed.index;
     state.phase = StreamPhase::Content;
@@ -99,7 +96,11 @@ fn parse_content_block_start(
         ClaudeStreamContentBlock::ToolUse { id, name, .. } => {
             let index = state.next_tool_call_index();
             state.phase = StreamPhase::ToolCalls;
-            Ok(vec![CanonicalStreamEvent::ToolCallStart { index, id, name }])
+            Ok(vec![CanonicalStreamEvent::ToolCallStart {
+                index,
+                id,
+                name,
+            }])
         }
         ClaudeStreamContentBlock::Thinking { .. } => Ok(vec![]),
         ClaudeStreamContentBlock::Text { .. } => Ok(vec![]),
@@ -110,9 +111,8 @@ fn parse_content_block_delta(
     data: &str,
     state: &mut StreamState,
 ) -> Result<Vec<CanonicalStreamEvent>, ConvertError> {
-    let parsed: ClaudeContentBlockDeltaEvent = serde_json::from_str(data).map_err(|e| {
-        ConvertError::SseParse(format!("content_block_delta parse error: {e}"))
-    })?;
+    let parsed: ClaudeContentBlockDeltaEvent = serde_json::from_str(data)
+        .map_err(|e| ConvertError::SseParse(format!("content_block_delta parse error: {e}")))?;
 
     state.block_index = parsed.index;
 
@@ -138,9 +138,8 @@ fn parse_message_delta(
     data: &str,
     state: &mut StreamState,
 ) -> Result<Vec<CanonicalStreamEvent>, ConvertError> {
-    let parsed: ClaudeMessageDeltaEvent = serde_json::from_str(data).map_err(|e| {
-        ConvertError::SseParse(format!("message_delta parse error: {e}"))
-    })?;
+    let parsed: ClaudeMessageDeltaEvent = serde_json::from_str(data)
+        .map_err(|e| ConvertError::SseParse(format!("message_delta parse error: {e}")))?;
 
     if let Some(usage) = parsed.usage {
         let mut accumulated = state.accumulated_usage.take().unwrap_or_default();
@@ -207,10 +206,7 @@ fn emit_text_delta(text: &str, state: &mut StreamState) -> Result<Vec<String>, C
             "index": state.block_index,
             "content_block": { "type": "text", "text": "" }
         });
-        out.push(format_sse_event(
-            "content_block_start",
-            &data.to_string(),
-        ));
+        out.push(format_sse_event("content_block_start", &data.to_string()));
         state.phase = StreamPhase::Content;
     }
 
@@ -219,10 +215,7 @@ fn emit_text_delta(text: &str, state: &mut StreamState) -> Result<Vec<String>, C
         "index": state.block_index,
         "delta": { "type": "text_delta", "text": text }
     });
-    out.push(format_sse_event(
-        "content_block_delta",
-        &data.to_string(),
-    ));
+    out.push(format_sse_event("content_block_delta", &data.to_string()));
 
     Ok(out)
 }
@@ -271,7 +264,10 @@ fn emit_tool_call_delta(
     )])
 }
 
-fn emit_thinking_delta(thinking: &str, state: &mut StreamState) -> Result<Vec<String>, ConvertError> {
+fn emit_thinking_delta(
+    thinking: &str,
+    state: &mut StreamState,
+) -> Result<Vec<String>, ConvertError> {
     let mut out = Vec::new();
 
     if state.phase == StreamPhase::Init {
@@ -292,10 +288,7 @@ fn emit_thinking_delta(thinking: &str, state: &mut StreamState) -> Result<Vec<St
         "index": state.block_index,
         "delta": { "type": "thinking_delta", "thinking": thinking }
     });
-    out.push(format_sse_event(
-        "content_block_delta",
-        &data.to_string(),
-    ));
+    out.push(format_sse_event("content_block_delta", &data.to_string()));
 
     Ok(out)
 }

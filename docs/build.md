@@ -93,6 +93,33 @@ cargo test test_system_message_extraction
 cargo test openai_chat
 ```
 
+### Test Categories
+
+| Test file | What it covers |
+|-----------|---------------|
+| `converter_matrix` | Full cross-format request/response matrix with precise assertions |
+| `roundtrip` | Request and response A->B->A consistency |
+| `stream_matrix` | SSE stream conversion with event type and ordering checks |
+| `parameter_mapping` | Temperature, top_p, max_tokens, stop sequences, system prompt |
+| `response_deep` | Finish reason, usage tokens, tool calls, thinking/reasoning |
+| `property_tests` | Property-based: identity, JSON validity, model preservation, StopReason roundtrip |
+| `fuzz_tests` | Random bytes/JSON/SSE robustness, malformed tool args, Unicode |
+| `concurrent_tests` | Parallel conversions, StreamState isolation, stress (200+ tasks) |
+| `error_paths` | Invalid input, edge cases, error variants |
+| `stress_test` (server) | Concurrent HTTP endpoints, auth rejection under load |
+
+```bash
+# Run property-based tests
+cargo test --test property_tests
+
+# Run fuzz-style robustness tests
+cargo test --test fuzz_tests
+
+# Run concurrency stress tests
+cargo test --test concurrent_tests
+cargo test -p any-converter-server --test stress_test
+```
+
 ### Test Coverage
 
 ```bash
@@ -258,6 +285,20 @@ cargo tarpaulin --out Stdout
 cargo build --release
 ```
 
+## Linux Build
+
+项目使用 `rustls-tls`（纯 Rust TLS），在 Linux 上**无需安装任何系统依赖**即可编译。
+
+```bash
+# 克隆仓库后直接构建
+git clone <repo-url> && cd any-converter
+cargo build --release
+
+# 产物: target/release/any-converter
+```
+
+> macOS 本机构建同样适用，`rustls-tls` 在所有平台上行为一致。
+
 ## Troubleshooting
 
 ### `rustc` version too old
@@ -274,6 +315,10 @@ rustc --version  # Should be ≥ 1.85
 cargo clean
 cargo build
 ```
+
+### Linux 上提示缺少 OpenSSL
+
+项目已使用 `rustls-tls` 替代 `native-tls`，无需系统 OpenSSL。如果仍遇到 OpenSSL 链接错误，请确认 `Cargo.toml` 中 reqwest 使用 `rustls-tls` feature。
 
 ### Tests fail on async code
 

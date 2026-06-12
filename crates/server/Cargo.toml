@@ -15,8 +15,9 @@ tokio = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
 toml = { workspace = true }
-tracing = { workspace = true }
+log = { workspace = true }
 uuid = { workspace = true }
+chrono = { workspace = true }
 futures-util = "0.3"
 tokio-stream = "0.1"
 http-body-util = "0.1"
@@ -25,3 +26,6 @@ http-body-util = "0.1"
 tokio = { workspace = true }
 pretty_assertions = "1"
 tower = "0.5"
+
+[lints]
+workspace = true

@@ -1,173 +1,345 @@
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use any_converter_server::config::{LogFileConfig, LoggingConfig};
-use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{
-    EnvFilter, Layer,
-    fmt::{self, format::FmtSpan},
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-};
+use any_converter_server::config::LoggingConfig;
+use chrono::Local;
+use log::{LevelFilter, Log, Metadata, Record};
 
-/// Initialize tracing with multi-layer subscriber.
+// ── Public API ───────────────────────────────────────────────────────
+
+/// Initialize the global logger from config.
 ///
-/// Layers:
-/// - Console: human-readable output (always present)
-/// - General file: JSON, non-blocking, daily rolling
-/// - Error file: JSON, non-blocking, daily rolling, ERROR-only
-/// - Conversion file: JSON, non-blocking, target="conversion"
-/// - Custom files from config
+/// Builds a `MultiLogger` with console + file outputs based on
+/// `LoggingConfig` and installs it via `log::set_boxed_logger`.
 ///
-/// Returns guards that must be held for the application lifetime;
-/// dropping them flushes pending log writes.
-pub fn init_tracing(
-    config: &LoggingConfig,
-) -> Result<(Vec<WorkerGuard>, Option<PathBuf>), Box<dyn std::error::Error>> {
-    let mut guards: Vec<WorkerGuard> = Vec::new();
+/// Returns the resolved log directory (if any) so the caller can
+/// spawn a disk-quota manager.
+pub fn init_logging(config: &LoggingConfig) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let global_level = parse_level_filter(&config.level);
+    let mut outputs: Vec<Box<dyn Output + Send + Sync>> = Vec::new();
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.level));
+    // Console output
+    if config.console.enabled {
+        let level = config
+            .console
+            .level
+            .as_deref()
+            .map(parse_level_filter)
+            .unwrap_or(global_level);
+        let format = parse_log_format(&config.console.format);
+        let is_stderr = config.console.output == "stderr";
+        outputs.push(Box::new(ConsoleOutput {
+            level,
+            format,
+            is_stderr,
+        }));
+    }
 
-    // Console layer — human-readable, colored
-    let console_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_filter(env_filter);
-
+    // Resolve log directory
     let log_dir = match &config.dir {
         Some(dir) => {
             let expanded = expand_tilde(dir);
             let path = PathBuf::from(expanded);
             if let Err(e) = std::fs::create_dir_all(&path) {
-                tracing::warn!("failed to create log dir {}: {e}", path.display());
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "WARN: failed to create log dir {}: {e}",
+                    path.display()
+                );
             }
             Some(path)
         }
         None => None,
     };
 
+    // File outputs (only when dir is configured)
     if let Some(ref dir) = log_dir {
-        let (general_layer, guard) = make_json_file_layer(dir, "general", &config.level)?;
-        guards.push(guard);
-
-        let (error_layer, guard) = make_json_file_layer(dir, "error", "error")?;
-        guards.push(guard);
-
-        let (conversion_layer, guard) =
-            make_target_file_layer(dir, "conversion", "debug", "conversion")?;
-        guards.push(guard);
-
-        let mut custom_layers: Vec<Box<dyn Layer<_> + Send + Sync>> = Vec::new();
         for file_cfg in &config.files {
-            if matches!(file_cfg.name.as_str(), "general" | "error" | "conversion") {
-                continue;
-            }
-            let (layer, guard) = make_custom_file_layer(dir, file_cfg)?;
-            guards.push(guard);
-            custom_layers.push(layer);
+            let level = file_cfg
+                .level
+                .as_deref()
+                .map(parse_level_filter)
+                .unwrap_or(global_level);
+            let format = parse_log_format(&file_cfg.format);
+            let rotation = parse_rotation(&file_cfg.rotation);
+            let target_filter = file_cfg.target.clone();
+
+            let writer = RotatingWriter::new(dir, &file_cfg.name, rotation)?;
+            outputs.push(Box::new(FileOutput {
+                level,
+                format,
+                target_filter,
+                writer: Mutex::new(writer),
+            }));
         }
+    }
 
-        let registry = tracing_subscriber::registry()
-            .with(console_layer)
-            .with(general_layer)
-            .with(error_layer)
-            .with(conversion_layer);
+    let logger = MultiLogger {
+        max_level: global_level,
+        outputs,
+    };
 
-        // Dynamic custom layers — fold them via Option chaining since
-        // tracing_subscriber requires static layer types.
-        // For simplicity, apply them as boxed layers.
-        if custom_layers.is_empty() {
-            registry.init();
+    log::set_boxed_logger(Box::new(logger)).map_err(|e| format!("failed to set logger: {e}"))?;
+    log::set_max_level(global_level);
+
+    Ok(log_dir)
+}
+
+// ── MultiLogger ──────────────────────────────────────────────────────
+
+struct MultiLogger {
+    max_level: LevelFilter,
+    outputs: Vec<Box<dyn Output + Send + Sync>>,
+}
+
+impl Log for MultiLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= self.max_level
+    }
+
+    fn log(&self, record: &Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        for output in &self.outputs {
+            if output.enabled(record.metadata()) {
+                output.write(record);
+            }
+        }
+    }
+
+    fn flush(&self) {
+        for output in &self.outputs {
+            output.flush();
+        }
+    }
+}
+
+// ── Output trait ─────────────────────────────────────────────────────
+
+trait Output: Send + Sync {
+    fn enabled(&self, metadata: &Metadata) -> bool;
+    fn write(&self, record: &Record);
+    fn flush(&self);
+}
+
+// ── ConsoleOutput ────────────────────────────────────────────────────
+
+struct ConsoleOutput {
+    level: LevelFilter,
+    format: LogFormat,
+    is_stderr: bool,
+}
+
+impl Output for ConsoleOutput {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= self.level
+    }
+
+    fn write(&self, record: &Record) {
+        let line = match self.format {
+            LogFormat::Pretty => format_pretty(record),
+            LogFormat::Json => format_json(record),
+        };
+        if self.is_stderr {
+            let _ = writeln!(std::io::stderr(), "{line}");
         } else {
-            let mut composed: Box<dyn Layer<_> + Send + Sync> = custom_layers.remove(0);
-            for layer in custom_layers {
-                composed = Box::new(composed.and_then(layer));
+            #[allow(clippy::print_stdout)]
+            {
+                let _ = writeln!(std::io::stdout(), "{line}");
             }
-            registry.with(composed).init();
         }
-    } else {
-        tracing_subscriber::registry().with(console_layer).init();
     }
 
-    Ok((guards, log_dir))
-}
-
-fn make_json_file_layer<S>(
-    dir: &Path,
-    prefix: &str,
-    level: &str,
-) -> Result<
-    (
-        Box<dyn Layer<S> + Send + Sync>,
-        WorkerGuard,
-    ),
-    Box<dyn std::error::Error>,
->
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    let file_appender = tracing_appender::rolling::daily(dir, format!("{prefix}.jsonl"));
-    let (writer, guard) = tracing_appender::non_blocking(file_appender);
-
-    let filter = EnvFilter::new(level);
-    let layer = fmt::layer()
-        .json()
-        .with_writer(writer)
-        .with_target(true)
-        .with_span_events(FmtSpan::CLOSE)
-        .with_filter(filter);
-
-    Ok((Box::new(layer), guard))
-}
-
-fn make_target_file_layer<S>(
-    dir: &Path,
-    prefix: &str,
-    level: &str,
-    target: &str,
-) -> Result<
-    (
-        Box<dyn Layer<S> + Send + Sync>,
-        WorkerGuard,
-    ),
-    Box<dyn std::error::Error>,
->
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    let file_appender = tracing_appender::rolling::daily(dir, format!("{prefix}.jsonl"));
-    let (writer, guard) = tracing_appender::non_blocking(file_appender);
-
-    let filter_str = format!("{target}={level}");
-    let filter = EnvFilter::new(filter_str);
-    let layer = fmt::layer()
-        .json()
-        .with_writer(writer)
-        .with_target(true)
-        .with_span_events(FmtSpan::CLOSE)
-        .with_filter(filter);
-
-    Ok((Box::new(layer), guard))
-}
-
-fn make_custom_file_layer<S>(
-    dir: &Path,
-    cfg: &LogFileConfig,
-) -> Result<
-    (
-        Box<dyn Layer<S> + Send + Sync>,
-        WorkerGuard,
-    ),
-    Box<dyn std::error::Error>,
->
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    let level = cfg.level.as_deref().unwrap_or("info");
-    match &cfg.target {
-        Some(target) => make_target_file_layer(dir, &cfg.name, level, target),
-        None => make_json_file_layer(dir, &cfg.name, level),
+    fn flush(&self) {
+        if self.is_stderr {
+            let _ = std::io::stderr().flush();
+        } else {
+            let _ = std::io::stdout().flush();
+        }
     }
+}
+
+// ── FileOutput ───────────────────────────────────────────────────────
+
+struct FileOutput {
+    level: LevelFilter,
+    format: LogFormat,
+    target_filter: Option<String>,
+    writer: Mutex<RotatingWriter>,
+}
+
+impl Output for FileOutput {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        if metadata.level() > self.level {
+            return false;
+        }
+        if let Some(ref target) = self.target_filter {
+            return metadata.target() == target;
+        }
+        true
+    }
+
+    fn write(&self, record: &Record) {
+        let line = match self.format {
+            LogFormat::Pretty => format_pretty(record),
+            LogFormat::Json => format_json(record),
+        };
+        if let Ok(mut w) = self.writer.lock() {
+            let _ = w.maybe_rotate();
+            let _ = writeln!(w.writer, "{line}");
+        }
+    }
+
+    fn flush(&self) {
+        if let Ok(mut w) = self.writer.lock() {
+            let _ = w.writer.flush();
+        }
+    }
+}
+
+// ── RotatingWriter ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rotation {
+    Daily,
+    Never,
+}
+
+struct RotatingWriter {
+    dir: PathBuf,
+    prefix: String,
+    current_date: String,
+    writer: BufWriter<File>,
+    rotation: Rotation,
+}
+
+impl RotatingWriter {
+    fn new(
+        dir: &Path,
+        prefix: &str,
+        rotation: Rotation,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let current_date = today_str();
+        let path = Self::build_path(dir, prefix, &current_date, rotation);
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            prefix: prefix.to_string(),
+            current_date,
+            writer: BufWriter::new(file),
+            rotation,
+        })
+    }
+
+    fn maybe_rotate(&mut self) -> Result<(), std::io::Error> {
+        if self.rotation == Rotation::Never {
+            return Ok(());
+        }
+        let now = today_str();
+        if now == self.current_date {
+            return Ok(());
+        }
+        let _ = self.writer.flush();
+        let path = Self::build_path(&self.dir, &self.prefix, &now, self.rotation);
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        self.writer = BufWriter::new(file);
+        self.current_date = now;
+        Ok(())
+    }
+
+    fn build_path(dir: &Path, prefix: &str, date: &str, rotation: Rotation) -> PathBuf {
+        match rotation {
+            Rotation::Daily => dir.join(format!("{prefix}.{date}.jsonl")),
+            Rotation::Never => dir.join(format!("{prefix}.jsonl")),
+        }
+    }
+}
+
+// ── Formatting ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+enum LogFormat {
+    Pretty,
+    Json,
+}
+
+fn format_pretty(record: &Record) -> String {
+    let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+    let level = record.level();
+    let level_colored = match level {
+        log::Level::Error => "\x1b[31mERROR\x1b[0m",
+        log::Level::Warn => "\x1b[33mWARN\x1b[0m",
+        log::Level::Info => "\x1b[32mINFO\x1b[0m",
+        log::Level::Debug => "\x1b[34mDEBUG\x1b[0m",
+        log::Level::Trace => "\x1b[35mTRACE\x1b[0m",
+    };
+    let target = record.target();
+    format!("{now} {level_colored} {target}: {}", record.args())
+}
+
+fn format_json(record: &Record) -> String {
+    let now = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%z");
+    let msg = record.args().to_string();
+    let msg_escaped = escape_json_string(&msg);
+    let target = record.target();
+    let target_escaped = escape_json_string(target);
+    format!(
+        r#"{{"timestamp":"{now}","level":"{}","target":"{target_escaped}","message":"{msg_escaped}"}}"#,
+        record.level()
+    )
+}
+
+fn escape_json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+fn parse_level_filter(s: &str) -> LevelFilter {
+    match s.to_lowercase().as_str() {
+        "off" => LevelFilter::Off,
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        "trace" => LevelFilter::Trace,
+        _ => LevelFilter::Info,
+    }
+}
+
+fn parse_log_format(s: &str) -> LogFormat {
+    match s.to_lowercase().as_str() {
+        "json" => LogFormat::Json,
+        _ => LogFormat::Pretty,
+    }
+}
+
+fn parse_rotation(s: &str) -> Rotation {
+    match s.to_lowercase().as_str() {
+        "never" | "none" => Rotation::Never,
+        _ => Rotation::Daily,
+    }
+}
+
+fn today_str() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
 }
 
 fn expand_tilde(path: &str) -> String {

@@ -10,10 +10,11 @@
 src/
 ├── lib.rs        — Server entry: run(config) -> Result
 ├── router.rs     — Axum route table + path→format detection
-├── handlers.rs   — Request handlers: auth, convert, forward, respond
+├── handlers.rs   — Request handlers: model extraction, routing, failover, forward, respond
 ├── proxy.rs      — Upstream HTTP client logic (reqwest)
 ├── auth.rs       — Client key validation + upstream auth header building
-└── config.rs     — TOML config deserialization + provider/route lookup
+├── config.rs     — TOML config: providers, model_routes, legacy routes, logging
+└── usage.rs      — Async usage logger: UsageRecord → JSON Lines files
 ```
 
 ## Domain Constraints
@@ -44,20 +45,46 @@ src/
 - Network errors → `502 Bad Gateway` with `upstream_error` type.
 - Conversion errors → `500 Internal Server Error` with `conversion_error` type.
 - Missing route/provider → `404` / `500` with descriptive JSON body.
-- Always log the original error with `tracing::error!` before translating to HTTP response.
+- Always log the original error with `log::error!` before translating to HTTP response.
 
-### 6. Model Resolution
-- `ProviderConfig.resolve_model` maps client model names to upstream names via `model_map`.
-- Priority: exact match → wildcard `"*"` → passthrough.
+### 6. Model-Based Routing
+- `ServerConfig::resolve_provider(client_format, model)` resolves providers via:
+  1. `model_routes` — glob-pattern matching (`claude-*`, `gpt-*`, `*`), first match wins
+  2. Legacy `routes` — format-based fallback
+- Returns `ResolvedRoute` with a **provider pool** (multiple names for failover).
+- `ProviderConfig.resolve_model` further maps client model names to upstream names via `model_map`.
+- `process_request` iterates the provider pool: on retryable upstream errors (429/5xx), tries next provider.
 - Patch the upstream model name into the converted request body before forwarding (`patch_model_in_body`).
+
+### 7. Usage Logging
+- `UsageLogger` writes `UsageRecord` to daily `usage.YYYY-MM-DD.jsonl` files via async mpsc channel.
+- Enabled when `logging.dir` is configured; created in `create_router` and stored in `AppState`.
+- Token usage extracted from upstream response bodies (`usage::extract_usage_from_response`).
+- Records include: request_id, timestamp, client/upstream model, provider, tokens, latency, status.
 
 ### 7. Namespace Tool Support (Codex CLI)
 - Responses API supports `{type: "namespace", name: "...", tools: [...]}`.
 - Extract namespace mapping before conversion (`extract_namespace_map`).
 - Patch `function_call` items back to `{name, namespace}` after response conversion (`patch_response_namespaces`, `patch_sse_namespaces`).
 
+### 8. Request Preprocessing
+- **Private field filtering**: Before forwarding, `process_request` strips all `_`-prefixed fields from the JSON body. These are internal client markers (e.g. `_stream_tokens`, `_internal_id`) that could cause upstream API rejection.
+- **Empty model defense**: If the request body has no `model` field and no Gemini path model, an empty string is used instead of the old `"default"` hardcode — preventing the literal string `"default"` from reaching upstream.
+
 ## Common Pitfalls
 
 - **Hanging SSE connections**: If the client disconnects mid-stream, the channel sender fails silently. Check `tx.send(...).is_err()` and return early from the spawned task to avoid leaking tasks.
 - **Double `\n\n` in SSE**: Some providers send `\r\n\r\n`. The current parser uses `\n\n` only — verify upstream behavior before changing.
-- **Config validation**: `ServerConfig` is deserialized from TOML but NOT validated at load time. Invalid routes (e.g., route points to missing provider) are caught at request time, not startup.
+- **Config validation**: `ServerConfig::validate()` is called at startup. Invalid provider references cause an immediate exit with actionable error messages.
+
+## Documentation Maintenance
+
+Before concluding work on this crate, verify:
+
+- [ ] **This AGENTS.md** — Did you add/modify crate constraints, architecture, or pitfalls?
+- [ ] **Root AGENTS.md** — Did you introduce a new crate-level pattern that affects cross-crate routing?
+- [ ] **`../docs/memory/known-gotchas.md`** — Did you discover a new edge case specific to this crate?
+- [ ] **`../docs/architecture.md`** — Did you change this crate's public interface or data flow?
+- [ ] **`../CHANGELOG.md`** — Is this a user-visible change?
+
+**Rule:** If any box is checked, update the corresponding file before ending the session.

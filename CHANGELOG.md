@@ -1,5 +1,104 @@
 # Any Converter CHANGELOGS
 
+## Unreleased — Test coverage hardening
+
+### Added
+
+- **Property-based tests** (`property_tests.rs`): Identity conversion, JSON validity, model preservation, StopReason roundtrip, Usage consistency — all driven by `proptest`.
+- **Fuzz-style robustness tests** (`fuzz_tests.rs`): Random bytes/JSON/SSE inputs never panic; malformed tool arguments fall back gracefully; Unicode content preserved across all format pairs.
+- **Concurrent stress tests** (`concurrent_tests.rs`): 200+ parallel conversions verify thread safety and StreamState isolation for both request/response and streaming paths.
+- **Server stress tests** (`stress_test.rs`): 200 concurrent health checks, mixed endpoint requests, and auth rejection under load via tower oneshot.
+
+### Changed
+
+- **Stronger assertions in existing tests**: `converter_matrix.rs` now uses `pretty_assertions` and precise field extraction instead of substring searches. `parameter_mapping.rs` validates exact temperature/top_p/max_tokens/stop_sequence values per format pair (was threshold-based `passed > 0`). `response_deep.rs` asserts finish_reason, usage tokens, and tool names per pair (was `count >= 2/12`). `roundtrip.rs` adds response roundtrip tests and tool name set equality. `stream_matrix.rs` validates format-specific event types and ordering.
+- **Test helpers** (`common/mod.rs`): Added ~15 precise field extraction functions (`extract_temperature`, `extract_tool_names`, `extract_response_text`, etc.) and format-aware `minimal_request_json`/`minimal_response_json` builders for proptest generators.
+
+## 0.3.1 — Field safety, thinking/reasoning cross-format mapping, client compatibility
+
+### Fixed
+
+- **Thinking safety**: `chat/resp -> claude` converters now auto-inject `thinking` config when request history contains thinking blocks, preventing 400 errors from Anthropic API.
+- **Namespace tool_choice**: When Responses API namespace tools are flattened to qualified names (`mcp__srv__shell`), `tool_choice` references are now corrected to match.
+- **Model "default" leak**: Empty model field no longer sends `"default"` to upstream; uses empty string + warning log instead.
+
+### Added
+
+- **Thinking/reasoning cross-format mapping**: Claude `thinking` config maps to Responses `reasoning.effort` and vice versa; thinking is dropped for Gemini targets.
+- **`ThinkingConfig` type**: Added to Claude wire types for proper serialization of thinking configuration.
+- **Private field filtering**: Request body fields starting with `_` (internal client markers) are stripped before forwarding to upstream providers.
+- **Model map longest-prefix matching**: When `model_map` has multiple wildcard patterns, the longest matching pattern wins (e.g. `claude-opus-*` beats `claude-*`).
+- **`clean_system_billing_headers`**: Utility to strip `x-anthropic-billing-header:` lines from system prompts.
+
+## 0.3.0 — Model-based intelligent routing, provider failover, and usage logging
+
+### Added
+
+- **Model-based routing** (`[[model_routes]]`): Route requests to upstream providers by model name using glob patterns (`claude-*`, `gpt-*`, `*`). First match wins. Replaces the need for format-only routing.
+- **Multi-provider failover**: Configure multiple providers per model route (`providers = ["primary", "backup"]`). On upstream failure (429/5xx), automatically retries with next provider.
+- **Route strategy**: `priority` (default, try in order) or `round_robin` per model route.
+- **Usage logging**: Token usage automatically extracted from upstream responses and written as JSON Lines to `usage.YYYY-MM-DD.jsonl` files when `logging.dir` is configured. Supports OpenAI, Claude, and Gemini usage formats.
+- **Config validation**: Startup checks verify all provider references in `model_routes` and `routes` exist. Missing providers cause an immediate error with actionable messages.
+- **`/v1/models` enhancement**: Model list now populated from both `model_routes` (non-wildcard patterns) and `model_map` keys.
+
+### Changed
+
+- `process_request` now extracts model name **before** provider selection, enabling model-based routing.
+- Provider resolution order: `model_routes` (first glob match) → legacy `routes` (format match) → 404.
+- `config.example.toml` rewritten to showcase model routing with DeepSeek and failover examples.
+
+### Backward Compatible
+
+- Existing `[[routes]]` format-based config continues to work unchanged as a fallback.
+- No changes to request/response conversion logic.
+
+## 0.2.0 — Architecture: Pairwise format converters replace canonical IR
+
+### Changed
+- **Conversion architecture**: Replaced hub-and-spoke canonical IR conversion with direct pairwise converters — each (source, target) format pair now has a dedicated converter that translates requests, responses, and streaming events directly without data loss
+- **`FormatConverter` trait**: New trait in `crates/core/src/converters/mod.rs` defines `convert_request`, `convert_response`, and `convert_stream_event` for each pair
+- **Streaming reuse**: Pairwise converters compose existing `StreamAdapter::parse_sse_event` and `StreamAdapter::emit_sse_event` for streaming conversion
+
+### Added
+- 12 pairwise converter modules: `claude_to_chat`, `claude_to_resp`, `claude_to_gemini`, `chat_to_claude`, `chat_to_resp`, `chat_to_gemini`, `resp_to_claude`, `resp_to_chat`, `resp_to_gemini`, `gemini_to_claude`, `gemini_to_chat`, `gemini_to_resp`
+- `crates/core/src/converters/shared.rs` — common utilities for converters
+- Identity conversion passthrough for same-format requests
+
+### Removed
+- `FormatAdapter` trait and all `adapter.rs` / `adapter_tests.rs` files
+- Canonical IR types no longer used: `CanonicalRequest`, `CanonicalResponse`, `ContentBlock`, `Turn`, `Role`, `ImageSource`, `SystemContent`, `SystemBlock`, `ToolDef`, `ToolChoice`, `GenerationParams`, `ResponseFormat`
+- IR modules: `ir/request.rs`, `ir/message.rs`, `ir/tool.rs`, `ir/params.rs`
+- Format-specific `helpers.rs` and `tools.rs` files (functionality moved into converters)
+
+### Retained
+- IR streaming types: `CanonicalStreamEvent`, `StreamState`, `StreamPhase`, `StopReason`, `Usage`, `AccumulatedToolCall` — used as the intermediate representation for streaming event conversion
+
+## 0.1.7 — Refactor: Migrate logging from tracing to log crate
+
+### Changed
+- **Logging facade**: Replaced `tracing` + `tracing-subscriber` + `tracing-appender` with the `log` crate facade and a custom `MultiLogger` implementation
+- **Multi-output support**: Console output (stdout/stderr) and file outputs are independently configurable with per-output level filtering, format (pretty/json), and optional target filtering
+- **Config enhancement**: Added `[logging.console]` section with `enabled`, `output`, `level`, `format` fields; extended `[[logging.files]]` with `format` and `rotation` fields
+- **Daily file rotation**: File outputs support automatic daily rotation via date-suffixed filenames (e.g. `general.2026-06-11.jsonl`)
+- **Backward compatible**: All new config fields have sensible defaults; existing TOML configs work without modification
+
+### Removed
+- Dependencies: `tracing`, `tracing-subscriber`, `tracing-appender`
+
+### Added
+- Dependencies: `log` (with `std` feature), `chrono` (for timestamps and rotation)
+
+## 0.1.6 — Fix: Namespace tool name dropped in function_call history + resilient error handling
+
+### Fixed
+- **Critical**: `parse_function_call_fields` dropped the `namespace` field from `function_call` items in request history — when Codex sends `{"type":"function_call", "namespace":"mcp__playwright", "name":"browser_navigate"}`, the converter was forwarding only `"browser_navigate"` to Claude instead of the qualified name `"mcp__playwright__browser_navigate"`, causing Claude to reject unrecognized tool names and triggering Codex retry loops
+- **Critical**: `convert_sse_block` in proxy.rs silently swallowed stream conversion errors (returned empty `Vec`), causing critical SSE events like `response.output_item.done` and `response.completed` to be silently dropped — now emits an `error` SSE event for diagnostics
+- **Critical**: Panic handler in `convert_sse_block` now also emits an `error` SSE event instead of returning empty output
+- Added test `test_namespace_function_call_in_history_qualifies_name` validating the full roundtrip: namespace function_call in Responses request → qualified ToolUse name in canonical IR → correct Claude tool matching
+
+### Root cause analysis
+Codex CLI sends `function_call` history items with separate `namespace` and `name` fields for MCP tools. The `helpers::parse_function_call_fields` function was only reading `name` and ignoring `namespace`, so when the tool call was forwarded to Claude, the tool name didn't match any defined tool (Claude had `mcp__playwright__browser_navigate` but received `browser_navigate`). Claude would then return an error or unexpected response, causing Codex to retry indefinitely.
+
 ## 0.1.5 — Fix: Codex CLI MCP tool call dead loop (missing function_call item `id`)
 
 ### Fixed

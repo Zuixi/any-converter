@@ -5,7 +5,7 @@
 /// - Claude: named `event:` + `data:` pairs, terminated by `event: message_stop`
 /// - OpenAI Responses: named `event:` + `data:` pairs, terminated by `event: response.completed`
 /// - Gemini: anonymous `data:` lines, terminated by connection close
-
+///
 /// A parsed SSE event with optional event type and data payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SseEvent {
@@ -18,6 +18,17 @@ pub struct SseEvent {
 /// SSE spec: lines starting with `event:` set the event type,
 /// lines starting with `data:` append to the data buffer.
 /// A blank line dispatches the event.
+///
+/// # Examples
+///
+/// ```
+/// use any_converter_core::sse::parse_sse_block;
+///
+/// let block = "data: {\"id\":\"123\"}";
+/// let event = parse_sse_block(block).unwrap();
+/// assert_eq!(event.data, "{\"id\":\"123\"}");
+/// assert!(event.event.is_none());
+/// ```
 pub fn parse_sse_block(block: &str) -> Option<SseEvent> {
     let mut event_type: Option<String> = None;
     let mut data_lines: Vec<&str> = Vec::new();
@@ -37,11 +48,24 @@ pub fn parse_sse_block(block: &str) -> Option<SseEvent> {
     }
 
     let data = data_lines.join("\n");
-    Some(SseEvent { event: event_type, data })
+    Some(SseEvent {
+        event: event_type,
+        data,
+    })
 }
 
 /// Split a raw SSE byte stream into individual event blocks.
 /// Events are separated by double newlines (`\n\n` or `\r\n\r\n`).
+///
+/// # Examples
+///
+/// ```
+/// use any_converter_core::sse::split_sse_blocks;
+///
+/// let input = "data: first\n\ndata: second\n\n";
+/// let blocks = split_sse_blocks(input);
+/// assert_eq!(blocks.len(), 2);
+/// ```
 pub fn split_sse_blocks(input: &str) -> Vec<String> {
     let input = if input.contains('\r') {
         input.replace("\r\n", "\n").replace('\r', "\n")
@@ -120,7 +144,10 @@ mod tests {
     #[test]
     fn test_format_sse_event() {
         let result = format_sse_event("message_start", "{\"type\":\"message_start\"}");
-        assert_eq!(result, "event: message_start\ndata: {\"type\":\"message_start\"}\n\n");
+        assert_eq!(
+            result,
+            "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"
+        );
     }
 
     #[test]

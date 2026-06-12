@@ -3,14 +3,15 @@ use std::sync::Arc;
 use any_converter_core::convert::Format;
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     routing::{get, post},
 };
 use reqwest::Client;
 
 use crate::config::ServerConfig;
 use crate::handlers::{
-    handle_claude, handle_gemini, handle_health, handle_model_retrieve, handle_models,
-    handle_openai_chat, handle_responses, AppState,
+    AppState, handle_claude, handle_gemini, handle_health, handle_model_retrieve, handle_models,
+    handle_openai_chat, handle_responses,
 };
 
 /// Route metadata detected from the request path.
@@ -64,40 +65,47 @@ pub fn extract_gemini_model(path: &str) -> Option<String> {
     let rest = path.strip_prefix("/v1beta/models/")?;
     if let Some(model) = rest.strip_suffix(":streamGenerateContent") {
         Some(model.to_string())
-    } else if let Some(model) = rest.strip_suffix(":generateContent") {
-        Some(model.to_string())
     } else {
-        None
+        rest.strip_suffix(":generateContent")
+            .map(|model| model.to_string())
     }
 }
 
 pub fn create_router(config: ServerConfig) -> Router {
+    let usage_logger = crate::usage::create_usage_logger(config.logging.dir.as_deref());
     let state = Arc::new(AppState {
         config,
         client: Client::new(),
+        usage_logger,
     });
+    create_router_with_state(state)
+}
 
+/// Create a router with a pre-built `AppState`, enabling test injection of
+/// custom HTTP clients (e.g., pointing at a local `wiremock` server).
+pub fn create_router_with_state(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(handle_health))
-        .route("/v1/models", get(handle_models.clone()))
+        .route("/v1/models", get(handle_models))
         .route("/models", get(handle_models))
-        .route("/v1/models/{model_id}", get(handle_model_retrieve.clone()))
+        .route("/v1/models/{model_id}", get(handle_model_retrieve))
         .route("/models/{model_id}", get(handle_model_retrieve))
         // With /v1/ prefix (standard)
-        .route("/v1/chat/completions", post(handle_openai_chat.clone()))
-        .route("/v1/messages", post(handle_claude.clone()))
-        .route("/v1/responses", post(handle_responses.clone()))
+        .route("/v1/chat/completions", post(handle_openai_chat))
+        .route("/v1/messages", post(handle_claude))
+        .route("/v1/responses", post(handle_responses))
         // Without /v1/ prefix (Codex CLI and some clients)
         .route("/chat/completions", post(handle_openai_chat))
         .route("/messages", post(handle_claude))
         .route("/responses", post(handle_responses))
         .route("/v1beta/models/{*model_action}", post(handle_gemini))
         .fallback(handle_not_found)
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
         .with_state(state)
 }
 
 async fn handle_not_found(uri: axum::http::Uri) -> (axum::http::StatusCode, &'static str) {
-    tracing::warn!(path = %uri, "request to unknown path");
+    log::warn!("request to unknown path path={uri}");
     (axum::http::StatusCode::NOT_FOUND, "not found")
 }
 
@@ -126,6 +134,7 @@ mod tests {
                 api_key: "sk-test".into(),
                 model_map: [("claude-sonnet-4".into(), "gpt-4.1".into())].into(),
             }],
+            model_routes: vec![],
             routes: vec![
                 RouteConfig {
                     client_format: Format::OpenAIChat,
@@ -230,6 +239,6 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["object"], "list");
-        assert!(json["data"].as_array().unwrap().len() >= 1);
+        assert!(!json["data"].as_array().unwrap().is_empty());
     }
 }

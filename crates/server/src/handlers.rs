@@ -1,27 +1,29 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use any_converter_core::convert::{convert_request, convert_response, Format};
+use any_converter_core::convert::{Format, convert_request, convert_response};
 use axum::{
+    Json,
     body::Body,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    Json,
 };
+use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde_json::Value;
-use tracing::{debug, error, info};
 
 use crate::auth::{self, AuthError};
 use crate::config::ServerConfig;
 use crate::proxy::build_upstream_url;
 use crate::router::RouteInfo;
+use crate::usage::{self, UsageLogger, UsageRecord};
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: ServerConfig,
     pub client: Client,
+    pub usage_logger: Option<Arc<UsageLogger>>,
 }
 
 pub async fn handle_health() -> impl IntoResponse {
@@ -32,38 +34,27 @@ pub async fn handle_models(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let mut seen = std::collections::HashSet::new();
+    let available = state.config.available_models();
     let is_codex = params.contains_key("client_version");
 
     if is_codex {
-        let mut models = Vec::new();
-        for provider in &state.config.providers {
-            for model in provider.model_map.keys() {
-                if model == "*" || !seen.insert(model.clone()) {
-                    continue;
-                }
-                models.push(build_codex_model_object(
-                    model,
-                    state.config.model_metadata.get(model),
-                ));
-            }
-        }
+        let models: Vec<_> = available
+            .iter()
+            .map(|m| build_codex_model_object(m, state.config.model_metadata.get(m.as_str())))
+            .collect();
         return Json(serde_json::json!({ "models": models }));
     }
 
-    let mut data = Vec::new();
-    for provider in &state.config.providers {
-        for model in provider.model_map.keys() {
-            if model == "*" || !seen.insert(model.clone()) {
-                continue;
-            }
-            data.push(build_model_object(
-                model,
-                &provider.name,
-                state.config.model_metadata.get(model),
-            ));
-        }
-    }
+    let data: Vec<_> = available
+        .iter()
+        .map(|m| {
+            build_model_object(
+                m,
+                "any-converter",
+                state.config.model_metadata.get(m.as_str()),
+            )
+        })
+        .collect();
 
     Json(serde_json::json!({
         "object": "list",
@@ -86,17 +77,11 @@ pub async fn handle_model_retrieve(
         }
     }
 
-    (
+    api_error_response(
         StatusCode::NOT_FOUND,
-        Json(serde_json::json!({
-            "error": {
-                "message": format!("The model '{}' does not exist", model_id),
-                "type": "invalid_request_error",
-                "code": "model_not_found",
-            }
-        })),
+        "model_not_found",
+        format!("The model '{}' does not exist", model_id),
     )
-        .into_response()
 }
 
 fn build_model_object(
@@ -135,9 +120,7 @@ fn build_codex_model_object(
     metadata: Option<&crate::config::ModelMetadata>,
 ) -> serde_json::Value {
     let ctx = metadata.and_then(|m| m.context_window).unwrap_or(272_000);
-    let max_ctx = metadata
-        .and_then(|m| m.max_context_window)
-        .unwrap_or(ctx);
+    let max_ctx = metadata.and_then(|m| m.max_context_window).unwrap_or(ctx);
     let par_tools = metadata
         .and_then(|m| m.supports_parallel_tool_calls)
         .unwrap_or(false);
@@ -230,16 +213,11 @@ pub async fn handle_gemini(
     body: axum::body::Bytes,
 ) -> Response {
     let Some((model, path_streaming)) = parse_gemini_model_action(&model_action) else {
-        return (
+        return api_error_response(
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": {
-                    "message": "invalid gemini model path",
-                    "type": "invalid_request",
-                }
-            })),
-        )
-            .into_response();
+            "invalid_request",
+            "invalid gemini model path",
+        );
     };
 
     process_request(
@@ -258,11 +236,196 @@ pub async fn handle_gemini(
 fn parse_gemini_model_action(model_action: &str) -> Option<(String, bool)> {
     if let Some(model) = model_action.strip_suffix(":streamGenerateContent") {
         Some((model.to_string(), true))
-    } else if let Some(model) = model_action.strip_suffix(":generateContent") {
-        Some((model.to_string(), false))
     } else {
-        None
+        model_action
+            .strip_suffix(":generateContent")
+            .map(|model| (model.to_string(), false))
     }
+}
+
+struct RequestContext {
+    req_id: uuid::Uuid,
+    start_time: std::time::Instant,
+    client_model: String,
+    upstream_model: String,
+    ns_map: std::collections::HashMap<String, (String, String)>,
+    streaming: bool,
+    provider_names: Vec<String>,
+}
+
+fn prepare_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: &[u8],
+    route_info: RouteInfo,
+    gemini_model: Option<&str>,
+) -> Result<(RequestContext, Vec<u8>), Box<Response>> {
+    let req_id = uuid::Uuid::new_v4();
+    let start_time = std::time::Instant::now();
+
+    info!(
+        "incoming request request_id={} client_format={} body_len={}",
+        req_id,
+        route_info.client_format,
+        body.len()
+    );
+
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+        .map_err(|err| Box::new(auth_error_response(err)))?;
+
+    let client_model = extract_model_from_body(body)
+        .or_else(|| gemini_model.map(String::from))
+        .unwrap_or_default();
+
+    if client_model.is_empty() {
+        warn!("no model in request body request_id={}", req_id);
+    }
+
+    let body = strip_private_fields(body);
+
+    let resolved = state
+        .config
+        .resolve_provider(route_info.client_format, &client_model)
+        .ok_or_else(|| {
+            error!(
+                "no route for model={} format={} request_id={}",
+                client_model, route_info.client_format, req_id
+            );
+            Box::new(api_error_response(
+                StatusCode::NOT_FOUND,
+                "route_not_found",
+                format!(
+                    "no route configured for model \"{}\" (format: {})",
+                    client_model, route_info.client_format
+                ),
+            ))
+        })?;
+
+    let ns_map = extract_namespace_map(&body, route_info.client_format);
+    let streaming = is_streaming_request(&body, route_info);
+
+    Ok((
+        RequestContext {
+            req_id,
+            start_time,
+            client_model,
+            upstream_model: resolved.upstream_model,
+            ns_map,
+            streaming,
+            provider_names: resolved.provider_names,
+        },
+        body,
+    ))
+}
+
+fn convert_and_build_upstream(
+    state: &AppState,
+    body: &[u8],
+    route_info: RouteInfo,
+    ctx: &RequestContext,
+    provider: &crate::config::ProviderConfig,
+) -> Result<(Vec<u8>, String, Vec<(String, String)>), Box<Response>> {
+    if state.config.logging.conversion_log {
+        debug!(
+            target: "conversion",
+            "request_original request_id={} client_format={} provider_format={} body={}",
+            ctx.req_id, route_info.client_format, provider.format, truncated_body(body, 4096)
+        );
+    }
+
+    let converted_body = match safe_convert_request(body, route_info.client_format, provider.format)
+    {
+        Ok(mut bytes) => {
+            if state.config.logging.conversion_log {
+                debug!(
+                    target: "conversion",
+                    "request_converted request_id={} body={}",
+                    ctx.req_id, truncated_body(&bytes, 4096)
+                );
+            }
+            if let Err(err) = patch_model_in_body(&mut bytes, provider.format, &ctx.upstream_model)
+            {
+                error!("failed to patch model: {err} request_id={}", ctx.req_id);
+            }
+            bytes
+        }
+        Err(err) => {
+            error!(
+                "request conversion failed request_id={} from={} to={} error={}",
+                ctx.req_id, route_info.client_format, provider.format, err
+            );
+            return Err(Box::new(conversion_error_response(err)));
+        }
+    };
+
+    let url = build_upstream_url(
+        provider.format,
+        &provider.base_url,
+        &ctx.upstream_model,
+        ctx.streaming,
+    );
+
+    let auth_headers = auth::build_upstream_auth_headers(provider.format, &provider.api_key);
+
+    Ok((converted_body, url, auth_headers))
+}
+
+fn build_non_streaming_response(
+    state: &AppState,
+    upstream_body: &[u8],
+    status: reqwest::StatusCode,
+    route_info: RouteInfo,
+    ctx: &RequestContext,
+    provider: &crate::config::ProviderConfig,
+) -> Result<Response, HandlerError> {
+    if state.config.logging.conversion_log {
+        debug!(
+            target: "conversion",
+            "response_original request_id={} status={} body={}",
+            ctx.req_id, status, truncated_body(upstream_body, 4096)
+        );
+    }
+
+    let mut converted =
+        safe_convert_response(upstream_body, provider.format, route_info.client_format)?;
+
+    patch_response_namespaces(&mut converted, &ctx.ns_map);
+
+    if state.config.logging.conversion_log {
+        debug!(
+            target: "conversion",
+            "response_converted request_id={} body={}",
+            ctx.req_id, truncated_body(&converted, 4096)
+        );
+    }
+
+    if let Some(ref logger) = state.usage_logger {
+        let (input_tokens, output_tokens) = usage::extract_usage_from_response(upstream_body);
+        logger.log(UsageRecord {
+            request_id: ctx.req_id.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            client_format: route_info.client_format.to_string(),
+            provider: provider.name.clone(),
+            client_model: ctx.client_model.clone(),
+            upstream_model: ctx.upstream_model.clone(),
+            input_tokens,
+            output_tokens,
+            total_tokens: input_tokens + output_tokens,
+            latency_ms: ctx.start_time.elapsed().as_millis() as u64,
+            status: status.as_u16(),
+            streaming: false,
+        });
+    }
+
+    Ok(Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(converted))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
 }
 
 async fn process_request(
@@ -272,247 +435,200 @@ async fn process_request(
     route_info: RouteInfo,
     gemini_model: Option<&str>,
 ) -> Response {
-    let req_id = uuid::Uuid::new_v4();
-
-    info!(
-        client_format = %route_info.client_format,
-        body_len = body.len(),
-        request_id = %req_id,
-        "incoming request"
-    );
-
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
-
-    let route = match state.config.find_route(route_info.client_format) {
-        Some(r) => r,
-        None => {
-            error!(
-                request_id = %req_id,
-                "no route configured for format {}",
-                route_info.client_format
-            );
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": format!("no route configured for format {}", route_info.client_format),
-                        "type": "route_not_found",
-                    }
-                })),
-            )
-                .into_response();
-        }
+    let (ctx, body) = match prepare_request(state, headers, body, route_info, gemini_model) {
+        Ok(pair) => pair,
+        Err(response) => return *response,
     };
 
-    let provider = match state.config.find_provider(&route.provider) {
-        Some(p) => p,
-        None => {
-            error!(request_id = %req_id, "provider not found: {}", route.provider);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": format!("provider not found: {}", route.provider),
-                        "type": "provider_not_found",
-                    }
-                })),
-            )
-                .into_response();
-        }
-    };
+    let mut last_error: Option<String> = None;
 
-    let client_model = extract_model_from_body(body)
-        .unwrap_or_else(|| gemini_model.unwrap_or("default").to_string());
-    let upstream_model = provider.resolve_model(&client_model);
-
-    // Conversion logging: original request
-    if state.config.logging.conversion_log {
-        debug!(
-            target: "conversion",
-            request_id = %req_id,
-            client_format = %route_info.client_format,
-            provider_format = %provider.format,
-            phase = "request_original",
-            body = %truncated_body(body, 4096),
-        );
-    }
-
-    let ns_map = extract_namespace_map(body, route_info.client_format);
-
-    let converted_body = match safe_convert_request(body, route_info.client_format, provider.format) {
-        Ok(mut bytes) => {
-            // Conversion logging: converted request
-            if state.config.logging.conversion_log {
-                debug!(
-                    target: "conversion",
-                    request_id = %req_id,
-                    phase = "request_converted",
-                    body = %truncated_body(&bytes, 4096),
+    for (attempt, provider_name) in ctx.provider_names.iter().enumerate() {
+        let provider = match state.config.find_provider(provider_name) {
+            Some(p) => p,
+            None => {
+                error!(
+                    "provider not found: {} request_id={}",
+                    provider_name, ctx.req_id
                 );
+                last_error = Some(format!("provider not found: {provider_name}"));
+                continue;
             }
+        };
 
-            if let Err(err) = patch_model_in_body(&mut bytes, provider.format, &upstream_model) {
-                error!(request_id = %req_id, "failed to patch model: {err}");
-            }
-            bytes
+        let (converted_body, url, auth_headers) =
+            match convert_and_build_upstream(state, &body, route_info, &ctx, provider) {
+                Ok(v) => v,
+                Err(response) => return *response,
+            };
+
+        info!(
+            "forwarding request request_id={} client_format={} provider={} upstream_model={} streaming={} attempt={}",
+            ctx.req_id,
+            route_info.client_format,
+            provider.name,
+            ctx.upstream_model,
+            ctx.streaming,
+            attempt + 1
+        );
+
+        if ctx.streaming {
+            return match crate::proxy::forward_streaming(
+                &state.client,
+                &url,
+                converted_body,
+                &auth_headers,
+                provider.format,
+                route_info.client_format,
+                &ctx.ns_map,
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    warn!(
+                        "streaming forward failed request_id={} provider={} error={}",
+                        ctx.req_id, provider.name, err
+                    );
+                    last_error = Some(err);
+                    continue;
+                }
+            };
         }
-        Err(err) => {
-            error!(
-                request_id = %req_id,
-                from = %route_info.client_format,
-                to = %provider.format,
-                error = %err,
-                "request conversion failed"
-            );
-            return conversion_error_response(err);
-        }
-    };
 
-    let streaming = is_streaming_request(body, route_info);
-
-    let url = build_upstream_url(
-        provider.format,
-        &provider.base_url,
-        &upstream_model,
-        streaming,
-    );
-
-    info!(
-        request_id = %req_id,
-        client_format = %route_info.client_format,
-        provider = %provider.name,
-        upstream_model = %upstream_model,
-        streaming = streaming,
-        "forwarding request"
-    );
-
-    let auth_headers = auth::build_upstream_auth_headers(provider.format, &provider.api_key);
-
-    if streaming {
-        return match crate::proxy::forward_streaming(
+        match crate::proxy::forward_non_streaming(
             &state.client,
             &url,
             converted_body,
             &auth_headers,
-            provider.format,
-            route_info.client_format,
-            &ns_map,
         )
         .await
         {
-            Ok(response) => response,
-            Err(err) => upstream_error_response(&err),
-        };
+            Ok((status, upstream_body)) => {
+                if is_retryable_status(status) && attempt + 1 < ctx.provider_names.len() {
+                    warn!(
+                        "upstream returned {} request_id={} provider={}, trying next provider",
+                        status, ctx.req_id, provider.name
+                    );
+                    last_error = Some(format!("provider {} returned {}", provider.name, status));
+                    continue;
+                }
+
+                return match build_non_streaming_response(
+                    state,
+                    &upstream_body,
+                    status,
+                    route_info,
+                    &ctx,
+                    provider,
+                ) {
+                    Ok(response) => response,
+                    Err(err) => conversion_error_response(err),
+                };
+            }
+            Err(err) => {
+                warn!(
+                    "upstream request failed request_id={} provider={} error={}",
+                    ctx.req_id, provider.name, err
+                );
+                last_error = Some(err);
+                continue;
+            }
+        }
     }
 
-    match crate::proxy::forward_non_streaming(
-        &state.client,
-        &url,
-        converted_body,
-        &auth_headers,
-    )
-    .await
-    {
-        Ok((status, upstream_body)) => {
-            // Conversion logging: upstream response
-            if state.config.logging.conversion_log {
-                debug!(
-                    target: "conversion",
-                    request_id = %req_id,
-                    phase = "response_original",
-                    status = %status,
-                    body = %truncated_body(&upstream_body, 4096),
-                );
-            }
+    upstream_error_response(&last_error.unwrap_or_else(|| "all providers failed".into()))
+}
 
-            let mut converted = match safe_convert_response(
-                &upstream_body,
-                provider.format,
-                route_info.client_format,
-            ) {
-                Ok(bytes) => bytes,
-                Err(err) => return conversion_error_response(err),
-            };
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504 | 529)
+}
 
-            patch_response_namespaces(&mut converted, &ns_map);
-
-            // Conversion logging: converted response
-            if state.config.logging.conversion_log {
-                debug!(
-                    target: "conversion",
-                    request_id = %req_id,
-                    phase = "response_converted",
-                    body = %truncated_body(&converted, 4096),
-                );
-            }
-
-            Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(converted))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+fn strip_private_fields(body: &[u8]) -> Vec<u8> {
+    if let Ok(mut val) = serde_json::from_slice::<serde_json::Value>(body) {
+        if let Some(obj) = val.as_object_mut() {
+            obj.retain(|key, _| !key.starts_with('_'));
         }
-        Err(err) => upstream_error_response(&err),
+        serde_json::to_vec(&val).unwrap_or_else(|_| body.to_vec())
+    } else {
+        body.to_vec()
     }
 }
 
 fn truncated_body(body: &[u8], max_len: usize) -> String {
     let s = String::from_utf8_lossy(body);
-    if s.len() <= max_len {
+    let text = if s.len() <= max_len {
         s.into_owned()
     } else {
-        format!("{}...<truncated {} bytes>", &s[..max_len], s.len() - max_len)
-    }
+        format!(
+            "{}...<truncated {} bytes>",
+            &s[..max_len],
+            s.len() - max_len
+        )
+    };
+    sanitize_log_body(&text)
 }
 
-fn auth_error_response(err: AuthError) -> Response {
-    let status = match err {
-        AuthError::Missing | AuthError::Invalid => StatusCode::UNAUTHORIZED,
-    };
+const SENSITIVE_KEYS: &[&str] = &["api_key", "apiKey", "authorization", "x-api-key", "secret"];
+
+fn sanitize_log_body(text: &str) -> String {
+    let mut result = text.to_string();
+    for key in SENSITIVE_KEYS {
+        let patterns = [format!("\"{key}\":\""), format!("\"{key}\": \"")];
+        for pat in &patterns {
+            while let Some(start) = result.find(pat.as_str()) {
+                let val_start = start + pat.len();
+                if let Some(end) = result[val_start..].find('"') {
+                    let replacement = format!("{pat}[REDACTED]\"");
+                    result = format!(
+                        "{}{}{}",
+                        &result[..start],
+                        replacement,
+                        &result[val_start + end + 1..]
+                    );
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    result
+}
+
+fn api_error_response(
+    status: StatusCode,
+    error_type: &str,
+    message: impl std::fmt::Display,
+) -> Response {
     (
         status,
         Json(serde_json::json!({
             "error": {
-                "message": err.to_string(),
-                "type": "authentication_error",
+                "message": message.to_string(),
+                "type": error_type,
+                "code": error_type,
             }
         })),
     )
         .into_response()
+}
+
+fn auth_error_response(err: AuthError) -> Response {
+    api_error_response(
+        match err {
+            AuthError::Missing | AuthError::Invalid => StatusCode::UNAUTHORIZED,
+        },
+        "authentication_error",
+        err,
+    )
 }
 
 fn upstream_error_response(err: &str) -> Response {
     error!("upstream error: {err}");
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(serde_json::json!({
-            "error": {
-                "message": err,
-                "type": "upstream_error",
-            }
-        })),
-    )
-        .into_response()
+    api_error_response(StatusCode::BAD_GATEWAY, "upstream_error", err)
 }
 
 fn conversion_error_response(err: HandlerError) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({
-            "error": {
-                "message": err.to_string(),
-                "type": "conversion_error",
-            }
-        })),
-    )
-        .into_response()
+    api_error_response(StatusCode::INTERNAL_SERVER_ERROR, "conversion_error", err)
 }
 
 #[derive(Debug)]
@@ -661,8 +777,8 @@ fn patch_model_in_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::config::{LoggingConfig, ProviderConfig, RouteConfig, ServerSettings};
+    use std::collections::HashMap;
 
     fn sample_state() -> AppState {
         AppState {
@@ -679,6 +795,7 @@ mod tests {
                     api_key: "sk-test".into(),
                     model_map: [("*".into(), "gpt-4.1".into())].into(),
                 }],
+                model_routes: vec![],
                 routes: vec![RouteConfig {
                     client_format: Format::Claude,
                     provider: "openai".into(),
@@ -687,6 +804,7 @@ mod tests {
                 logging: LoggingConfig::default(),
             },
             client: Client::new(),
+            usage_logger: None,
         }
     }
 
@@ -730,11 +848,13 @@ mod tests {
                     api_key: None,
                 },
                 providers: vec![],
+                model_routes: vec![],
                 routes: vec![],
                 model_metadata: HashMap::new(),
                 logging: LoggingConfig::default(),
             },
             client: Client::new(),
+            usage_logger: None,
         });
 
         let route_info = RouteInfo {
@@ -756,7 +876,8 @@ mod tests {
     #[test]
     fn test_non_streaming_flow_helpers() {
         let state = sample_state();
-        let body = br#"{"model":"claude-3","stream":false,"messages":[{"role":"user","content":"hi"}]}"#;
+        let body =
+            br#"{"model":"claude-3","stream":false,"messages":[{"role":"user","content":"hi"}]}"#;
         let route = RouteInfo {
             client_format: Format::Claude,
             path_streaming: false,
@@ -764,7 +885,11 @@ mod tests {
 
         assert!(!is_streaming_request(body, route));
         assert_eq!(
-            state.config.find_route(route.client_format).unwrap().provider,
+            state
+                .config
+                .find_route(route.client_format)
+                .unwrap()
+                .provider,
             "openai"
         );
         assert_eq!(
@@ -775,5 +900,24 @@ mod tests {
                 .resolve_model("claude-3"),
             "gpt-4.1"
         );
+    }
+
+    #[test]
+    fn test_strip_private_fields_removes_underscore_keys() {
+        let body = br#"{"model":"gpt-4.1","_stream_tokens":true,"messages":[]}"#;
+        let result = strip_private_fields(body);
+        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert!(parsed.get("model").is_some());
+        assert!(parsed.get("messages").is_some());
+        assert!(parsed.get("_stream_tokens").is_none());
+    }
+
+    #[test]
+    fn test_strip_private_fields_preserves_normal_keys() {
+        let body = br#"{"model":"gpt-4.1","stream":true}"#;
+        let result = strip_private_fields(body);
+        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(parsed.get("model").unwrap().as_str().unwrap(), "gpt-4.1");
+        assert_eq!(parsed.get("stream").unwrap().as_bool().unwrap(), true);
     }
 }

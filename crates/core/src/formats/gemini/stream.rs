@@ -1,7 +1,7 @@
 use crate::error::ConvertError;
 use crate::formats::StreamAdapter;
 use crate::ir::*;
-use crate::sse::{format_sse_data, SseEvent};
+use crate::sse::{SseEvent, format_sse_data};
 
 use super::types::*;
 
@@ -12,8 +12,8 @@ impl StreamAdapter for GeminiStreamAdapter {
         event: &SseEvent,
         state: &mut StreamState,
     ) -> Result<Vec<CanonicalStreamEvent>, ConvertError> {
-        let chunk: GeminiResponse = serde_json::from_str(&event.data)
-            .map_err(|e| ConvertError::SseParse(e.to_string()))?;
+        let chunk: GeminiResponse =
+            serde_json::from_str(&event.data).map_err(|e| ConvertError::SseParse(e.to_string()))?;
 
         let mut events = Vec::new();
 
@@ -57,8 +57,8 @@ impl StreamAdapter for GeminiStreamAdapter {
                         name: fc.name.clone(),
                     });
                     if !fc.args.is_null() && fc.args != serde_json::json!({}) {
-                        let args_str = serde_json::to_string(&fc.args)
-                            .map_err(|e| ConvertError::Json(e))?;
+                        let args_str =
+                            serde_json::to_string(&fc.args).map_err(ConvertError::Json)?;
                         events.push(CanonicalStreamEvent::ToolCallDelta {
                             index,
                             arguments_delta: args_str,
@@ -91,58 +91,51 @@ impl StreamAdapter for GeminiStreamAdapter {
                 Ok(vec![])
             }
             CanonicalStreamEvent::TextDelta(text) => {
-                let chunk = make_stream_response(
-                    state,
-                    vec![GeminiPart {
-                        text: Some(text.clone()),
-                        inline_data: None,
-                        function_call: None,
-                        function_response: None,
-                    }],
-                    None,
-                    None,
-                )?;
+                let chunk =
+                    make_stream_response(state, vec![GeminiPart::text(text.clone())], None, None)?;
                 Ok(vec![format_sse_data(&chunk)])
             }
-            CanonicalStreamEvent::ToolCallStart { index: _, id, name } => {
+            CanonicalStreamEvent::ToolCallStart { index, id, name } => {
+                state.accumulated_tool_calls.push(AccumulatedToolCall {
+                    index: *index,
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: String::new(),
+                });
                 let chunk = make_stream_response(
                     state,
-                    vec![GeminiPart {
-                        text: None,
-                        inline_data: None,
-                        function_call: Some(GeminiFunctionCall {
-                            name: name.clone(),
-                            args: serde_json::json!({}),
-                            id: Some(id.clone()),
-                        }),
-                        function_response: None,
-                    }],
+                    vec![GeminiPart::function_call_with_id(
+                        name.clone(),
+                        serde_json::json!({}),
+                        id.clone(),
+                    )],
                     None,
                     None,
                 )?;
                 Ok(vec![format_sse_data(&chunk)])
             }
             CanonicalStreamEvent::ToolCallDelta {
-                index: _,
+                index,
                 arguments_delta,
             } => {
-                let args: serde_json::Value = if arguments_delta.is_empty() {
-                    serde_json::json!({})
-                } else {
-                    serde_json::from_str(arguments_delta)?
+                let entry = state
+                    .accumulated_tool_calls
+                    .iter_mut()
+                    .find(|tc| tc.index == *index);
+                let Some(entry) = entry else {
+                    return Ok(vec![]);
                 };
+                entry.arguments.push_str(arguments_delta);
+
+                let args = match serde_json::from_str::<serde_json::Value>(&entry.arguments) {
+                    Ok(v) => v,
+                    Err(_) => return Ok(vec![]),
+                };
+                let name = entry.name.clone();
+                let id = entry.id.clone();
                 let chunk = make_stream_response(
                     state,
-                    vec![GeminiPart {
-                        text: None,
-                        inline_data: None,
-                        function_call: Some(GeminiFunctionCall {
-                            name: String::new(),
-                            args,
-                            id: None,
-                        }),
-                        function_response: None,
-                    }],
+                    vec![GeminiPart::function_call_with_id(name, args, id)],
                     None,
                     None,
                 )?;
@@ -211,7 +204,11 @@ mod tests {
         let mut state = StreamState::new();
         let data = r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]},"index":0}],"modelVersion":"gemini-2.0-flash"}"#;
         let events = parse_data(data, &mut state);
-        assert!(events.iter().any(|e| matches!(e, CanonicalStreamEvent::Start { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, CanonicalStreamEvent::Start { .. }))
+        );
         assert!(events.iter().any(|e| matches!(
             e,
             CanonicalStreamEvent::TextDelta(t) if t == "Hello"
@@ -237,7 +234,10 @@ mod tests {
         let events = parse_data(data, &mut state);
         assert!(events.iter().any(|e| matches!(
             e,
-            CanonicalStreamEvent::Done { stop_reason: StopReason::EndTurn, .. }
+            CanonicalStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                ..
+            }
         )));
         assert!(state.done);
     }

@@ -1,0 +1,12 @@
+{
+  "model": "o1",
+  "messages": [
+    {"role": "user", "content": "hello"},
+    {
+      "role": "assistant",
+      "content": "hi there",
+      "reasoning_content": "The user greeted me, I should respond politely."
+    },
+    {"role": "user", "content": "continue our conversation"}
+  ]
+}

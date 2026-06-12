@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConvertError;
-use crate::formats::{FormatAdapter, StreamAdapter};
-use crate::ir::{CanonicalRequest, CanonicalResponse, CanonicalStreamEvent, StreamState};
+use crate::ir::StreamState;
 use crate::sse::SseEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -27,7 +26,18 @@ impl Format {
         }
     }
 
-    pub fn from_str(s: &str) -> Result<Self, ConvertError> {
+    /// Parse a format from a string with alias support.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use any_converter_core::convert::Format;
+    ///
+    /// assert_eq!(Format::parse("openai")?, Format::OpenAIChat);
+    /// assert_eq!(Format::parse("claude")?, Format::Claude);
+    /// # Ok::<(), any_converter_core::ConvertError>(())
+    /// ```
+    pub fn parse(s: &str) -> Result<Self, ConvertError> {
         match s {
             "openai_chat" | "openai" => Ok(Format::OpenAIChat),
             "claude" | "anthropic" => Ok(Format::Claude),
@@ -39,6 +49,13 @@ impl Format {
             }),
         }
     }
+
+    /// Deprecated: use `Format::parse` instead.
+    #[allow(clippy::should_implement_trait)]
+    #[deprecated(since = "0.1.6", note = "use Format::parse instead")]
+    pub fn from_str(s: &str) -> Result<Self, ConvertError> {
+        Self::parse(s)
+    }
 }
 
 impl std::fmt::Display for Format {
@@ -47,19 +64,75 @@ impl std::fmt::Display for Format {
     }
 }
 
-/// Convert a request JSON from one format to another via the canonical IR.
+/// Convert a request JSON from one format to another.
+///
+/// # Examples
+///
+/// ```
+/// use any_converter_core::convert::{Format, convert_request};
+///
+/// let input = r#"{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}"#;
+/// let output = convert_request(input.as_bytes(), Format::OpenAIChat, Format::Claude)?;
+/// let parsed: serde_json::Value = serde_json::from_slice(&output)?;
+/// assert!(parsed["messages"].is_array());
+/// # Ok::<(), any_converter_core::ConvertError>(())
+/// ```
 pub fn convert_request(input: &[u8], from: Format, to: Format) -> Result<Vec<u8>, ConvertError> {
-    let canonical = parse_request_to_canonical(input, from)?;
-    serialize_request_from_canonical(&canonical, to)
+    if from == to {
+        return Ok(input.to_vec());
+    }
+    match crate::converters::get_converter(from, to) {
+        Some(converter) => converter.convert_request(input),
+        None => Err(ConvertError::UnsupportedConversion {
+            from: from.to_string(),
+            to: to.to_string(),
+        }),
+    }
 }
 
-/// Convert a response JSON from one format to another via the canonical IR.
+/// Convert a response JSON from one format to another.
+///
+/// # Examples
+///
+/// ```
+/// use any_converter_core::convert::{Format, convert_response};
+///
+/// let input = r#"{"id":"chatcmpl-123","object":"chat.completion","created":0,"model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"Hi!"},"finish_reason":"stop"}]}"#;
+/// let output = convert_response(input.as_bytes(), Format::OpenAIChat, Format::Claude)?;
+/// let parsed: serde_json::Value = serde_json::from_slice(&output)?;
+/// assert!(parsed["content"].is_array());
+/// # Ok::<(), any_converter_core::ConvertError>(())
+/// ```
 pub fn convert_response(input: &[u8], from: Format, to: Format) -> Result<Vec<u8>, ConvertError> {
-    let canonical = parse_response_to_canonical(input, from)?;
-    serialize_response_from_canonical(&canonical, to)
+    if from == to {
+        return Ok(input.to_vec());
+    }
+    match crate::converters::get_converter(from, to) {
+        Some(converter) => converter.convert_response(input),
+        None => Err(ConvertError::UnsupportedConversion {
+            from: from.to_string(),
+            to: to.to_string(),
+        }),
+    }
 }
 
 /// Convert a single SSE event from one streaming format to another.
+///
+/// # Examples
+///
+/// ```
+/// use any_converter_core::convert::{Format, convert_stream_event};
+/// use any_converter_core::ir::StreamState;
+/// use any_converter_core::sse::parse_sse_block;
+///
+/// let block = r#"data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":0,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#;
+/// let event = parse_sse_block(block).unwrap();
+/// let mut state_in = StreamState::new();
+/// let mut state_out = StreamState::new();
+/// let lines = convert_stream_event(&event, Format::OpenAIChat, Format::Claude, &mut state_in, &mut state_out)?;
+/// assert!(!lines.is_empty());
+/// # Ok::<(), any_converter_core::ConvertError>(())
+/// ```
 pub fn convert_stream_event(
     event: &SseEvent,
     from: Format,
@@ -67,130 +140,20 @@ pub fn convert_stream_event(
     state_in: &mut StreamState,
     state_out: &mut StreamState,
 ) -> Result<Vec<String>, ConvertError> {
-    let canonical_events = parse_stream_event(event, from, state_in)?;
-    let mut output = Vec::new();
-    for ce in &canonical_events {
-        let lines = emit_stream_event(ce, to, state_out)?;
-        output.extend(lines);
+    if from == to {
+        let raw = if let Some(evt) = &event.event {
+            crate::sse::format_sse_event(evt, &event.data)
+        } else {
+            crate::sse::format_sse_data(&event.data)
+        };
+        return Ok(vec![raw]);
     }
-    Ok(output)
-}
-
-// --- Internal dispatch helpers ---
-
-fn parse_request_to_canonical(input: &[u8], format: Format) -> Result<CanonicalRequest, ConvertError> {
-    use crate::formats::{claude, gemini, openai_chat, openai_resp};
-    match format {
-        Format::OpenAIChat => {
-            let req = openai_chat::OpenAIChatAdapter::parse_request(input)?;
-            openai_chat::OpenAIChatAdapter::request_to_canonical(req)
-        }
-        Format::Claude => {
-            let req = claude::ClaudeAdapter::parse_request(input)?;
-            claude::ClaudeAdapter::request_to_canonical(req)
-        }
-        Format::OpenAIResponses => {
-            let req = openai_resp::OpenAIResponsesAdapter::parse_request(input)?;
-            openai_resp::OpenAIResponsesAdapter::request_to_canonical(req)
-        }
-        Format::Gemini => {
-            let req = gemini::GeminiAdapter::parse_request(input)?;
-            gemini::GeminiAdapter::request_to_canonical(req)
-        }
-    }
-}
-
-fn serialize_request_from_canonical(canonical: &CanonicalRequest, format: Format) -> Result<Vec<u8>, ConvertError> {
-    use crate::formats::{claude, gemini, openai_chat, openai_resp};
-    match format {
-        Format::OpenAIChat => {
-            let req = openai_chat::OpenAIChatAdapter::request_from_canonical(canonical)?;
-            Ok(serde_json::to_vec(&req)?)
-        }
-        Format::Claude => {
-            let req = claude::ClaudeAdapter::request_from_canonical(canonical)?;
-            Ok(serde_json::to_vec(&req)?)
-        }
-        Format::OpenAIResponses => {
-            let req = openai_resp::OpenAIResponsesAdapter::request_from_canonical(canonical)?;
-            Ok(serde_json::to_vec(&req)?)
-        }
-        Format::Gemini => {
-            let req = gemini::GeminiAdapter::request_from_canonical(canonical)?;
-            Ok(serde_json::to_vec(&req)?)
-        }
-    }
-}
-
-fn parse_response_to_canonical(input: &[u8], format: Format) -> Result<CanonicalResponse, ConvertError> {
-    use crate::formats::{claude, gemini, openai_chat, openai_resp};
-    match format {
-        Format::OpenAIChat => {
-            let resp = openai_chat::OpenAIChatAdapter::parse_response(input)?;
-            openai_chat::OpenAIChatAdapter::response_to_canonical(resp)
-        }
-        Format::Claude => {
-            let resp = claude::ClaudeAdapter::parse_response(input)?;
-            claude::ClaudeAdapter::response_to_canonical(resp)
-        }
-        Format::OpenAIResponses => {
-            let resp = openai_resp::OpenAIResponsesAdapter::parse_response(input)?;
-            openai_resp::OpenAIResponsesAdapter::response_to_canonical(resp)
-        }
-        Format::Gemini => {
-            let resp = gemini::GeminiAdapter::parse_response(input)?;
-            gemini::GeminiAdapter::response_to_canonical(resp)
-        }
-    }
-}
-
-fn serialize_response_from_canonical(canonical: &CanonicalResponse, format: Format) -> Result<Vec<u8>, ConvertError> {
-    use crate::formats::{claude, gemini, openai_chat, openai_resp};
-    match format {
-        Format::OpenAIChat => {
-            let resp = openai_chat::OpenAIChatAdapter::response_from_canonical(canonical)?;
-            Ok(serde_json::to_vec(&resp)?)
-        }
-        Format::Claude => {
-            let resp = claude::ClaudeAdapter::response_from_canonical(canonical)?;
-            Ok(serde_json::to_vec(&resp)?)
-        }
-        Format::OpenAIResponses => {
-            let resp = openai_resp::OpenAIResponsesAdapter::response_from_canonical(canonical)?;
-            Ok(serde_json::to_vec(&resp)?)
-        }
-        Format::Gemini => {
-            let resp = gemini::GeminiAdapter::response_from_canonical(canonical)?;
-            Ok(serde_json::to_vec(&resp)?)
-        }
-    }
-}
-
-fn parse_stream_event(
-    event: &SseEvent,
-    format: Format,
-    state: &mut StreamState,
-) -> Result<Vec<CanonicalStreamEvent>, ConvertError> {
-    use crate::formats::{claude, gemini, openai_chat, openai_resp};
-    match format {
-        Format::OpenAIChat => openai_chat::OpenAIChatStreamAdapter::parse_sse_event(event, state),
-        Format::Claude => claude::ClaudeStreamAdapter::parse_sse_event(event, state),
-        Format::OpenAIResponses => openai_resp::OpenAIResponsesStreamAdapter::parse_sse_event(event, state),
-        Format::Gemini => gemini::GeminiStreamAdapter::parse_sse_event(event, state),
-    }
-}
-
-fn emit_stream_event(
-    event: &CanonicalStreamEvent,
-    format: Format,
-    state: &mut StreamState,
-) -> Result<Vec<String>, ConvertError> {
-    use crate::formats::{claude, gemini, openai_chat, openai_resp};
-    match format {
-        Format::OpenAIChat => openai_chat::OpenAIChatStreamAdapter::emit_sse_event(event, state),
-        Format::Claude => claude::ClaudeStreamAdapter::emit_sse_event(event, state),
-        Format::OpenAIResponses => openai_resp::OpenAIResponsesStreamAdapter::emit_sse_event(event, state),
-        Format::Gemini => gemini::GeminiStreamAdapter::emit_sse_event(event, state),
+    match crate::converters::get_converter(from, to) {
+        Some(converter) => converter.convert_stream_event(event, state_in, state_out),
+        None => Err(ConvertError::UnsupportedConversion {
+            from: from.to_string(),
+            to: to.to_string(),
+        }),
     }
 }
 
@@ -201,15 +164,18 @@ mod tests {
 
     #[test]
     fn test_format_from_str() {
-        assert_eq!(Format::from_str("openai_chat").unwrap(), Format::OpenAIChat);
-        assert_eq!(Format::from_str("openai").unwrap(), Format::OpenAIChat);
-        assert_eq!(Format::from_str("claude").unwrap(), Format::Claude);
-        assert_eq!(Format::from_str("anthropic").unwrap(), Format::Claude);
-        assert_eq!(Format::from_str("openai_responses").unwrap(), Format::OpenAIResponses);
-        assert_eq!(Format::from_str("responses").unwrap(), Format::OpenAIResponses);
-        assert_eq!(Format::from_str("gemini").unwrap(), Format::Gemini);
-        assert_eq!(Format::from_str("google").unwrap(), Format::Gemini);
-        assert!(Format::from_str("unknown").is_err());
+        assert_eq!(Format::parse("openai_chat").unwrap(), Format::OpenAIChat);
+        assert_eq!(Format::parse("openai").unwrap(), Format::OpenAIChat);
+        assert_eq!(Format::parse("claude").unwrap(), Format::Claude);
+        assert_eq!(Format::parse("anthropic").unwrap(), Format::Claude);
+        assert_eq!(
+            Format::parse("openai_responses").unwrap(),
+            Format::OpenAIResponses
+        );
+        assert_eq!(Format::parse("responses").unwrap(), Format::OpenAIResponses);
+        assert_eq!(Format::parse("gemini").unwrap(), Format::Gemini);
+        assert_eq!(Format::parse("google").unwrap(), Format::Gemini);
+        assert!(Format::parse("unknown").is_err());
     }
 
     #[test]
@@ -259,7 +225,8 @@ mod tests {
                 Format::OpenAIResponses,
                 &mut state_in,
                 &mut state_out,
-            ).unwrap();
+            )
+            .unwrap();
             all_output.extend(lines);
         }
 
@@ -267,27 +234,46 @@ mod tests {
         let has_fc_item_done = all_output.iter().any(|line| {
             line.contains("response.output_item.done") && line.contains("function_call")
         });
-        assert!(has_fc_item_done, "Missing response.output_item.done for function_call.\nAll output:\n{}", all_output.join("\n"));
+        assert!(
+            has_fc_item_done,
+            "Missing response.output_item.done for function_call.\nAll output:\n{}",
+            all_output.join("\n")
+        );
 
         // Must have response.function_call_arguments.done
-        let has_args_done = all_output.iter().any(|line| {
-            line.contains("response.function_call_arguments.done")
-        });
-        assert!(has_args_done, "Missing response.function_call_arguments.done");
+        let has_args_done = all_output
+            .iter()
+            .any(|line| line.contains("response.function_call_arguments.done"));
+        assert!(
+            has_args_done,
+            "Missing response.function_call_arguments.done"
+        );
 
         // Must have response.completed with function_call in output
-        let has_completed_fc = all_output.iter().any(|line| {
-            line.contains("response.completed") && line.contains("function_call")
-        });
-        assert!(has_completed_fc, "response.completed missing function_call in output");
+        let has_completed_fc = all_output
+            .iter()
+            .any(|line| line.contains("response.completed") && line.contains("function_call"));
+        assert!(
+            has_completed_fc,
+            "response.completed missing function_call in output"
+        );
 
         // Verify the function_call has correct data
-        let fc_done_line = all_output.iter().find(|line| {
-            line.contains("response.output_item.done") && line.contains("function_call")
-        }).unwrap();
-        assert!(fc_done_line.contains("call_xyz"), "function_call missing call_id");
+        let fc_done_line = all_output
+            .iter()
+            .find(|line| {
+                line.contains("response.output_item.done") && line.contains("function_call")
+            })
+            .unwrap();
+        assert!(
+            fc_done_line.contains("call_xyz"),
+            "function_call missing call_id"
+        );
         assert!(fc_done_line.contains("shell"), "function_call missing name");
-        assert!(fc_done_line.contains("cmd") && fc_done_line.contains("ls"), "function_call missing arguments");
+        assert!(
+            fc_done_line.contains("cmd") && fc_done_line.contains("ls"),
+            "function_call missing arguments"
+        );
     }
 
     /// Integration test: Claude streaming tool_use → OpenAI Responses format
@@ -318,7 +304,8 @@ mod tests {
                 Format::OpenAIResponses,
                 &mut state_in,
                 &mut state_out,
-            ).unwrap();
+            )
+            .unwrap();
             all_output.extend(lines);
         }
 
@@ -326,14 +313,30 @@ mod tests {
         let has_fc_item_done = all_output.iter().any(|line| {
             line.contains("response.output_item.done") && line.contains("function_call")
         });
-        assert!(has_fc_item_done, "Missing response.output_item.done for function_call.\nAll output:\n{}", all_output.join("\n"));
+        assert!(
+            has_fc_item_done,
+            "Missing response.output_item.done for function_call.\nAll output:\n{}",
+            all_output.join("\n")
+        );
 
         // Verify function_call data
-        let fc_done_line = all_output.iter().find(|line| {
-            line.contains("response.output_item.done") && line.contains("function_call")
-        }).unwrap();
-        assert!(fc_done_line.contains("toolu_01"), "function_call missing call_id");
-        assert!(fc_done_line.contains("read_file"), "function_call missing name");
-        assert!(fc_done_line.contains("path") && fc_done_line.contains("src/main.rs"), "function_call missing arguments");
+        let fc_done_line = all_output
+            .iter()
+            .find(|line| {
+                line.contains("response.output_item.done") && line.contains("function_call")
+            })
+            .unwrap();
+        assert!(
+            fc_done_line.contains("toolu_01"),
+            "function_call missing call_id"
+        );
+        assert!(
+            fc_done_line.contains("read_file"),
+            "function_call missing name"
+        );
+        assert!(
+            fc_done_line.contains("path") && fc_done_line.contains("src/main.rs"),
+            "function_call missing arguments"
+        );
     }
 }

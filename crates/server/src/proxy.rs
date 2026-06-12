@@ -1,13 +1,13 @@
-use any_converter_core::convert::{convert_stream_event, Format};
+use any_converter_core::convert::{Format, convert_stream_event};
 use any_converter_core::ir::StreamState;
-use any_converter_core::sse::{is_openai_done, parse_sse_block};
+use any_converter_core::sse::{format_sse_event, is_openai_done, parse_sse_block};
 use axum::body::Body;
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
+use log::{debug, error, info, warn};
 use reqwest::Client;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, info, warn};
 
 /// Build the upstream URL for a provider request.
 pub fn build_upstream_url(format: Format, base_url: &str, model: &str, streaming: bool) -> String {
@@ -39,13 +39,13 @@ pub async fn forward_non_streaming(
         req = req.header(key.as_str(), value.as_str());
     }
 
-    info!(url = url, "sending non-streaming request to upstream");
+    info!("sending non-streaming request to upstream url={url}");
     let response = req
         .send()
         .await
         .map_err(|e| format!("upstream request failed: {e}"))?;
     let status = response.status();
-    info!(url = url, status = %status, "upstream response received");
+    info!("upstream response received url={url} status={status}");
     let bytes = response
         .bytes()
         .await
@@ -73,13 +73,13 @@ pub async fn forward_streaming(
         req = req.header(key.as_str(), value.as_str());
     }
 
-    info!(url = url, "sending streaming request to upstream");
+    info!("sending streaming request to upstream url={url}");
     let upstream = req
         .send()
         .await
         .map_err(|e| format!("upstream request failed: {e}"))?;
     let status = upstream.status();
-    info!(url = url, status = %status, "upstream streaming response received");
+    info!("upstream streaming response received url={url} status={status}");
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(64);
 
@@ -99,7 +99,10 @@ pub async fn forward_streaming(
                     chunk_count += 1;
                     let chunk_str = String::from_utf8_lossy(&chunk);
                     if chunk_count <= 3 {
-                        debug!(chunk_count, chunk_len = chunk_str.len(), "upstream chunk");
+                        debug!(
+                            "upstream chunk chunk_count={chunk_count} chunk_len={}",
+                            chunk_str.len()
+                        );
                     }
                     buffer.push_str(&chunk_str);
                     for block in take_complete_sse_blocks(&mut buffer) {
@@ -112,14 +115,23 @@ pub async fn forward_streaming(
                             &mut state_out,
                         );
                         if event_count <= 5 {
-                            let block_preview = if block.len() > 200 { &block[..200] } else { &block };
-                            info!(event_count, converted_count = lines.len(), block_preview, "SSE block converted");
+                            let block_preview = if block.len() > 200 {
+                                &block[..200]
+                            } else {
+                                &block
+                            };
+                            info!(
+                                "SSE block converted event_count={event_count} converted_count={} block_preview={block_preview}",
+                                lines.len()
+                            );
                         }
                         for line in lines {
                             let line = patch_sse_namespaces(&line, &ns_map_owned);
                             emitted_count += 1;
                             if tx.send(Ok(line)).await.is_err() {
-                                warn!(emitted_count, "client disconnected during streaming");
+                                warn!(
+                                    "client disconnected during streaming emitted_count={emitted_count}"
+                                );
                                 return;
                             }
                         }
@@ -132,8 +144,15 @@ pub async fn forward_streaming(
         }
 
         if !buffer.trim().is_empty() {
-            let preview = if buffer.len() > 200 { &buffer[..200] } else { &buffer };
-            info!(remaining_buffer_len = buffer.len(), preview, "processing remaining buffer");
+            let preview = if buffer.len() > 200 {
+                &buffer[..200]
+            } else {
+                &buffer
+            };
+            info!(
+                "processing remaining buffer remaining_buffer_len={} preview={preview}",
+                buffer.len()
+            );
             for line in convert_sse_block(
                 buffer.trim(),
                 from_format,
@@ -146,7 +165,9 @@ pub async fn forward_streaming(
                 emitted_count += 1;
             }
         }
-        info!(chunk_count, event_count, emitted_count, "streaming completed");
+        info!(
+            "streaming completed chunk_count={chunk_count} event_count={event_count} emitted_count={emitted_count}"
+        );
     });
 
     Ok(Response::builder()
@@ -168,7 +189,11 @@ fn patch_sse_namespaces(
         return line.to_string();
     }
     let Some(data_start) = line.find("\ndata: ").or_else(|| {
-        if line.starts_with("data: ") { Some(0) } else { None }
+        if line.starts_with("data: ") {
+            Some(0)
+        } else {
+            None
+        }
     }) else {
         return line.to_string();
     };
@@ -272,11 +297,17 @@ fn convert_sse_block(
         Ok(Ok(lines)) => lines,
         Ok(Err(err)) => {
             error!("stream conversion error: {err}");
-            Vec::new()
+            vec![format_sse_event(
+                "error",
+                &serde_json::json!({"error": err.to_string()}).to_string(),
+            )]
         }
         Err(_) => {
             error!("stream conversion panicked (likely unimplemented adapter)");
-            Vec::new()
+            vec![format_sse_event(
+                "error",
+                &serde_json::json!({"error": "stream conversion panicked"}).to_string(),
+            )]
         }
     }
 }

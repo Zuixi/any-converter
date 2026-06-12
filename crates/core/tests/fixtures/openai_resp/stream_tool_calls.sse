@@ -1,0 +1,15 @@
+data: {"type":"response.created","response":{"id":"resp_02","object":"response","created_at":1700000000,"model":"gpt-4.1","status":"in_progress","output":[]}}
+
+data: {"type":"response.in_progress","response":{"id":"resp_02","object":"response","created_at":1700000000,"model":"gpt-4.1","status":"in_progress","output":[]}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_xyz","name":"get_weather","arguments":""}}
+
+data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"location\":"}
+
+data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"Tokyo\"}"}
+
+data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"location\":\"Tokyo\"}"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"call_xyz","name":"get_weather","arguments":"{\"location\":\"Tokyo\"}"}}
+
+data: {"type":"response.completed","response":{"id":"resp_02","object":"response","created_at":1700000000,"model":"gpt-4.1","status":"completed","output":[{"type":"function_call","call_id":"call_xyz","name":"get_weather","arguments":"{\"location\":\"Tokyo\"}"}],"usage":{"input_tokens":20,"output_tokens":10,"total_tokens":30}}}

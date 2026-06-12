@@ -1,6 +1,12 @@
 // Wire types for OpenAI Responses API (POST /v1/responses)
 use serde::{Deserialize, Serialize};
 
+/// Request body for POST /v1/responses.
+///
+/// Only fields relevant to conversion are kept as typed fields. All other
+/// client-supplied fields (e.g. `truncation`, `service_tier`,
+/// `parallel_tool_calls`) are captured by the `extra` catch-all so they
+/// round-trip without causing deserialization errors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesRequest {
     pub model: String,
@@ -28,8 +34,11 @@ pub struct OpenAIResponsesRequest {
     pub previous_response_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Response body from POST /v1/responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIResponsesResponse {
     pub id: String,
@@ -37,15 +46,18 @@ pub struct OpenAIResponsesResponse {
     pub created_at: u64,
     pub model: String,
     pub status: String,
+    #[serde(default)]
     pub output: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ResponsesUsage>,
 }
 
+/// Token usage breakdown. Uses u64 to safely accommodate large token counts
+/// returned by the API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponsesUsage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_tokens: Option<u32>,
+    pub total_tokens: Option<u64>,
 }

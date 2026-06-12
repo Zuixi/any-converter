@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeminiRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub contents: Vec<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_instruction: Option<GeminiContent>,
@@ -33,6 +35,89 @@ pub struct GeminiPart {
     pub function_call: Option<GeminiFunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function_response: Option<GeminiFunctionResponse>,
+}
+
+impl GeminiPart {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: Some(text.into()),
+            inline_data: None,
+            function_call: None,
+            function_response: None,
+        }
+    }
+
+    pub fn inline_data(mime_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self {
+            text: None,
+            inline_data: Some(GeminiInlineData {
+                mime_type: mime_type.into(),
+                data: data.into(),
+            }),
+            function_call: None,
+            function_response: None,
+        }
+    }
+
+    pub fn function_call(name: impl Into<String>, args: serde_json::Value) -> Self {
+        Self {
+            text: None,
+            inline_data: None,
+            function_call: Some(GeminiFunctionCall {
+                name: name.into(),
+                args,
+                id: None,
+            }),
+            function_response: None,
+        }
+    }
+
+    pub fn function_call_with_id(
+        name: impl Into<String>,
+        args: serde_json::Value,
+        id: impl Into<String>,
+    ) -> Self {
+        Self {
+            text: None,
+            inline_data: None,
+            function_call: Some(GeminiFunctionCall {
+                name: name.into(),
+                args,
+                id: Some(id.into()),
+            }),
+            function_response: None,
+        }
+    }
+
+    pub fn function_response(name: impl Into<String>, response: serde_json::Value) -> Self {
+        Self {
+            text: None,
+            inline_data: None,
+            function_call: None,
+            function_response: Some(GeminiFunctionResponse {
+                name: name.into(),
+                response,
+                id: None,
+            }),
+        }
+    }
+
+    pub fn function_response_with_id(
+        name: impl Into<String>,
+        response: serde_json::Value,
+        id: impl Into<String>,
+    ) -> Self {
+        Self {
+            text: None,
+            inline_data: None,
+            function_call: None,
+            function_response: Some(GeminiFunctionResponse {
+                name: name.into(),
+                response,
+                id: Some(id.into()),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,9 +205,9 @@ pub struct GeminiCandidate {
 #[serde(rename_all = "camelCase")]
 pub struct GeminiUsageMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_token_count: Option<u32>,
+    pub prompt_token_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub candidates_token_count: Option<u32>,
+    pub candidates_token_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_token_count: Option<u32>,
+    pub total_token_count: Option<u64>,
 }

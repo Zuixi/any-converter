@@ -1,0 +1,12 @@
+{
+  "model": "gpt-4.1",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "Hello, how are you?"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "model": "gpt-4.1",
+  "messages": [
+    {"role": "user", "content": "What is 2+2?"},
+    {"role": "assistant", "content": "2+2 equals 4."},
+    {"role": "user", "content": "And 3+3?"}
+  ]
+}

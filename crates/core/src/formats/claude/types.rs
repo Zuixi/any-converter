@@ -26,6 +26,14 @@ pub struct ClaudeRequest {
     pub tool_choice: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingConfig {
+    pub r#type: String,
+    pub budget_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,12 +83,12 @@ pub enum ClaudeContentBlock {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeUsage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_creation_input_tokens: Option<u32>,
+    pub cache_creation_input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_read_input_tokens: Option<u32>,
+    pub cache_read_input_tokens: Option<u64>,
 }
 
 // --- Stream event wire types ---
@@ -107,9 +115,9 @@ pub struct ClaudeStreamMessage {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ClaudeStreamUsage {
     #[serde(default)]
-    pub input_tokens: u32,
+    pub input_tokens: u64,
     #[serde(default)]
-    pub output_tokens: u32,
+    pub output_tokens: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

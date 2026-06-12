@@ -1,0 +1,16 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 4096,
+  "messages": [
+    {"role": "user", "content": "hello"},
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "thinking", "thinking": "The user greeted me, I should respond politely."},
+        {"type": "text", "text": "hi there"}
+      ]
+    },
+    {"role": "user", "content": "continue our conversation"}
+  ],
+  "thinking": {"type": "enabled", "budget_tokens": 4096}
+}

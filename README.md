@@ -11,6 +11,16 @@ A Rust-based LLM API format conversion tool that supports bidirectional conversi
 | OpenAI Responses | `/v1/responses` | OpenAI |
 | Google Gemini | `/v1beta/models/{model}:generateContent` | Google AI Studio |
 
+## Documentation Map
+
+New here? Follow the path:
+1. **Quick start** → [Build Guide](docs/build.md)
+2. **Understand the system** → [Onboarding](docs/onboarding.md) → [Architecture](docs/architecture.md)
+3. **Work on a component** → Read the crate's `AGENTS.md`
+4. **Avoid pitfalls** → [Known Gotchas](docs/memory/known-gotchas.md)
+
+Coding agent? Start at [`AGENTS.md`](./AGENTS.md).
+
 ## Installation
 
 ```bash
@@ -87,17 +97,16 @@ provider = "openai"
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│ Client      │     │ Canonical IR │     │ Target      │
-│ Format JSON │ ──▶ │ (typed Rust  │ ──▶ │ Format JSON │
-│             │     │  structs)    │     │             │
-└─────────────┘     └──────────────┘     └─────────────┘
+┌─────────────┐     ┌────────────────────┐     ┌─────────────┐
+│ Client      │     │ Pairwise Converter │     │ Target      │
+│ Format JSON │ ──▶ │ (direct mapping)   │ ──▶ │ Format JSON │
+└─────────────┘     └────────────────────┘     └─────────────┘
 ```
 
-The core uses a **typed Intermediate Representation (IR)** — every conversion goes through `CanonicalRequest`/`CanonicalResponse`, ensuring:
-- N formats need only 2N adapters (not N²)
-- All edge cases are tested centrally
-- Adding a new format = implementing one adapter
+The core uses **pairwise converters** — each (source, target) format pair has a dedicated converter that translates directly, ensuring:
+- No data loss from intermediate normalization
+- Each converter optimized for its specific pair
+- Streaming uses lightweight canonical events as intermediate
 
 ## Development
 

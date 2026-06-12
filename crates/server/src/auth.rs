@@ -20,7 +20,10 @@ impl std::error::Error for AuthError {}
 /// Validate the client API key from the Authorization header.
 ///
 /// Skips validation when no client API key is configured.
-pub fn validate_client_key(client_api_key: Option<&str>, auth_header: Option<&str>) -> Result<(), AuthError> {
+pub fn validate_client_key(
+    client_api_key: Option<&str>,
+    auth_header: Option<&str>,
+) -> Result<(), AuthError> {
     match client_api_key {
         None => Ok(()),
         Some(expected) => {
@@ -40,17 +43,11 @@ pub fn validate_client_key(client_api_key: Option<&str>, auth_header: Option<&st
 pub fn build_upstream_auth_headers(format: Format, api_key: &str) -> Vec<(String, String)> {
     match format {
         Format::OpenAIChat | Format::OpenAIResponses => {
-            vec![(
-                "Authorization".to_string(),
-                format!("Bearer {api_key}"),
-            )]
+            vec![("Authorization".to_string(), format!("Bearer {api_key}"))]
         }
         Format::Claude => vec![
             ("x-api-key".to_string(), api_key.to_string()),
-            (
-                "anthropic-version".to_string(),
-                "2023-06-01".to_string(),
-            ),
+            ("anthropic-version".to_string(), "2023-06-01".to_string()),
         ],
         Format::Gemini => vec![("x-goog-api-key".to_string(), api_key.to_string())],
     }
