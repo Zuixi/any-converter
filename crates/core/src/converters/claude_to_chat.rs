@@ -1,6 +1,7 @@
 use crate::converters::FormatConverter;
+use crate::converters::reasoning;
 use crate::converters::shared::{
-    image_block_to_url, now_unix_secs, parse_content_value, tool_result_text,
+    image_block_to_url, normalize_id_to_chat, now_unix_secs, parse_content_value, tool_result_text,
 };
 use crate::error::ConvertError;
 use crate::formats::claude::*;
@@ -44,6 +45,11 @@ impl FormatConverter for Converter {
             Some(vec) => Some(StopValue::Multiple(vec.clone())),
         };
 
+        let reasoning_effort = req
+            .thinking
+            .as_ref()
+            .and_then(reasoning::thinking_to_reasoning_effort);
+
         let out = OpenAIChatRequest {
             model: req.model,
             messages,
@@ -59,6 +65,8 @@ impl FormatConverter for Converter {
             tool_choice,
             response_format: None,
             n: None,
+            reasoning_effort,
+            reasoning: None,
         };
 
         Ok(serde_json::to_vec(&out)?)
@@ -96,13 +104,7 @@ impl FormatConverter for Converter {
             Some(text_parts.join(""))
         };
 
-        let id = if resp.id.is_empty() {
-            crate::converters::shared::new_chat_id()
-        } else if resp.id.starts_with("chatcmpl-") {
-            resp.id.clone()
-        } else {
-            format!("chatcmpl-{}", resp.id)
-        };
+        let id = normalize_id_to_chat(&resp.id);
 
         let finish_reason = match resp.stop_reason.as_deref() {
             Some("end_turn") | Some("stop_sequence") => "stop",
@@ -137,6 +139,7 @@ impl FormatConverter for Converter {
                 prompt_tokens: resp.usage.input_tokens,
                 completion_tokens: resp.usage.output_tokens,
                 total_tokens,
+                prompt_tokens_details: None,
             }),
             system_fingerprint: None,
         };
@@ -183,7 +186,7 @@ fn system_to_messages(
                 .iter()
                 .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
-                .join("");
+                .join("\n\n");
             if text.is_empty() {
                 Ok(vec![])
             } else {
@@ -468,6 +471,71 @@ mod tests {
             &req.messages[0].content,
             Some(MessageContent::Text(text)) if text == "hello"
         ));
+    }
+
+    #[test]
+    fn test_convert_request_system_array_joined_with_blank_lines() {
+        let input = serde_json::to_vec(&serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4096,
+            "system": [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"}
+            ],
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_request(&input).unwrap();
+        let req: OpenAIChatRequest = serde_json::from_slice(&result).unwrap();
+
+        let system_msg = req
+            .messages
+            .iter()
+            .find(|m| m.role == "system")
+            .expect("system message expected");
+        assert_eq!(
+            system_msg.content.as_ref().and_then(|c| match c {
+                MessageContent::Text(t) => Some(t.as_str()),
+                _ => None,
+            }),
+            Some("first\n\nsecond")
+        );
+    }
+
+    #[test]
+    fn test_convert_response_id_normalizes_to_chat() {
+        let input = serde_json::to_vec(&serde_json::json!({
+            "id": "msg_abc",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-20250514",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_response(&input).unwrap();
+        let resp: OpenAIChatResponse = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(resp.id, "chatcmpl-abc");
+    }
+
+    #[test]
+    fn test_convert_request_thinking_maps_to_reasoning_effort() {
+        let input = serde_json::to_vec(&serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "enabled", "budget_tokens": 8192}
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_request(&input).unwrap();
+        let req: OpenAIChatRequest = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(req.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]

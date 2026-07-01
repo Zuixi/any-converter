@@ -215,6 +215,135 @@ pub fn parse_data_url(url: &str) -> Option<(String, String)> {
     Some((mime.to_string(), data.to_string()))
 }
 
+pub fn image_url_to_claude_source(url: &str) -> serde_json::Value {
+    if let Some((media_type, data)) = parse_data_url(url) {
+        serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            }
+        })
+    } else {
+        serde_json::json!({
+            "type": "image",
+            "source": { "type": "url", "url": url }
+        })
+    }
+}
+
+#[cfg(test)]
+mod image_url_to_claude_source_tests {
+    use super::*;
+
+    #[test]
+    fn test_http_url_emits_url_source() {
+        let source = image_url_to_claude_source("https://example.com/image.png");
+        let obj = source.as_object().unwrap();
+        assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("image"));
+        let source_obj = obj.get("source").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(source_obj.get("type").and_then(|v| v.as_str()), Some("url"));
+        assert_eq!(
+            source_obj.get("url").and_then(|v| v.as_str()),
+            Some("https://example.com/image.png")
+        );
+    }
+
+    #[test]
+    fn test_data_url_emits_base64_source() {
+        let source = image_url_to_claude_source("data:image/png;base64,abc123");
+        let obj = source.as_object().unwrap();
+        let source_obj = obj.get("source").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            source_obj.get("type").and_then(|v| v.as_str()),
+            Some("base64")
+        );
+        assert_eq!(
+            source_obj.get("media_type").and_then(|v| v.as_str()),
+            Some("image/png")
+        );
+        assert_eq!(
+            source_obj.get("data").and_then(|v| v.as_str()),
+            Some("abc123")
+        );
+    }
+}
+
+pub fn normalize_id_to_chat(id: &str) -> String {
+    if id.is_empty() {
+        return new_chat_id();
+    }
+    if id.starts_with("chatcmpl-") {
+        return id.to_string();
+    }
+    let body = id
+        .strip_prefix("msg_")
+        .or_else(|| id.strip_prefix("resp_"))
+        .unwrap_or(id);
+    format!("chatcmpl-{body}")
+}
+
+pub fn normalize_id_to_claude(id: &str) -> String {
+    if id.is_empty() {
+        return new_msg_id();
+    }
+    if id.starts_with("msg_") {
+        return id.to_string();
+    }
+    let body = id
+        .strip_prefix("chatcmpl-")
+        .or_else(|| id.strip_prefix("resp_"))
+        .unwrap_or(id);
+    format!("msg_{body}")
+}
+
+pub fn normalize_id_to_resp(id: &str) -> String {
+    if id.is_empty() {
+        return new_resp_id();
+    }
+    if id.starts_with("resp_") {
+        return id.to_string();
+    }
+    let body = id
+        .strip_prefix("chatcmpl-")
+        .or_else(|| id.strip_prefix("msg_"))
+        .unwrap_or(id);
+    format!("resp_{body}")
+}
+
+#[cfg(test)]
+mod normalize_id_tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_id_to_chat() {
+        assert!(normalize_id_to_chat("").starts_with("chatcmpl-"));
+        assert_eq!(normalize_id_to_chat("chatcmpl-abc"), "chatcmpl-abc");
+        assert_eq!(normalize_id_to_chat("msg_abc"), "chatcmpl-abc");
+        assert_eq!(normalize_id_to_chat("resp_abc"), "chatcmpl-abc");
+        assert_eq!(normalize_id_to_chat("plain"), "chatcmpl-plain");
+    }
+
+    #[test]
+    fn test_normalize_id_to_claude() {
+        assert!(normalize_id_to_claude("").starts_with("msg_"));
+        assert_eq!(normalize_id_to_claude("msg_abc"), "msg_abc");
+        assert_eq!(normalize_id_to_claude("chatcmpl-abc"), "msg_abc");
+        assert_eq!(normalize_id_to_claude("resp_abc"), "msg_abc");
+        assert_eq!(normalize_id_to_claude("plain"), "msg_plain");
+    }
+
+    #[test]
+    fn test_normalize_id_to_resp() {
+        assert!(normalize_id_to_resp("").starts_with("resp_"));
+        assert_eq!(normalize_id_to_resp("resp_abc"), "resp_abc");
+        assert_eq!(normalize_id_to_resp("chatcmpl-abc"), "resp_abc");
+        assert_eq!(normalize_id_to_resp("msg_abc"), "resp_abc");
+        assert_eq!(normalize_id_to_resp("plain"), "resp_plain");
+    }
+}
+
 pub fn extract_function_response_text(response: &serde_json::Value) -> String {
     if let Some(text) = response.as_str() {
         return text.to_string();

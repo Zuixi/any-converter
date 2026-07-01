@@ -80,6 +80,8 @@ impl FormatConverter for Converter {
             tool_choice,
             response_format: None,
             n: None,
+            reasoning_effort: None,
+            reasoning: None,
         };
 
         Ok(serde_json::to_vec(&out)?)
@@ -162,6 +164,7 @@ impl FormatConverter for Converter {
                 total_tokens: usage_meta
                     .total_token_count
                     .unwrap_or(prompt_tokens + completion_tokens),
+                prompt_tokens_details: None,
             }),
             system_fingerprint: None,
         };

@@ -104,6 +104,7 @@ impl FormatConverter for Converter {
                         .total_token_count
                         .unwrap_or(input_tokens + output_tokens),
                 ),
+                input_tokens_details: None,
             }),
         };
 

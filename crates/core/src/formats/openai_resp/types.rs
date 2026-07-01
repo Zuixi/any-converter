@@ -60,4 +60,12 @@ pub struct ResponsesUsage {
     pub output_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens_details: Option<InputTokensDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputTokensDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
 }

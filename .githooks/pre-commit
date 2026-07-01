@@ -1,0 +1,14 @@
+#!/bin/bash
+# Shared pre-commit hook: format check, clippy, tests.
+set -euo pipefail
+
+echo "[pre-commit] Running format check..."
+cargo fmt --all -- --check
+
+echo "[pre-commit] Running clippy..."
+cargo clippy --workspace --lib --all-features -- -D warnings
+
+echo "[pre-commit] Running tests..."
+cargo test --workspace
+
+echo "[pre-commit] All checks passed."

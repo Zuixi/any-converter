@@ -1,0 +1,1 @@
+claude markdown guides refer to [this file](https://code.claude.com/docs/zh-CN/large-codebases)

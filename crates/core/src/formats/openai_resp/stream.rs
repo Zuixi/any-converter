@@ -66,6 +66,25 @@ fn parse_sse_event_impl(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            if let Some(usage) = response.get("usage") {
+                let input_tokens = usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let cache_read = usage
+                    .get("input_tokens_details")
+                    .and_then(|v| v.get("cached_tokens"))
+                    .and_then(|v| v.as_u64());
+                state.accumulated_usage = Some(Usage {
+                    input_tokens,
+                    output_tokens: usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0),
+                    cache_read_tokens: cache_read,
+                    ..Default::default()
+                });
+            }
             state.response_id = Some(id.clone());
             state.model = Some(model.clone());
             state.phase = StreamPhase::Content;
@@ -127,10 +146,18 @@ fn parse_sse_event_impl(
                 .and_then(|v| v.as_str())
                 .unwrap_or("completed");
             let stop_reason = status_to_stop_reason(status);
-            let usage = response.get("usage").map(|u| Usage {
-                input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                ..Default::default()
+            let usage = response.get("usage").map(|u| {
+                let input_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                let cache_read = u
+                    .get("input_tokens_details")
+                    .and_then(|v| v.get("cached_tokens"))
+                    .and_then(|v| v.as_u64());
+                Usage {
+                    input_tokens,
+                    output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                    cache_read_tokens: cache_read,
+                    ..Default::default()
+                }
             });
             state.done = true;
             state.phase = StreamPhase::Done;
@@ -147,7 +174,8 @@ fn emit_sse_event_impl(
 ) -> Result<Vec<String>, ConvertError> {
     match event {
         CanonicalStreamEvent::Start { id, model } => {
-            state.response_id = Some(id.clone());
+            let normalized_id = crate::converters::shared::normalize_id_to_resp(id);
+            state.response_id = Some(normalized_id.clone());
             state.model = Some(model.clone());
             state.phase = StreamPhase::Content;
             let created_at = std::time::SystemTime::now()
@@ -155,7 +183,7 @@ fn emit_sse_event_impl(
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let response = serde_json::json!({
-                "id": id,
+                "id": normalized_id,
                 "object": "response",
                 "created_at": created_at,
                 "model": model,
@@ -541,6 +569,22 @@ data: {"type":"response.completed","response":{"id":"resp_123","status":"complet
                     && usage.as_ref().unwrap().output_tokens == 5
         ));
         assert!(state.done);
+    }
+
+    #[test]
+    fn test_emit_start_normalizes_chat_id() {
+        let mut state = StreamState::new();
+        let chunks = OpenAIResponsesStreamAdapter::emit_sse_event(
+            &CanonicalStreamEvent::Start {
+                id: "chatcmpl-abc".into(),
+                model: "gpt-4.1".into(),
+            },
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].contains("\"id\":\"resp_abc\""));
+        assert_eq!(state.response_id.as_deref(), Some("resp_abc"));
     }
 
     #[test]

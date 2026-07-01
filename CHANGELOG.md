@@ -1,5 +1,21 @@
 # Any Converter CHANGELOGS
 
+## Unreleased — Protocol conversion fidelity improvements
+
+### Added
+
+- **Shared reasoning/thinking mapper** (`crates/core/src/converters/reasoning.rs`): Centralized `reasoning_effort` ↔ `thinking.budget_tokens` conversion for OpenAI Chat/Responses ↔ Claude, eliminating duplicated logic.
+- **OpenAI Chat reasoning fields**: `OpenAIChatRequest` now accepts `reasoning_effort` and `reasoning`, enabling explicit reasoning preferences when converting Chat → Claude/Responses.
+- **Streaming reasoning propagation**: OpenAI Chat SSE `delta.reasoning_content` is parsed as `CanonicalStreamEvent::ThinkingDelta` and emitted as Claude `thinking_delta`; Claude thinking deltas are emitted as OpenAI Chat `reasoning_content` chunks.
+- **Base64 data URL image support**: `chat_to_claude` and `resp_to_claude` now detect `data:image/...;base64,...` URLs and emit Claude `source: {type: "base64", ...}` instead of forwarding the data URL as a remote URL.
+- **Stream cache-token propagation**: OpenAI Chat/Responses SSE usage with `cached_tokens` is preserved through `CanonicalStreamEvent` and emitted as Claude `cache_read_input_tokens` / `cache_creation_input_tokens`.
+- **ID normalization helpers** (`converters/shared.rs`): `normalize_id_to_chat`, `normalize_id_to_claude`, and `normalize_id_to_resp` consistently strip and re-add `chatcmpl-` / `msg_` / `resp_` prefixes across response and stream conversions.
+
+### Fixed
+
+- **System array joining**: Claude multi-block system arrays are now joined with `"\n\n"` (was `""`) when converting to OpenAI Chat/Responses, matching provider conventions.
+- **Cache token accounting**: When converting OpenAI Chat/Responses usage to Claude, cached tokens are now subtracted from `input_tokens` because OpenAI's reported input tokens include cache reads while Claude's `input_tokens` does not.
+
 ## Unreleased — Test coverage hardening
 
 ### Added

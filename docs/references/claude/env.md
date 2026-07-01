@@ -1,0 +1,1 @@
+claude code env variables refer to [this file](https://code.claude.com/docs/zh-CN/env-vars)

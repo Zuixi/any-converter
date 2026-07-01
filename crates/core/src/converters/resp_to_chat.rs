@@ -1,5 +1,5 @@
 use crate::converters::FormatConverter;
-use crate::converters::shared::{extract_message_text, new_chat_id, now_unix_secs, *};
+use crate::converters::shared::{extract_message_text, now_unix_secs, *};
 use crate::error::ConvertError;
 use crate::formats::openai_chat::*;
 use crate::formats::openai_resp::*;
@@ -81,6 +81,8 @@ fn convert_request(req: OpenAIResponsesRequest) -> Result<OpenAIChatRequest, Con
         tool_choice,
         response_format: None,
         n: None,
+        reasoning_effort: None,
+        reasoning: None,
     })
 }
 
@@ -152,15 +154,12 @@ fn convert_response(resp: OpenAIResponsesResponse) -> Result<OpenAIChatResponse,
             prompt_tokens: u.input_tokens,
             completion_tokens: u.output_tokens,
             total_tokens: total,
+            prompt_tokens_details: None,
         }
     });
 
     Ok(OpenAIChatResponse {
-        id: if resp.id.is_empty() {
-            new_chat_id()
-        } else {
-            resp.id.clone()
-        },
+        id: normalize_id_to_chat(&resp.id),
         object: "chat.completion".into(),
         created: now_unix_secs(),
         model: resp.model,
@@ -613,6 +612,31 @@ fn merge_assistant_messages(last: &mut OpenAIChatMessage, msg: &OpenAIChatMessag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_convert_response_id_normalizes_to_chat() {
+        let resp_bytes = serde_json::to_vec(&serde_json::json!({
+            "id": "resp_abc",
+            "object": "response",
+            "created_at": 1700000000u64,
+            "model": "o1",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hi"}]
+                }
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_response(&resp_bytes).unwrap();
+        let resp: OpenAIChatResponse = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(resp.id, "chatcmpl-abc");
+    }
 
     #[test]
     fn test_namespace_tool_choice_qualifies_name_in_chat() {

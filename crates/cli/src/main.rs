@@ -185,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let validation_errors = server_config.validate();
             if !validation_errors.is_empty() {
+                #[allow(clippy::print_stderr)]
                 for err in &validation_errors {
                     eprintln!("config error: {err}");
                 }

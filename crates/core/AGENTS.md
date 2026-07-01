@@ -18,7 +18,8 @@ src/
 │   └── stream.rs    — CanonicalStreamEvent, StreamState, StreamPhase, AccumulatedToolCall
 ├── converters/   — Pairwise format converters (12 modules)
 │   ├── mod.rs    — FormatConverter trait + get_converter dispatch
-│   ├── shared.rs — Common utilities (ID generation, timestamps)
+│   ├── shared.rs — Common utilities (ID generation, timestamps, ID normalization, base64 image handling)
+│   ├── reasoning.rs — Shared reasoning/thinking effort ↔ budget_tokens mapper
 │   ├── claude_to_chat.rs, claude_to_resp.rs, claude_to_gemini.rs
 │   ├── chat_to_claude.rs, chat_to_resp.rs, chat_to_gemini.rs
 │   ├── resp_to_claude.rs, resp_to_chat.rs, resp_to_gemini.rs
@@ -69,8 +70,12 @@ src/
 - Integration tests for full `convert_stream_event` paths belong in `convert.rs` tests.
 
 ### 8. Cross-Format Field Safety
-- **Thinking/reasoning**: `chat_to_claude` and `resp_to_claude` auto-inject `thinking` config when history contains thinking blocks. `claude_to_resp` maps `thinking` to `reasoning.effort`. All `*_to_gemini` converters drop thinking config entirely.
+- **Reasoning/thinking**: Use the shared `converters::reasoning` mapper for all `reasoning_effort` ↔ `thinking.budget_tokens` conversions. `chat_to_claude` and `resp_to_claude` auto-inject `thinking` config when history contains thinking blocks unless explicit reasoning is present. `claude_to_resp` maps `thinking` to `reasoning.effort`. All `*_to_gemini` converters drop thinking config entirely.
 - **Namespace tool_choice**: When Responses namespace tools are flattened, `tool_choice` name references must be qualified to match the flattened names.
+- **Base64 images**: `chat_to_claude` and `resp_to_claude` use `shared::image_url_to_claude_source` to convert `data:image/...;base64,...` URLs into Claude `source: {type: "base64", ...}` blocks; plain HTTP(S) URLs become `source: {type: "url", url: ...}`.
+- **Cache tokens**: OpenAI Chat `prompt_tokens` and Responses `input_tokens` include cached tokens; Claude `input_tokens` does not. Subtract `cached_tokens` when emitting Claude usage and report them as `cache_read_input_tokens`. Keep raw source values in the canonical stream IR.
+- **ID normalization**: Use `shared::normalize_id_to_*` helpers so response IDs and stream IDs consistently carry the correct prefix for each format (`chatcmpl-`, `msg_`, `resp_`).
+- **System arrays**: Claude system arrays convert to OpenAI Chat/Responses `instructions` joined with `"\n\n"`.
 - **Implicit allowlist**: Typed struct deserialization is the primary parameter filter — unknown fields are silently ignored by serde. No explicit whitelist layer is needed.
 - **Private fields**: The server strips `_`-prefixed fields before conversion to prevent internal client markers from reaching upstream.
 

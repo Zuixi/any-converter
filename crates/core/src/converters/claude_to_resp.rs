@@ -1,6 +1,7 @@
 use crate::converters::FormatConverter;
+use crate::converters::reasoning;
 use crate::converters::shared::{
-    image_block_to_url, new_resp_id, now_unix_secs, parse_content_value, tool_result_text, *,
+    image_block_to_url, now_unix_secs, parse_content_value, tool_result_text, *,
 };
 use crate::error::ConvertError;
 use crate::formats::claude::*;
@@ -49,7 +50,10 @@ impl FormatConverter for Converter {
             tools,
             tool_choice,
             text: None,
-            reasoning: map_thinking_to_reasoning(&req.thinking),
+            reasoning: req
+                .thinking
+                .as_ref()
+                .and_then(reasoning::thinking_to_reasoning_json),
             previous_response_id: None,
             store: None,
             extra: Default::default(),
@@ -67,11 +71,7 @@ impl FormatConverter for Converter {
             _ => "completed",
         };
 
-        let id = if resp.id.is_empty() {
-            new_resp_id()
-        } else {
-            resp.id.clone()
-        };
+        let id = normalize_id_to_resp(&resp.id);
 
         let total_tokens = resp.usage.input_tokens + resp.usage.output_tokens;
 
@@ -86,6 +86,7 @@ impl FormatConverter for Converter {
                 input_tokens: resp.usage.input_tokens,
                 output_tokens: resp.usage.output_tokens,
                 total_tokens: Some(total_tokens),
+                input_tokens_details: None,
             }),
         };
 
@@ -120,7 +121,7 @@ fn system_to_instructions(value: serde_json::Value) -> Result<String, ConvertErr
             .iter()
             .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
             .collect::<Vec<_>>()
-            .join("")),
+            .join("\n\n")),
         _ => Err(ConvertError::InvalidField {
             field: "system".into(),
             reason: "expected string or array".into(),
@@ -361,24 +362,47 @@ fn claude_tool_choice_to_resp(
     }
 }
 
-fn map_thinking_to_reasoning(thinking: &Option<ThinkingConfig>) -> Option<serde_json::Value> {
-    let tc = thinking.as_ref()?;
-    if tc.r#type != "enabled" {
-        return None;
-    }
-    let effort = if tc.budget_tokens <= 1024 {
-        "low"
-    } else if tc.budget_tokens >= 4096 {
-        "high"
-    } else {
-        "medium"
-    };
-    Some(serde_json::json!({ "effort": effort }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_convert_request_system_array_joined_with_blank_lines() {
+        let req_bytes = serde_json::to_vec(&serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4096,
+            "system": [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"}
+            ],
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_request(&req_bytes).unwrap();
+        let resp_req: OpenAIResponsesRequest = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(resp_req.instructions.as_deref(), Some("first\n\nsecond"));
+    }
+
+    #[test]
+    fn test_convert_response_id_normalizes_to_resp() {
+        let resp_bytes = serde_json::to_vec(&serde_json::json!({
+            "id": "msg_abc",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-20250514",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_response(&resp_bytes).unwrap();
+        let resp: OpenAIResponsesResponse = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(resp.id, "resp_abc");
+    }
 
     #[test]
     fn test_thinking_enabled_high_maps_to_reasoning_high() {

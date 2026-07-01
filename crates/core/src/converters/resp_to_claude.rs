@@ -1,6 +1,7 @@
 use crate::converters::FormatConverter;
+use crate::converters::reasoning;
 use crate::converters::shared::{
-    blocks_to_user_content, extract_message_text, merge_claude_messages, new_msg_id,
+    blocks_to_user_content, extract_message_text, merge_claude_messages,
     parse_function_call_fields, *,
 };
 use crate::error::ConvertError;
@@ -69,7 +70,12 @@ fn convert_request(req: OpenAIResponsesRequest) -> Result<ClaudeRequest, Convert
         .temperature
         .map(|t| t.clamp(0.0, CLAUDE_TEMPERATURE_MAX));
 
-    let thinking = map_reasoning_to_thinking(&req.reasoning, max_tokens);
+    let effort = req
+        .reasoning
+        .as_ref()
+        .and_then(|v| v.get("effort"))
+        .and_then(|v| v.as_str());
+    let thinking = reasoning::reasoning_effort_to_thinking(effort, max_tokens);
 
     Ok(ClaudeRequest {
         model: req.model,
@@ -102,14 +108,19 @@ fn convert_response(resp: OpenAIResponsesResponse) -> Result<ClaudeResponse, Con
         input_tokens: 0,
         output_tokens: 0,
         total_tokens: None,
+        input_tokens_details: None,
     });
 
+    let cache_read = usage
+        .input_tokens_details
+        .as_ref()
+        .and_then(|d| d.cached_tokens);
+    let input_tokens = cache_read
+        .map(|c| usage.input_tokens.saturating_sub(c))
+        .unwrap_or(usage.input_tokens);
+
     Ok(ClaudeResponse {
-        id: if resp.id.is_empty() {
-            new_msg_id()
-        } else {
-            resp.id.clone()
-        },
+        id: normalize_id_to_claude(&resp.id),
         r#type: "message".into(),
         role: "assistant".into(),
         model: resp.model,
@@ -117,10 +128,10 @@ fn convert_response(resp: OpenAIResponsesResponse) -> Result<ClaudeResponse, Con
         stop_reason: Some(stop_reason.into()),
         stop_sequence: None,
         usage: ClaudeUsage {
-            input_tokens: usage.input_tokens,
+            input_tokens,
             output_tokens: usage.output_tokens,
             cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
+            cache_read_input_tokens: cache_read,
         },
     })
 }
@@ -273,10 +284,7 @@ fn input_image_to_claude_block(
     } else {
         return Err(ConvertError::MissingField("input_image url".into()));
     };
-    Ok(serde_json::json!({
-        "type": "image",
-        "source": {"type": "url", "url": url}
-    }))
+    Ok(image_url_to_claude_source(&url))
 }
 
 /// Returns (tools, namespace_tool_names) where namespace_tool_names maps
@@ -459,32 +467,70 @@ fn output_to_claude_content(
     Ok(content)
 }
 
-fn map_reasoning_to_thinking(
-    reasoning: &Option<serde_json::Value>,
-    max_tokens: u32,
-) -> Option<ThinkingConfig> {
-    let reasoning = reasoning.as_ref()?;
-    let effort = reasoning
-        .get("effort")
-        .and_then(|v| v.as_str())
-        .unwrap_or("medium");
-    if effort == "none" {
-        return None;
-    }
-    let budget = match effort {
-        "low" => 1024,
-        "high" => max_tokens.max(4096),
-        _ => max_tokens.max(2048),
-    };
-    Some(ThinkingConfig {
-        r#type: "enabled".into(),
-        budget_tokens: budget,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_data_url_image_mapped_to_base64_source() {
+        let req_bytes = serde_json::to_vec(&serde_json::json!({
+            "model": "claude-sonnet-4-20250514",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,abc123"
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_request(&req_bytes).unwrap();
+        let req: ClaudeRequest = serde_json::from_slice(&result).unwrap();
+
+        let user_content = req.messages[0].content.as_array().unwrap();
+        let image_block = user_content
+            .iter()
+            .find(|b| b.get("type").and_then(|v| v.as_str()) == Some("image"))
+            .unwrap();
+        let source = image_block.get("source").unwrap();
+        assert_eq!(source.get("type").and_then(|v| v.as_str()), Some("base64"));
+        assert_eq!(
+            source.get("media_type").and_then(|v| v.as_str()),
+            Some("image/png")
+        );
+        assert_eq!(source.get("data").and_then(|v| v.as_str()), Some("abc123"));
+    }
+
+    #[test]
+    fn test_convert_response_id_normalizes_to_claude() {
+        let resp_bytes = serde_json::to_vec(&serde_json::json!({
+            "id": "resp_abc",
+            "object": "response",
+            "created_at": 1700000000u64,
+            "model": "o1",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hi"}]
+                }
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_response(&resp_bytes).unwrap();
+        let resp: ClaudeResponse = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(resp.id, "msg_abc");
+    }
 
     #[test]
     fn test_reasoning_effort_high_maps_to_thinking_enabled() {

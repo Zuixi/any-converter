@@ -41,9 +41,14 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
         }
 
         if let Some(usage) = chunk.usage {
+            let cache_read = usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens);
             state.accumulated_usage = Some(Usage {
                 input_tokens: usage.prompt_tokens,
                 output_tokens: usage.completion_tokens,
+                cache_read_tokens: cache_read,
                 ..Default::default()
             });
         }
@@ -53,6 +58,12 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                 if !content.is_empty() {
                     state.phase = StreamPhase::Content;
                     events.push(CanonicalStreamEvent::TextDelta(content.clone()));
+                }
+            }
+
+            if let Some(reasoning) = &choice.delta.reasoning_content {
+                if !reasoning.is_empty() {
+                    events.push(CanonicalStreamEvent::ThinkingDelta(reasoning.clone()));
                 }
             }
 
@@ -111,6 +122,7 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                     Delta {
                         role: Some("assistant".into()),
                         content: None,
+                        reasoning_content: None,
                         tool_calls: None,
                     },
                     None,
@@ -126,6 +138,7 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                     Delta {
                         role: None,
                         content: Some(text.clone()),
+                        reasoning_content: None,
                         tool_calls: None,
                     },
                     None,
@@ -141,6 +154,7 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                     Delta {
                         role: None,
                         content: None,
+                        reasoning_content: None,
                         tool_calls: Some(vec![StreamToolCall {
                             index: *index,
                             id: Some(id.clone()),
@@ -167,6 +181,7 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                     Delta {
                         role: None,
                         content: None,
+                        reasoning_content: None,
                         tool_calls: Some(vec![StreamToolCall {
                             index: *index,
                             id: None,
@@ -182,7 +197,22 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                 );
                 Ok(vec![format_sse_data(&chunk)])
             }
-            CanonicalStreamEvent::ThinkingDelta(_) => Ok(vec![]),
+            CanonicalStreamEvent::ThinkingDelta(thinking) => {
+                let (id, model) = stream_ids(state)?;
+                let chunk = make_stream_chunk(
+                    &id,
+                    &model,
+                    Delta {
+                        role: None,
+                        content: None,
+                        reasoning_content: Some(thinking.clone()),
+                        tool_calls: None,
+                    },
+                    None,
+                    None,
+                );
+                Ok(vec![format_sse_data(&chunk)])
+            }
             CanonicalStreamEvent::Done { stop_reason, usage } => {
                 let (id, model) = stream_ids(state)?;
                 state.done = true;
@@ -197,6 +227,7 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                     Delta {
                         role: None,
                         content: None,
+                        reasoning_content: None,
                         tool_calls: None,
                     },
                     Some(stop_reason.to_openai_chat().into()),
@@ -204,6 +235,7 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                         prompt_tokens: u.input_tokens,
                         completion_tokens: u.output_tokens,
                         total_tokens: u.input_tokens + u.output_tokens,
+                        prompt_tokens_details: None,
                     }),
                 );
                 output.push(format_sse_data(&finish_chunk));
@@ -218,6 +250,7 @@ fn stream_ids(state: &StreamState) -> Result<(String, String), ConvertError> {
     let id = state
         .response_id
         .clone()
+        .map(|id| crate::converters::shared::normalize_id_to_chat(&id))
         .unwrap_or_else(|| format!("chatcmpl-{}", uuid::Uuid::new_v4()));
     let model = state.model.clone().unwrap_or_else(|| "gpt-4o".into());
     Ok((id, model))
@@ -357,6 +390,60 @@ mod tests {
             }
         ));
         assert!(state.done);
+    }
+
+    #[test]
+    fn test_parse_reasoning_content_delta() {
+        let mut state = StreamState::new();
+        let data = r#"{"id":"chatcmpl-r","object":"chat.completion.chunk","created":1,"model":"o1","choices":[{"index":0,"delta":{"reasoning_content":"thinking"},"finish_reason":null}]}"#;
+        let events = parse_data(data, &mut state);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            CanonicalStreamEvent::ThinkingDelta(t) if t == "thinking"
+        )));
+    }
+
+    #[test]
+    fn test_emit_thinking_delta() {
+        let mut state = StreamState::new();
+        state.response_id = Some("chatcmpl-th".into());
+        state.model = Some("o1".into());
+
+        let output = OpenAIChatStreamAdapter::emit_sse_event(
+            &CanonicalStreamEvent::ThinkingDelta("deep thought".into()),
+            &mut state,
+        )
+        .unwrap();
+
+        assert_eq!(output.len(), 1);
+        assert!(output[0].contains(r#""reasoning_content":"deep thought""#));
+    }
+
+    #[test]
+    fn test_parse_usage_with_cached_tokens() {
+        let mut state = StreamState::new();
+        let data = r#"{"id":"chatcmpl-u","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":3}}}"#;
+        let events = parse_data(data, &mut state);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], CanonicalStreamEvent::Start { .. }));
+        let usage = state.accumulated_usage.unwrap();
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.cache_read_tokens, Some(3));
+    }
+
+    #[test]
+    fn test_emit_id_normalizes_claude_id() {
+        let mut state = StreamState::new();
+        state.response_id = Some("msg_xyz".into());
+        state.model = Some("gpt-4o".into());
+
+        let output = OpenAIChatStreamAdapter::emit_sse_event(
+            &CanonicalStreamEvent::TextDelta("hi".into()),
+            &mut state,
+        )
+        .unwrap();
+
+        assert!(output[0].contains(r#""id":"chatcmpl-xyz""#));
     }
 
     #[test]

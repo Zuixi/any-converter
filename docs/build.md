@@ -177,9 +177,35 @@ cargo doc --no-deps --open
 
 ### Full Pre-Commit Checklist
 
+The repository ships shared Git hooks in `.githooks/`. Enable them once per clone:
+
 ```bash
-cargo fmt -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+git config core.hooksPath .githooks
+```
+
+The `pre-commit` hook then runs automatically on every commit:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --lib --all-features -- -D warnings
+cargo test --workspace
+```
+
+> The hook lints the library and binary crates only because the test and bench
+code currently uses `unwrap()` and `panic!` patterns that the workspace denies.
+Run `--all-targets` manually when you want to lint tests and benches as well.
+
+A `pre-push` hook also runs `cargo audit` when `cargo-audit` is installed.
+
+Claude Code users get the same guardrails via `.claude/hooks/`:
+- `PostToolUse` formats touched `.rs` files and runs `cargo check` on affected crates.
+- `Stop` reminds you to update related files when a session completes.
+
+The manual equivalent of the full checklist is:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo check --all-targets
 cargo test --workspace
 cargo doc --no-deps

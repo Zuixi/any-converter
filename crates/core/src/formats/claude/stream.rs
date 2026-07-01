@@ -72,6 +72,8 @@ fn parse_message_start(
         state.accumulated_usage = Some(Usage {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_input_tokens,
+            cache_write_tokens: usage.cache_creation_input_tokens,
             ..Default::default()
         });
     }
@@ -173,7 +175,8 @@ fn emit_message_start(
     model: &str,
     state: &mut StreamState,
 ) -> Result<Vec<String>, ConvertError> {
-    state.response_id = Some(id.to_string());
+    let normalized_id = crate::converters::shared::normalize_id_to_claude(id);
+    state.response_id = Some(normalized_id.clone());
     state.model = Some(model.to_string());
     state.phase = StreamPhase::Init;
     state.block_index = 0;
@@ -184,7 +187,7 @@ fn emit_message_start(
     let data = serde_json::json!({
         "type": "message_start",
         "message": {
-            "id": id,
+            "id": normalized_id,
             "type": "message",
             "role": "assistant",
             "model": model,
@@ -303,13 +306,34 @@ fn emit_done(
         state.accumulated_usage = Some(u.clone());
     }
 
+    let input_tokens = usage
+        .map(|u| {
+            u.cache_read_tokens
+                .map(|c| u.input_tokens.saturating_sub(c))
+                .unwrap_or(u.input_tokens)
+        })
+        .unwrap_or(0);
+
+    let mut usage_obj = serde_json::json!({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    });
+    if let Some(u) = usage {
+        if let Some(r) = u.cache_read_tokens {
+            usage_obj["cache_read_input_tokens"] = r.into();
+        }
+        if let Some(w) = u.cache_write_tokens {
+            usage_obj["cache_creation_input_tokens"] = w.into();
+        }
+    }
+
     let delta_data = serde_json::json!({
         "type": "message_delta",
         "delta": {
             "stop_reason": stop_reason.to_claude(),
             "stop_sequence": null
         },
-        "usage": { "output_tokens": output_tokens }
+        "usage": usage_obj
     });
 
     let stop_data = serde_json::json!({ "type": "message_stop" });
@@ -426,6 +450,51 @@ mod tests {
         assert!(events[1].contains("event: content_block_delta"));
         assert!(events[1].contains("text_delta"));
         assert!(events[1].contains("Hi"));
+    }
+
+    #[test]
+    fn test_emit_start_normalizes_chat_id() {
+        let mut state = StreamState::new();
+        let events = ClaudeStreamAdapter::emit_sse_event(
+            &CanonicalStreamEvent::Start {
+                id: "chatcmpl-abc".into(),
+                model: "claude-sonnet-4-20250514".into(),
+            },
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("\"id\":\"msg_abc\""));
+        assert_eq!(state.response_id.as_deref(), Some("msg_abc"));
+    }
+
+    #[test]
+    fn test_emit_done_with_cache_tokens() {
+        let mut state = StreamState::new();
+        state.response_id = Some("msg_123".into());
+        state.model = Some("claude-sonnet-4-20250514".into());
+
+        let events = ClaudeStreamAdapter::emit_sse_event(
+            &CanonicalStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: Some(Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cache_read_tokens: Some(3),
+                    cache_write_tokens: Some(1),
+                    ..Default::default()
+                }),
+            },
+            &mut state,
+        )
+        .unwrap();
+
+        let delta = events
+            .iter()
+            .find(|e| e.contains("event: message_delta"))
+            .unwrap();
+        assert!(delta.contains("\"cache_read_input_tokens\":3"));
+        assert!(delta.contains("\"cache_creation_input_tokens\":1"));
     }
 
     #[test]

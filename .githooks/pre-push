@@ -1,0 +1,10 @@
+#!/bin/bash
+# Shared pre-push hook: dependency audit when cargo-audit is available.
+set -euo pipefail
+
+if command -v cargo-audit >/dev/null 2>&1 || cargo audit --version >/dev/null 2>&1; then
+  echo "[pre-push] Running cargo audit..."
+  cargo audit
+else
+  echo "[pre-push] cargo-audit not installed; skipping audit."
+fi

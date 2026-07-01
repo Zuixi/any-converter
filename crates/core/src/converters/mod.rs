@@ -12,6 +12,7 @@ mod claude_to_resp;
 mod gemini_to_chat;
 mod gemini_to_claude;
 mod gemini_to_resp;
+pub(crate) mod reasoning;
 mod resp_to_chat;
 mod resp_to_claude;
 mod resp_to_gemini;

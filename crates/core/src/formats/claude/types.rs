@@ -118,6 +118,10 @@ pub struct ClaudeStreamUsage {
     pub input_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

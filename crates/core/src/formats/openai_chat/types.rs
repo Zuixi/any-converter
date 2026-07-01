@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 // === Request Types ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReasoningConfig {
+    pub effort: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIChatRequest {
     pub model: String,
     pub messages: Vec<OpenAIChatMessage>,
@@ -31,6 +36,10 @@ pub struct OpenAIChatRequest {
     pub response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,11 +158,19 @@ pub struct ChoiceMessage {
     pub reasoning_content: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PromptTokensDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
 // === Streaming Types ===
@@ -182,6 +199,8 @@ pub struct Delta {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<StreamToolCall>>,
 }

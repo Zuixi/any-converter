@@ -206,14 +206,11 @@ fn convert_response(resp: OpenAIChatResponse) -> Result<OpenAIResponsesResponse,
         input_tokens: u.prompt_tokens,
         output_tokens: u.completion_tokens,
         total_tokens: Some(u.total_tokens),
+        input_tokens_details: None,
     });
 
     Ok(OpenAIResponsesResponse {
-        id: if resp.id.is_empty() {
-            shared::new_resp_id()
-        } else {
-            resp.id.clone()
-        },
+        id: normalize_id_to_resp(&resp.id),
         object: "response".into(),
         created_at: shared::now_unix_secs(),
         model: resp.model,
@@ -318,6 +315,28 @@ mod tests {
             content[0].get("text").and_then(|v| v.as_str()),
             Some("hello")
         );
+    }
+
+    #[test]
+    fn test_convert_response_id_normalizes_to_resp() {
+        let input = serde_json::to_vec(&serde_json::json!({
+            "id": "chatcmpl-abc",
+            "object": "chat.completion",
+            "created": 1700000000u64,
+            "model": "gpt-4.1",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_response(&input).unwrap();
+        let resp: OpenAIResponsesResponse = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(resp.id, "resp_abc");
     }
 
     #[test]
