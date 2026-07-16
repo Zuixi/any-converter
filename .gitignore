@@ -12,3 +12,25 @@ config.toml
 .claude/**
 .cursor/**
 .vscode/**
+
+# Node.js
+node_modules/
+.pnpm-store/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Next.js
+.next/
+out/
+
+# TypeScript / build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# napi-rs
+*.node
+*.so
+*.dylib
+*.dll

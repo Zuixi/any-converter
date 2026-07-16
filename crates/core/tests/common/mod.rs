@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::redundant_closure)]
+
 use std::path::PathBuf;
 
 use any_converter_core::convert::Format;

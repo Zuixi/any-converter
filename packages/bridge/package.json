@@ -1,0 +1,21 @@
+{
+  "name": "@any-converter/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "napi build --platform --release --cargo-cwd ../../crates/web-bridge .",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@any-converter/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@any-converter/tsconfig": "workspace:*",
+    "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^20.16.1",
+    "typescript": "^5.5.4"
+  }
+}

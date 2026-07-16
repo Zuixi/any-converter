@@ -1,0 +1,28 @@
+{
+  "name": "any-converter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Monorepo for any-converter CLI, server, core library, and web UI",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,md,json}\"",
+    "build:bridge": "cargo build -p web-bridge && pnpm --filter @any-converter/bridge build",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@any-converter/tsconfig": "workspace:*",
+    "@typescript-eslint/eslint-plugin": "^8.62.1",
+    "@typescript-eslint/parser": "^8.62.1",
+    "eslint": "^8.57.1",
+    "prettier": "^3.3.3",
+    "turbo": "^2.0.14",
+    "typescript": "^5.5.4"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  }
+}

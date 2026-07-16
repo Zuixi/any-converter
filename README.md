@@ -89,6 +89,12 @@ api_key = "sk-proj-xxx"
 "claude-sonnet-4" = "gpt-4.1"
 "*" = "gpt-4.1-mini"
 
+# Optional overrides for OpenAI-compatible providers with non-standard transport
+# [providers.endpoints]
+# path = "/custom/chat/completions"
+# [providers.auth]
+# scheme = "api_key_header"
+
 [[routes]]
 client_format = "claude"
 provider = "openai"

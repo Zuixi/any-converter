@@ -2,10 +2,12 @@
 
 ## Prerequisites
 
-| Tool | Minimum Version | Check Command |
-|------|----------------|---------------|
-| Rust | 1.85 (2024 edition) | `rustc --version` |
-| Cargo | 1.85 | `cargo --version` |
+| Tool    | Minimum Version     | Check Command     |
+| ------- | ------------------- | ----------------- |
+| Rust    | 1.85 (2024 edition) | `rustc --version` |
+| Cargo   | 1.85                | `cargo --version` |
+| Node.js | 20                  | `node --version`  |
+| pnpm    | 9                   | `pnpm --version`  |
 
 Install Rust via [rustup](https://rustup.rs/):
 
@@ -14,12 +16,21 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup update
 ```
 
+Install pnpm via npm:
+
+```bash
+npm install -g pnpm
+```
+
 ## Quick Start
 
 ```bash
 # Clone the repository
 git clone <repo-url>
 cd any-converter
+
+# Install JavaScript dependencies
+pnpm install
 
 # Build the entire workspace
 cargo build
@@ -95,18 +106,18 @@ cargo test openai_chat
 
 ### Test Categories
 
-| Test file | What it covers |
-|-----------|---------------|
-| `converter_matrix` | Full cross-format request/response matrix with precise assertions |
-| `roundtrip` | Request and response A->B->A consistency |
-| `stream_matrix` | SSE stream conversion with event type and ordering checks |
-| `parameter_mapping` | Temperature, top_p, max_tokens, stop sequences, system prompt |
-| `response_deep` | Finish reason, usage tokens, tool calls, thinking/reasoning |
-| `property_tests` | Property-based: identity, JSON validity, model preservation, StopReason roundtrip |
-| `fuzz_tests` | Random bytes/JSON/SSE robustness, malformed tool args, Unicode |
-| `concurrent_tests` | Parallel conversions, StreamState isolation, stress (200+ tasks) |
-| `error_paths` | Invalid input, edge cases, error variants |
-| `stress_test` (server) | Concurrent HTTP endpoints, auth rejection under load |
+| Test file              | What it covers                                                                    |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `converter_matrix`     | Full cross-format request/response matrix with precise assertions                 |
+| `roundtrip`            | Request and response A->B->A consistency                                          |
+| `stream_matrix`        | SSE stream conversion with event type and ordering checks                         |
+| `parameter_mapping`    | Temperature, top_p, max_tokens, stop sequences, system prompt                     |
+| `response_deep`        | Finish reason, usage tokens, tool calls, thinking/reasoning                       |
+| `property_tests`       | Property-based: identity, JSON validity, model preservation, StopReason roundtrip |
+| `fuzz_tests`           | Random bytes/JSON/SSE robustness, malformed tool args, Unicode                    |
+| `concurrent_tests`     | Parallel conversions, StreamState isolation, stress (200+ tasks)                  |
+| `error_paths`          | Invalid input, edge cases, error variants                                         |
+| `stress_test` (server) | Concurrent HTTP endpoints, auth rejection under load                              |
 
 ```bash
 # Run property-based tests
@@ -192,12 +203,13 @@ cargo test --workspace
 ```
 
 > The hook lints the library and binary crates only because the test and bench
-code currently uses `unwrap()` and `panic!` patterns that the workspace denies.
-Run `--all-targets` manually when you want to lint tests and benches as well.
+> code currently uses `unwrap()` and `panic!` patterns that the workspace denies.
+> Run `--all-targets` manually when you want to lint tests and benches as well.
 
 A `pre-push` hook also runs `cargo audit` when `cargo-audit` is installed.
 
 Claude Code users get the same guardrails via `.claude/hooks/`:
+
 - `PostToolUse` formats touched `.rs` files and runs `cargo check` on affected crates.
 - `Stop` reminds you to update related files when a session completes.
 
@@ -360,6 +372,126 @@ Add to `.claude/settings.json` or run with allowed lints:
 
 ```bash
 cargo clippy --all-targets --all-features
+```
+
+## Web UI
+
+The web interface is a Next.js app located in `apps/web`. It runs **as a separate process** next to the Rust proxy server and provides:
+
+- **Conversion Playground** (`/playground`) — interactive request/response conversion.
+- **Request Log Explorer** (`/logs`) — browse `requests.YYYY-MM-DD.jsonl`.
+- **Usage Dashboard** (`/usage`) — token volume and latency charts.
+- **Proxy Status** (`/status`) — health, disk usage, and recent errors.
+- **Config Editor** (`/config`) — view/edit `config.toml`.
+
+### Architecture at a glance
+
+```
+┌─────────────┐      reads/logs      ┌──────────────────────┐
+│  Browser    │ ◄──────────────────► │  Next.js web (apps/web)
+└─────────────┘                      └──────────┬───────────┘
+                                                │ env vars
+                                                ▼
+                                       ┌──────────────────────┐
+                                       │ any-converter-server │
+                                       │ (Rust, port 8080)    │
+                                       └──────────────────────┘
+```
+
+The web app does **not** start the Rust server for you. Start the server first, then start the web app and point it at the server.
+
+### 1. (Optional) Build the Rust bridge
+
+For the fastest conversion playground experience, build the native `napi-rs` addon once:
+
+```bash
+pnpm build:bridge
+```
+
+This produces `packages/bridge/index.{platform}.node`. If you skip this step, the playground falls back to `cargo run -p any-converter -- convert ...`.
+
+### 2. Start the Rust proxy server
+
+From the repository root:
+
+```bash
+./target/release/any-converter serve --config config.toml
+```
+
+By default the server listens on `http://127.0.0.1:8080`. If you changed `host`/`port` in `config.toml`, use that URL in the next step.
+
+### 3. Start the web app
+
+In a second terminal, run:
+
+```bash
+# Example: server on default port, logs written to ./logs at the repo root
+SERVER_URL=http://127.0.0.1:8080 \
+LOG_DIR=../../logs \
+CONFIG_PATH=../../config.toml \
+  pnpm --filter @any-converter/web dev
+```
+
+Then open [http://localhost:3000](http://localhost:3000) (Next.js may use 3001 if 3000 is busy).
+
+> **Important about paths:** when you run `pnpm --filter @any-converter/web dev`, the working directory is `apps/web`. Make `LOG_DIR` and `CONFIG_PATH` absolute, or relative to `apps/web`. If the server writes logs to `./logs` from the repo root, use `LOG_DIR=../../logs`.
+
+#### Run the web app on a different port
+
+Use the `PORT` environment variable, for example `9000`:
+
+```bash
+PORT=9000 \
+SERVER_URL=http://127.0.0.1:8080 \
+LOG_DIR=../../logs \
+CONFIG_PATH=../../config.toml \
+  pnpm --filter @any-converter/web dev
+```
+
+Or pass the port directly to Next.js:
+
+```bash
+pnpm --filter @any-converter/web dev -- -p 9000
+```
+
+### 4. Environment variables
+
+| Variable          | Default                 | Purpose                                                                                                                                     |
+| ----------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SERVER_URL`      | `http://127.0.0.1:8080` | URL of the running `any-converter-server`. Required for `/status` and live config reloading.                                                |
+| `LOG_DIR`         | —                       | Directory containing `requests.*.jsonl` and `usage.*.jsonl`. Required for `/logs` and `/usage`.                                             |
+| `CONFIG_PATH`     | `config.toml`           | Path to the TOML config file. Required for `/config`.                                                                                       |
+| `LOG_MAX_DISK_MB` | —                       | Disk quota for the log directory. If set, the status page shows usage percentage. This should match `logging.max_disk_mb` in `config.toml`. |
+| `PORT`            | `3000`                  | Port for the Next.js dev server.                                                                                                            |
+
+### 5. Build for production
+
+```bash
+pnpm build
+```
+
+This runs Turborepo across the monorepo and outputs the Next.js production build in `apps/web/.next`. Start it with:
+
+```bash
+PORT=9000 \
+SERVER_URL=http://127.0.0.1:8080 \
+LOG_DIR=../../logs \
+CONFIG_PATH=../../config.toml \
+  pnpm --filter @any-converter/web start
+```
+
+### Monorepo structure
+
+```
+any-converter/
+├── apps/web/          # Next.js app
+├── packages/
+│   ├── ui/            # shadcn/ui based atomic components
+│   ├── core/          # Business components and hooks
+│   ├── views/         # Page-level view components
+│   ├── shared/        # Types, constants, utilities
+│   ├── bridge/        # napi-rs native addon wrapper
+│   └── tsconfig/      # Shared TypeScript configs
 ```
 
 ## Future: Desktop Client Build

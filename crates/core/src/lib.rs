@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::panic, clippy::expect_used, clippy::unwrap_used))]
+
 pub mod convert;
 pub mod converters;
 pub mod error;

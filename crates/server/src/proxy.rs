@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use any_converter_core::convert::{Format, convert_stream_event};
 use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{format_sse_event, is_openai_done, parse_sse_block};
@@ -8,6 +11,9 @@ use futures_util::StreamExt;
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use tokio_stream::wrappers::ReceiverStream;
+
+use crate::config::ProviderConfig;
+use crate::request_log::{RequestLogContext, RequestLogger, log_streaming};
 
 /// Build the upstream URL for a provider request.
 pub fn build_upstream_url(format: Format, base_url: &str, model: &str, streaming: bool) -> String {
@@ -20,6 +26,41 @@ pub fn build_upstream_url(format: Format, base_url: &str, model: &str, streaming
             format!("{base}/v1beta/models/{model}:streamGenerateContent")
         }
         Format::Gemini => format!("{base}/v1beta/models/{model}:generateContent"),
+    }
+}
+
+/// Build the upstream URL using provider-specific endpoint overrides when configured.
+pub fn build_upstream_url_for_provider(
+    provider: &ProviderConfig,
+    model: &str,
+    streaming: bool,
+) -> String {
+    let custom_path = if streaming {
+        provider
+            .endpoints
+            .stream_path
+            .as_deref()
+            .or(provider.endpoints.path.as_deref())
+    } else {
+        provider.endpoints.path.as_deref()
+    };
+
+    if let Some(path) = custom_path {
+        return join_base_and_path(&provider.base_url, &path.replace("{model}", model));
+    }
+
+    build_upstream_url(provider.format, &provider.base_url, model, streaming)
+}
+
+fn join_base_and_path(base_url: &str, path: &str) -> String {
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return path.to_string();
+    }
+    let base = base_url.trim_end_matches('/');
+    if path.starts_with('/') {
+        format!("{base}{path}")
+    } else {
+        format!("{base}/{path}")
     }
 }
 
@@ -55,6 +96,7 @@ pub async fn forward_non_streaming(
 }
 
 /// Forward a streaming request and convert SSE events to the client format.
+#[allow(clippy::too_many_arguments)] // proxy boundary needs upstream request, formats, ns_map, and logging config.
 pub async fn forward_streaming(
     client: &Client,
     url: &str,
@@ -62,7 +104,10 @@ pub async fn forward_streaming(
     auth_headers: &[(String, String)],
     from_format: Format,
     to_format: Format,
-    ns_map: &std::collections::HashMap<String, (String, String)>,
+    ns_map: &HashMap<String, (String, String)>,
+    log_ctx: Option<RequestLogContext>,
+    logger: Option<Arc<RequestLogger>>,
+    max_capture_bytes: usize,
 ) -> Result<Response, String> {
     let mut req = client
         .post(url)
@@ -84,6 +129,7 @@ pub async fn forward_streaming(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(64);
 
     let ns_map_owned = ns_map.clone();
+    let should_log = log_ctx.is_some() && logger.is_some();
     tokio::spawn(async move {
         let mut buffer = String::new();
         let mut state_in = StreamState::default();
@@ -92,10 +138,20 @@ pub async fn forward_streaming(
         let mut chunk_count: u64 = 0;
         let mut event_count: u64 = 0;
         let mut emitted_count: u64 = 0;
+        let mut sse_lines: Vec<String> = Vec::new();
+        let mut captured_bytes: usize = 0;
+        let mut response_truncated = false;
+        let mut time_to_first_byte_ms: Option<u64> = None;
 
         while let Some(chunk_result) = upstream_stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
+                    if time_to_first_byte_ms.is_none() {
+                        if let Some(ref ctx) = log_ctx {
+                            time_to_first_byte_ms =
+                                Some(ctx.start_time.elapsed().as_millis() as u64);
+                        }
+                    }
                     chunk_count += 1;
                     let chunk_str = String::from_utf8_lossy(&chunk);
                     if chunk_count <= 3 {
@@ -127,6 +183,15 @@ pub async fn forward_streaming(
                         }
                         for line in lines {
                             let line = patch_sse_namespaces(&line, &ns_map_owned);
+                            if should_log && !response_truncated {
+                                let line_bytes = line.len();
+                                if captured_bytes + line_bytes <= max_capture_bytes {
+                                    sse_lines.push(line.clone());
+                                    captured_bytes += line_bytes;
+                                } else {
+                                    response_truncated = true;
+                                }
+                            }
                             emitted_count += 1;
                             if tx.send(Ok(line)).await.is_err() {
                                 warn!(
@@ -161,6 +226,15 @@ pub async fn forward_streaming(
                 &mut state_out,
             ) {
                 let line = patch_sse_namespaces(&line, &ns_map_owned);
+                if should_log && !response_truncated {
+                    let line_bytes = line.len();
+                    if captured_bytes + line_bytes <= max_capture_bytes {
+                        sse_lines.push(line.clone());
+                        captured_bytes += line_bytes;
+                    } else {
+                        response_truncated = true;
+                    }
+                }
                 let _ = tx.send(Ok(line)).await;
                 emitted_count += 1;
             }
@@ -168,6 +242,20 @@ pub async fn forward_streaming(
         info!(
             "streaming completed chunk_count={chunk_count} event_count={event_count} emitted_count={emitted_count}"
         );
+
+        if let (Some(ctx), Some(logger)) = (log_ctx, logger) {
+            let usage = state_out.accumulated_usage.unwrap_or_default();
+            log_streaming(
+                &logger,
+                &ctx,
+                sse_lines,
+                status,
+                time_to_first_byte_ms.unwrap_or(0),
+                usage,
+                response_truncated,
+                max_capture_bytes,
+            );
+        }
     });
 
     Ok(Response::builder()
@@ -314,6 +402,8 @@ fn convert_sse_block(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     const BASE: &str = "https://api.example.com";
@@ -358,5 +448,28 @@ mod tests {
     fn test_build_upstream_url_trims_trailing_slash() {
         let url = build_upstream_url(Format::OpenAIChat, "https://api.example.com/", "m", false);
         assert_eq!(url, "https://api.example.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn test_build_upstream_url_uses_provider_endpoint_override() {
+        let provider = crate::config::ProviderConfig {
+            name: "minimax".into(),
+            format: Format::OpenAIChat,
+            base_url: "https://api.minimax.io".into(),
+            api_key: "sk-test".into(),
+            model_map: std::collections::HashMap::new(),
+            endpoints: crate::config::ProviderEndpointConfig {
+                path: Some("/v1/text/chatcompletion_v2".into()),
+                stream_path: Some("/v1/text/chatcompletion_v2?stream=true&model={model}".into()),
+            },
+            auth: crate::config::ProviderAuthConfig::default(),
+        };
+
+        let url = build_upstream_url_for_provider(&provider, "abab6.5s-chat", true);
+
+        assert_eq!(
+            url,
+            "https://api.minimax.io/v1/text/chatcompletion_v2?stream=true&model=abab6.5s-chat"
+        );
     }
 }

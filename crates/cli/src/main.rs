@@ -1,4 +1,3 @@
-mod disk_manager;
 mod logging;
 
 use std::collections::HashMap;
@@ -172,6 +171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         base_url: base,
                         api_key: key,
                         model_map: HashMap::new(),
+                        endpoints: Default::default(),
+                        auth: Default::default(),
                     }],
                     model_routes: vec![],
                     routes: vec![RouteConfig {
@@ -195,11 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let log_dir = logging::init_logging(&server_config.logging)?;
-
-            if let Some(dir) = log_dir {
-                let max_bytes = server_config.logging.max_disk_mb * 1024 * 1024;
-                let _disk_mgr = disk_manager::spawn_disk_manager(dir, max_bytes);
-            }
+            let _log_dir = log_dir;
 
             run(server_config).await?;
         }

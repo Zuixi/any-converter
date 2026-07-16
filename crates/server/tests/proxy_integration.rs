@@ -19,6 +19,8 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         base_url: base_url.into(),
         api_key: "upstream-key".into(),
         model_map: [("*".into(), "gpt-4".into())].into(),
+        endpoints: Default::default(),
+        auth: Default::default(),
     }
 }
 
@@ -56,6 +58,7 @@ async fn non_streaming_proxy() {
         config,
         client,
         usage_logger: None,
+        request_logger: None,
     });
     let app = create_router_with_state(state);
 
@@ -115,6 +118,7 @@ async fn streaming_proxy_text() {
         config,
         client,
         usage_logger: None,
+        request_logger: None,
     });
     let app = create_router_with_state(state);
 
@@ -177,6 +181,7 @@ async fn provider_failover_priority() {
         config,
         client,
         usage_logger: None,
+        request_logger: None,
     });
     let app = create_router_with_state(state);
 
@@ -219,6 +224,7 @@ async fn auth_missing_returns_401() {
         config,
         client,
         usage_logger: None,
+        request_logger: None,
     });
     let app = create_router_with_state(state);
 
@@ -256,6 +262,7 @@ async fn auth_invalid_returns_401() {
         config,
         client,
         usage_logger: None,
+        request_logger: None,
     });
     let app = create_router_with_state(state);
 
@@ -303,6 +310,7 @@ async fn upstream_error_returns_502() {
         config,
         client,
         usage_logger: None,
+        request_logger: None,
     });
     let app = create_router_with_state(state);
 
@@ -337,6 +345,7 @@ async fn health_returns_ok() {
         config,
         client,
         usage_logger: None,
+        request_logger: None,
     });
     let app = create_router_with_state(state);
 

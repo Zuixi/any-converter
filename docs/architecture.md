@@ -305,6 +305,23 @@ Two responsibilities:
   - **Claude:** `x-api-key: <key>` + `anthropic-version: 2023-06-01`
   - **Gemini:** `x-goog-api-key: <key>`
 
+### 4.6 Request/Response Logging
+
+An optional audit logger captures the full lifecycle of every request:
+
+- **Config:** `[logging.request_log] enabled = true` plus `logging.dir`.
+- **Storage:** one JSON Lines file per UTC day: `{dir}/requests.YYYY-MM-DD.jsonl`.
+- **Capture:**
+  - Non-streaming: full JSON request body, upstream request body, and response body.
+  - Streaming: request bodies plus every converted SSE line emitted to the client.
+- **Latency:** non-streaming records total elapsed time; streaming records time-to-first-byte (TTFB).
+- **Usage:** token counts extracted from upstream responses (non-streaming) or accumulated by `StreamState` (streaming).
+- **Privacy:** sensitive headers and body keys (`api_key`, `authorization`, etc.) are redacted; bodies are truncated at `max_capture_bytes` and marked `truncated: true`.
+
+### 4.7 Disk Quota
+
+The server spawns a background task that enforces `logging.max_disk_mb` on the logging directory. Every five minutes it deletes the oldest files until total usage is below the limit. This prevents log files from unbounded growth.
+
 ---
 
 ## 5. Component: CLI
@@ -490,6 +507,7 @@ pub async fn run(config: ServerConfig) -> Result<(), Box<dyn std::error::Error>>
 pub struct ServerConfig {
     pub server: ServerSettings,
     pub providers: Vec<ProviderConfig>,
+    pub model_routes: Vec<ModelRouteConfig>,
     pub routes: Vec<RouteConfig>,
     pub model_metadata: HashMap<String, ModelMetadata>,
 }
@@ -500,6 +518,35 @@ pub struct ProviderConfig {
     pub base_url: String,
     pub api_key: String,
     pub model_map: HashMap<String, String>,
+    pub endpoints: ProviderEndpointConfig,
+    pub auth: ProviderAuthConfig,
+}
+
+pub struct ProviderEndpointConfig {
+    pub path: Option<String>,
+    pub stream_path: Option<String>,
+}
+
+pub struct ProviderAuthConfig {
+    pub scheme: Option<AuthScheme>,
+    pub headers: HashMap<String, String>,
+}
+
+pub enum AuthScheme {
+    Bearer,
+    ApiKeyHeader,
+    XApiKey,
+    GoogleApiKey,
+    Anthropic,
+    None,
+}
+
+pub struct ModelRouteConfig {
+    pub pattern: String,
+    pub provider: Option<String>,
+    pub providers: Vec<String>,
+    pub upstream_model: Option<String>,
+    pub strategy: RouteStrategy,
 }
 
 pub struct RouteConfig {

@@ -1,5 +1,7 @@
 use any_converter_core::convert::Format;
 
+use crate::config::{AuthScheme, ProviderConfig};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
     Missing,
@@ -41,20 +43,54 @@ pub fn validate_client_key(
 
 /// Build upstream authentication headers for the given provider format.
 pub fn build_upstream_auth_headers(format: Format, api_key: &str) -> Vec<(String, String)> {
+    build_headers_for_scheme(default_auth_scheme(format), api_key)
+}
+
+/// Build upstream authentication headers from provider-level config.
+pub fn build_upstream_auth_headers_for_provider(
+    provider: &ProviderConfig,
+) -> Vec<(String, String)> {
+    let scheme = provider
+        .auth
+        .scheme
+        .unwrap_or_else(|| default_auth_scheme(provider.format));
+    let mut headers = build_headers_for_scheme(scheme, &provider.api_key);
+    headers.extend(
+        provider
+            .auth
+            .headers
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    headers
+}
+
+fn default_auth_scheme(format: Format) -> AuthScheme {
     match format {
-        Format::OpenAIChat | Format::OpenAIResponses => {
-            vec![("Authorization".to_string(), format!("Bearer {api_key}"))]
-        }
-        Format::Claude => vec![
+        Format::OpenAIChat | Format::OpenAIResponses => AuthScheme::Bearer,
+        Format::Claude => AuthScheme::Anthropic,
+        Format::Gemini => AuthScheme::GoogleApiKey,
+    }
+}
+
+fn build_headers_for_scheme(scheme: AuthScheme, api_key: &str) -> Vec<(String, String)> {
+    match scheme {
+        AuthScheme::Bearer => vec![("Authorization".to_string(), format!("Bearer {api_key}"))],
+        AuthScheme::ApiKeyHeader => vec![("api-key".to_string(), api_key.to_string())],
+        AuthScheme::XApiKey => vec![("x-api-key".to_string(), api_key.to_string())],
+        AuthScheme::GoogleApiKey => vec![("x-goog-api-key".to_string(), api_key.to_string())],
+        AuthScheme::Anthropic => vec![
             ("x-api-key".to_string(), api_key.to_string()),
             ("anthropic-version".to_string(), "2023-06-01".to_string()),
         ],
-        Format::Gemini => vec![("x-goog-api-key".to_string(), api_key.to_string())],
+        AuthScheme::None => Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -105,5 +141,27 @@ mod tests {
         let headers = build_upstream_auth_headers(Format::Gemini, "AIza-test");
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0], ("x-goog-api-key".into(), "AIza-test".into()));
+    }
+
+    #[test]
+    fn test_build_upstream_auth_headers_uses_provider_auth_override_and_extra_headers() {
+        let provider = crate::config::ProviderConfig {
+            name: "azure".into(),
+            format: Format::OpenAIChat,
+            base_url: "https://example.openai.azure.com/openai/deployments/test".into(),
+            api_key: "azure-key".into(),
+            model_map: std::collections::HashMap::new(),
+            endpoints: crate::config::ProviderEndpointConfig::default(),
+            auth: crate::config::ProviderAuthConfig {
+                scheme: Some(crate::config::AuthScheme::ApiKeyHeader),
+                headers: [("api-version".to_string(), "2024-10-21".to_string())].into(),
+            },
+        };
+
+        let headers = build_upstream_auth_headers_for_provider(&provider);
+
+        assert!(headers.contains(&("api-key".to_string(), "azure-key".to_string())));
+        assert!(headers.contains(&("api-version".to_string(), "2024-10-21".to_string())));
+        assert!(!headers.iter().any(|(name, _)| name == "Authorization"));
     }
 }

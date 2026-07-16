@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use any_converter_core::convert::Format;
@@ -72,11 +73,22 @@ pub fn extract_gemini_model(path: &str) -> Option<String> {
 }
 
 pub fn create_router(config: ServerConfig) -> Router {
-    let usage_logger = crate::usage::create_usage_logger(config.logging.dir.as_deref());
+    let log_dir = config.logging.dir.clone();
+    let usage_logger = crate::usage::create_usage_logger(log_dir.as_deref());
+    let request_logger =
+        crate::request_log::create_request_logger(log_dir.as_deref(), &config.logging.request_log);
+
+    if let Some(ref dir) = log_dir {
+        let max_bytes = config.logging.max_disk_mb * 1024 * 1024;
+        let _disk_quota =
+            crate::disk_quota::spawn_disk_quota_manager(PathBuf::from(dir), max_bytes);
+    }
+
     let state = Arc::new(AppState {
         config,
         client: Client::new(),
         usage_logger,
+        request_logger,
     });
     create_router_with_state(state)
 }
@@ -111,6 +123,8 @@ async fn handle_not_found(uri: axum::http::Uri) -> (axum::http::StatusCode, &'st
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use axum::{
         body::Body,
@@ -133,6 +147,8 @@ mod tests {
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-test".into(),
                 model_map: [("claude-sonnet-4".into(), "gpt-4.1".into())].into(),
+                endpoints: Default::default(),
+                auth: Default::default(),
             }],
             model_routes: vec![],
             routes: vec![

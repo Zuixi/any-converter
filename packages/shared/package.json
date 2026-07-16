@@ -1,0 +1,16 @@
+{
+  "name": "@any-converter/shared",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@any-converter/tsconfig": "workspace:*",
+    "typescript": "^5.5.4"
+  }
+}

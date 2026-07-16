@@ -35,6 +35,37 @@ pub struct ProviderConfig {
     pub api_key: String,
     #[serde(default)]
     pub model_map: HashMap<String, String>,
+    #[serde(default)]
+    pub endpoints: ProviderEndpointConfig,
+    #[serde(default)]
+    pub auth: ProviderAuthConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ProviderEndpointConfig {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub stream_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ProviderAuthConfig {
+    #[serde(default)]
+    pub scheme: Option<AuthScheme>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthScheme {
+    Bearer,
+    ApiKeyHeader,
+    XApiKey,
+    GoogleApiKey,
+    Anthropic,
+    None,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -115,6 +146,8 @@ pub struct LoggingConfig {
     pub console: ConsoleConfig,
     #[serde(default)]
     pub files: Vec<LogFileConfig>,
+    #[serde(default)]
+    pub request_log: RequestLogConfig,
 }
 
 impl Default for LoggingConfig {
@@ -126,6 +159,24 @@ impl Default for LoggingConfig {
             conversion_log: true,
             console: ConsoleConfig::default(),
             files: Vec::new(),
+            request_log: RequestLogConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RequestLogConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_max_capture_bytes")]
+    pub max_capture_bytes: usize,
+}
+
+impl Default for RequestLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_false(),
+            max_capture_bytes: default_max_capture_bytes(),
         }
     }
 }
@@ -192,6 +243,14 @@ fn default_max_disk_mb() -> u64 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_false() -> bool {
+    false
+}
+
+fn default_max_capture_bytes() -> usize {
+    10 * 1024 * 1024
 }
 
 fn default_host() -> String {
@@ -387,6 +446,8 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     fn sample_provider(model_map: HashMap<String, String>) -> ProviderConfig {
@@ -396,6 +457,8 @@ mod tests {
             base_url: "https://api.openai.com".into(),
             api_key: "sk-test".into(),
             model_map,
+            endpoints: Default::default(),
+            auth: Default::default(),
         }
     }
 
@@ -499,6 +562,8 @@ provider = "openai"
         assert!(config.console.level.is_none());
         assert_eq!(config.console.format, "pretty");
         assert!(config.files.is_empty());
+        assert!(!config.request_log.enabled);
+        assert_eq!(config.request_log.max_capture_bytes, 10 * 1024 * 1024);
     }
 
     #[test]
@@ -617,6 +682,40 @@ upstream_model = "gpt-4.1-mini"
     }
 
     #[test]
+    fn test_parse_provider_endpoint_and_auth_overrides() {
+        let toml_str = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[[providers]]
+name = "azure"
+format = "openai_chat"
+base_url = "https://example.openai.azure.com/openai/deployments/my-deployment"
+api_key = "secret"
+
+[providers.endpoints]
+path = "/chat/completions?api-version=2024-10-21"
+
+[providers.auth]
+scheme = "api_key_header"
+headers = { "x-ms-client-request-id" = "test-client" }
+"#;
+        let config = ServerConfig::from_toml(toml_str).unwrap();
+        let provider = &config.providers[0];
+
+        assert_eq!(
+            provider.endpoints.path.as_deref(),
+            Some("/chat/completions?api-version=2024-10-21")
+        );
+        assert_eq!(provider.auth.scheme, Some(AuthScheme::ApiKeyHeader));
+        assert_eq!(
+            provider.auth.headers.get("x-ms-client-request-id"),
+            Some(&"test-client".to_string())
+        );
+    }
+
+    #[test]
     fn test_resolve_provider_model_routes() {
         let config = ServerConfig {
             server: ServerSettings {
@@ -631,6 +730,8 @@ upstream_model = "gpt-4.1-mini"
                     base_url: "https://api.anthropic.com".into(),
                     api_key: "sk-ant".into(),
                     model_map: HashMap::new(),
+                    endpoints: Default::default(),
+                    auth: Default::default(),
                 },
                 ProviderConfig {
                     name: "openai".into(),
@@ -638,6 +739,8 @@ upstream_model = "gpt-4.1-mini"
                     base_url: "https://api.openai.com".into(),
                     api_key: "sk-proj".into(),
                     model_map: HashMap::new(),
+                    endpoints: Default::default(),
+                    auth: Default::default(),
                 },
             ],
             model_routes: vec![
@@ -702,6 +805,8 @@ upstream_model = "gpt-4.1-mini"
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-proj".into(),
                 model_map: [("*".into(), "gpt-4.1".into())].into(),
+                endpoints: Default::default(),
+                auth: Default::default(),
             }],
             model_routes: vec![],
             routes: vec![RouteConfig {
@@ -734,6 +839,8 @@ upstream_model = "gpt-4.1-mini"
                     base_url: "https://primary.com".into(),
                     api_key: "sk-1".into(),
                     model_map: HashMap::new(),
+                    endpoints: Default::default(),
+                    auth: Default::default(),
                 },
                 ProviderConfig {
                     name: "backup".into(),
@@ -741,6 +848,8 @@ upstream_model = "gpt-4.1-mini"
                     base_url: "https://backup.com".into(),
                     api_key: "sk-2".into(),
                     model_map: HashMap::new(),
+                    endpoints: Default::default(),
+                    auth: Default::default(),
                 },
             ],
             model_routes: vec![ModelRouteConfig {
@@ -806,6 +915,8 @@ upstream_model = "gpt-4.1-mini"
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-test".into(),
                 model_map: [("gpt-4.1".into(), "gpt-4.1".into())].into(),
+                endpoints: Default::default(),
+                auth: Default::default(),
             }],
             model_routes: vec![
                 ModelRouteConfig {

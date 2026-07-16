@@ -31,6 +31,16 @@ format = "openai_chat"
 base_url = "https://api.deepseek.com"
 api_key = "sk-your-deepseek-key"
 
+# Optional provider transport overrides for OpenAI-compatible providers
+# whose paths or auth headers differ from the default format conventions.
+# [providers.endpoints]
+# path = "/v1/chat/completions"
+# stream_path = "/v1/chat/completions"
+#
+# [providers.auth]
+# scheme = "bearer"  # bearer, api_key_header, x_api_key, google_api_key, anthropic, none
+# headers = { "x-custom-header" = "value" }
+
 [[providers]]
 name = "gemini"
 format = "gemini"
@@ -70,6 +80,12 @@ provider = "gemini"
 # pattern = "gpt-*"
 # providers = ["openai", "deepseek"]
 # strategy = "priority"
+#
+# Load-balance start provider while retaining failover order
+# [[model_routes]]
+# pattern = "gpt-*"
+# providers = ["openai", "deepseek"]
+# strategy = "round_robin"
 
 # Wildcard fallback: any unmatched model goes to openai
 [[model_routes]]
@@ -91,6 +107,13 @@ upstream_model = "gpt-4.1-mini"
 level = "info"
 dir = "./logs"          # Also enables usage logging (usage.YYYY-MM-DD.jsonl)
 max_disk_mb = 500
+
+# Optional full request/response audit logging.
+# When enabled, each request is written as one JSON Lines record to
+# requests.YYYY-MM-DD.jsonl in the logging directory.
+[logging.request_log]
+enabled = true
+max_capture_bytes = 10485760  # 10 MiB per captured body
 
 [logging.console]
 enabled = true

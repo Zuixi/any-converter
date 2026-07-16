@@ -1,0 +1,1 @@
+Cluade code MCP configration refer to [this file](https://code.claude.com/docs/en/mcp)

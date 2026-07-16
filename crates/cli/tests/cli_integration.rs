@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::unwrap_used)]
+
 use std::io::Write;
 
 use assert_cmd::Command;

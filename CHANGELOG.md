@@ -1,9 +1,34 @@
 # Any Converter CHANGELOGS
 
+## Unreleased — Web UI
+
+### Added
+
+- **Provider transport overrides**: Providers can now override upstream endpoint paths (`[providers.endpoints] path` / `stream_path`) and authentication behavior (`[providers.auth] scheme` / `headers`) while retaining format-based defaults.
+- **Next.js web interface** (`apps/web/`): Local web UI for `any-converter` with five pages:
+  - **Conversion Playground** (`/playground`): Interactive request/response conversion across OpenAI Chat, OpenAI Responses, Claude, and Gemini formats.
+  - **Request Log Explorer** (`/logs`): Browse and inspect captured request/response lifecycle records from `requests.YYYY-MM-DD.jsonl`.
+  - **Usage Dashboard** (`/usage`): Token volume, request count, and latency charts from `usage.YYYY-MM-DD.jsonl`.
+  - **Proxy Status** (`/status`): Live health polling, log disk usage, and recent errors from the running server.
+  - **Config Editor** (`/config`): View and edit `config.toml`; secrets are masked and the UI prompts to restart the server after saving.
+- **Monorepo layout** (`packages/*`): Shared packages for UI atoms (`packages/ui`), business components (`packages/core`), page views (`packages/views`), types/utilities (`packages/shared`), TypeScript configs (`packages/tsconfig`), and the Rust napi-rs bridge (`packages/bridge`).
+- **`crates/web-bridge`**: Native Node.js addon exposing `convert_request_string` and `convert_response_string` from `any-converter-core`.
+- **Turborepo + pnpm workspace**: Root-level scripts for installing, building, and formatting the web stack alongside the Rust workspace.
+
+### Changed
+
+- `Cargo.toml` workspace members now include `crates/web-bridge`.
+- `docs/build.md` updated with web UI prerequisites, build steps, and environment variables.
+- `round_robin` model route strategy now rotates the first provider attempted while retaining configured failover order.
+- Server handler responsibilities were split into focused `model`, `namespace`, and `route_strategy` modules.
+
 ## Unreleased — Protocol conversion fidelity improvements
 
 ### Added
 
+- **Full request/response logging** (`crates/server/src/request_log.rs`): Optional audit logger enabled by `[logging.request_log] enabled = true`. Writes one JSON Lines record per request to `requests.YYYY-MM-DD.jsonl`, including request body, upstream request body, response body or SSE lines, latency, token usage, and truncation status. Sensitive headers and body keys are redacted.
+- **Streaming request logging**: Captures every converted SSE line emitted to the client and records time-to-first-byte (TTFB) latency.
+- **Disk quota manager migration**: `disk_manager.rs` moved from `crates/cli` to `crates/server/src/disk_quota.rs` so the server owns log-directory size enforcement.
 - **Shared reasoning/thinking mapper** (`crates/core/src/converters/reasoning.rs`): Centralized `reasoning_effort` ↔ `thinking.budget_tokens` conversion for OpenAI Chat/Responses ↔ Claude, eliminating duplicated logic.
 - **OpenAI Chat reasoning fields**: `OpenAIChatRequest` now accepts `reasoning_effort` and `reasoning`, enabling explicit reasoning preferences when converting Chat → Claude/Responses.
 - **Streaming reasoning propagation**: OpenAI Chat SSE `delta.reasoning_content` is parsed as `CanonicalStreamEvent::ThinkingDelta` and emitted as Claude `thinking_delta`; Claude thinking deltas are emitted as OpenAI Chat `reasoning_content` chunks.
@@ -71,27 +96,32 @@
 ## 0.2.0 — Architecture: Pairwise format converters replace canonical IR
 
 ### Changed
+
 - **Conversion architecture**: Replaced hub-and-spoke canonical IR conversion with direct pairwise converters — each (source, target) format pair now has a dedicated converter that translates requests, responses, and streaming events directly without data loss
 - **`FormatConverter` trait**: New trait in `crates/core/src/converters/mod.rs` defines `convert_request`, `convert_response`, and `convert_stream_event` for each pair
 - **Streaming reuse**: Pairwise converters compose existing `StreamAdapter::parse_sse_event` and `StreamAdapter::emit_sse_event` for streaming conversion
 
 ### Added
+
 - 12 pairwise converter modules: `claude_to_chat`, `claude_to_resp`, `claude_to_gemini`, `chat_to_claude`, `chat_to_resp`, `chat_to_gemini`, `resp_to_claude`, `resp_to_chat`, `resp_to_gemini`, `gemini_to_claude`, `gemini_to_chat`, `gemini_to_resp`
 - `crates/core/src/converters/shared.rs` — common utilities for converters
 - Identity conversion passthrough for same-format requests
 
 ### Removed
+
 - `FormatAdapter` trait and all `adapter.rs` / `adapter_tests.rs` files
 - Canonical IR types no longer used: `CanonicalRequest`, `CanonicalResponse`, `ContentBlock`, `Turn`, `Role`, `ImageSource`, `SystemContent`, `SystemBlock`, `ToolDef`, `ToolChoice`, `GenerationParams`, `ResponseFormat`
 - IR modules: `ir/request.rs`, `ir/message.rs`, `ir/tool.rs`, `ir/params.rs`
 - Format-specific `helpers.rs` and `tools.rs` files (functionality moved into converters)
 
 ### Retained
+
 - IR streaming types: `CanonicalStreamEvent`, `StreamState`, `StreamPhase`, `StopReason`, `Usage`, `AccumulatedToolCall` — used as the intermediate representation for streaming event conversion
 
 ## 0.1.7 — Refactor: Migrate logging from tracing to log crate
 
 ### Changed
+
 - **Logging facade**: Replaced `tracing` + `tracing-subscriber` + `tracing-appender` with the `log` crate facade and a custom `MultiLogger` implementation
 - **Multi-output support**: Console output (stdout/stderr) and file outputs are independently configurable with per-output level filtering, format (pretty/json), and optional target filtering
 - **Config enhancement**: Added `[logging.console]` section with `enabled`, `output`, `level`, `format` fields; extended `[[logging.files]]` with `format` and `rotation` fields
@@ -99,25 +129,30 @@
 - **Backward compatible**: All new config fields have sensible defaults; existing TOML configs work without modification
 
 ### Removed
+
 - Dependencies: `tracing`, `tracing-subscriber`, `tracing-appender`
 
 ### Added
+
 - Dependencies: `log` (with `std` feature), `chrono` (for timestamps and rotation)
 
 ## 0.1.6 — Fix: Namespace tool name dropped in function_call history + resilient error handling
 
 ### Fixed
+
 - **Critical**: `parse_function_call_fields` dropped the `namespace` field from `function_call` items in request history — when Codex sends `{"type":"function_call", "namespace":"mcp__playwright", "name":"browser_navigate"}`, the converter was forwarding only `"browser_navigate"` to Claude instead of the qualified name `"mcp__playwright__browser_navigate"`, causing Claude to reject unrecognized tool names and triggering Codex retry loops
 - **Critical**: `convert_sse_block` in proxy.rs silently swallowed stream conversion errors (returned empty `Vec`), causing critical SSE events like `response.output_item.done` and `response.completed` to be silently dropped — now emits an `error` SSE event for diagnostics
 - **Critical**: Panic handler in `convert_sse_block` now also emits an `error` SSE event instead of returning empty output
 - Added test `test_namespace_function_call_in_history_qualifies_name` validating the full roundtrip: namespace function_call in Responses request → qualified ToolUse name in canonical IR → correct Claude tool matching
 
 ### Root cause analysis
+
 Codex CLI sends `function_call` history items with separate `namespace` and `name` fields for MCP tools. The `helpers::parse_function_call_fields` function was only reading `name` and ignoring `namespace`, so when the tool call was forwarded to Claude, the tool name didn't match any defined tool (Claude had `mcp__playwright__browser_navigate` but received `browser_navigate`). Claude would then return an error or unexpected response, causing Codex to retry indefinitely.
 
 ## 0.1.5 — Fix: Codex CLI MCP tool call dead loop (missing function_call item `id`)
 
 ### Fixed
+
 - **Critical**: Codex CLI enters infinite loop with MCP tools — function_call items in streaming SSE responses were missing the `id` field (e.g. `fc_{call_id}`), causing Codex to silently discard tool calls and re-send the same request endlessly
 - **Root cause**: Codex CLI checks `if (!item.id) return [state, NO_EVENTS]` when processing `response.output_item.added` — without `id`, tool calls are never executed, model keeps re-issuing the same tool call
 - Added `id` field (`fc_{call_id}` format) to all function_call items in `response.output_item.added`, `response.output_item.done`, and `response.completed` output arrays
@@ -129,11 +164,13 @@ Codex CLI sends `function_call` history items with separate `namespace` and `nam
 ## 0.1.4 — Fix: Codex CLI model metadata warning + Feature: Structured logging system
 
 ### Fixed
+
 - **Codex CLI warning**: "Model metadata for `GPT-5.4` not found" caused by case-sensitive slug matching — model names in `config.toml` normalized to lowercase (`gpt-5.4`) to match Codex bundled catalog
 - **Root cause**: Codex CLI's `find_model_by_longest_prefix()` uses `model.starts_with(&candidate.slug)` which is case-sensitive; bundled `models.json` uses lowercase slugs; Codex does NOT fetch `/models` from custom base URLs with API key auth (only ChatGPT backend or command auth)
 - **Production code audit**: eliminated `unwrap()` from `gemini/tools.rs` (response_schema) and `cli/main.rs` (read_input)
 
 ### Added
+
 - **Codex-compatible `/v1/models` endpoint**: detects `client_version` query param (Codex signature) and returns `{ "models": [...] }` format with all required `ModelInfo` fields (`slug`, `display_name`, `shell_type`, `visibility`, `truncation_policy`, etc.)
 - **Structured logging system** (`[logging]` config section) with:
   - Multi-layer tracing-subscriber: console (human-readable) + JSON file layers (non-blocking via `tracing-appender`)
@@ -146,6 +183,7 @@ Codex CLI sends `function_call` history items with separate `namespace` and `nam
 - **`LoggingConfig`** / **`LogFileConfig`** structs in server config with sensible defaults
 
 ### Changed
+
 - CLI `main.rs` now initializes multi-layer tracing instead of plain `fmt().init()`
 - `process_request()` now generates `request_id` (UUID) for all log events, enabling request correlation
 - Replaced `print!` in `Stream` command with `io::stdout().write_all()` for consistency with `println!` ban
@@ -153,6 +191,7 @@ Codex CLI sends `function_call` history items with separate `namespace` and `nam
 ## 0.1.3 — Refactor: Split OpenAI Responses adapter into focused modules
 
 ### Changed
+
 - **Refactored** `openai_resp/adapter.rs` from 1078 lines to 544 lines by extracting concerns into sub-modules
 - **Extracted** `tools.rs` (189 lines) — tool definition parsing, namespace flattening, tool_choice, response_format serialization
 - **Extracted** `helpers.rs` (57 lines) — shared function_call parsing/serialization and status-to-stop_reason mapping (used by both adapter and stream)
@@ -165,12 +204,14 @@ Codex CLI sends `function_call` history items with separate `namespace` and `nam
 ## 0.1.2 — Fix: MCP tool discovery/execution and model metadata for Codex CLI
 
 ### Fixed
+
 - **Critical**: Codex CLI MCP tools (type `namespace`) were silently dropped during request conversion — they are now flattened into individual `function` tools with qualified names (`namespace__tool_name`) for upstream model compatibility
 - **Critical**: Streaming SSE responses now correctly split qualified tool names back into separate `namespace` + `name` fields in `function_call` events, matching Codex CLI's `ToolName{namespace, name}` lookup format
 - **Critical**: Non-streaming responses also patch `function_call` output items with proper `namespace` field
 - `response.completed` and `response.output_item.done` / `response.output_item.added` SSE events all correctly patched
 
 ### Added
+
 - `[model_metadata]` configuration section in `config.toml` — allows serving rich model metadata (`context_window`, `max_context_window`, `supports_parallel_tool_calls`) via `/v1/models` endpoint, eliminating Codex CLI's "Model metadata not found" warning
 - `extract_namespace_map()` extracts namespace→tool mapping from Responses API requests before conversion
 - `patch_response_namespaces()` restores `namespace` + short `name` in non-streaming responses
@@ -181,6 +222,7 @@ Codex CLI sends `function_call` history items with separate `namespace` and `nam
 ## 0.1.1 — Fix: Streaming tool calls not triggering execution in Codex CLI
 
 ### Fixed
+
 - **Critical**: OpenAI Responses streaming emitter now emits `response.output_item.done` for `function_call` items — this is required by Codex CLI to trigger tool execution
 - **Critical**: `response.function_call_arguments.done` event now emitted when tool call arguments streaming completes
 - **Critical**: `response.completed` payload now includes all `function_call` items in the `output` array (previously only included text messages)
@@ -190,12 +232,14 @@ Codex CLI sends `function_call` history items with separate `namespace` and `nam
 - Root cause (request): Parallel tool calls in Responses format produce separate `function_call` input items, each parsed as an independent assistant Turn; without merging, this creates consecutive assistant messages rejected by Claude-format APIs
 
 ### Added
+
 - Cross-format integration tests: OpenAI Chat → Responses and Claude → Responses streaming tool call conversion
 - Unit tests for tool call accumulation in streaming state
 
 ## 0.1.0 — MVP
 
 ### Added
+
 - **Core conversion library** (`any-converter-core`) with typed Canonical IR and bidirectional conversion between 4 LLM API formats
 - **Format adapters** for OpenAI Chat Completions, Claude Messages, OpenAI Responses, and Google Gemini
 - **Streaming SSE adapters** for all 4 formats (parse + emit)

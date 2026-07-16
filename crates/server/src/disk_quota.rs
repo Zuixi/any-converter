@@ -7,7 +7,7 @@ use std::time::Duration;
 /// (by modification time) until total usage is below `max_bytes`.
 ///
 /// Runs every 5 minutes. Errors are logged but never crash the server.
-pub fn spawn_disk_manager(dir: PathBuf, max_bytes: u64) -> tokio::task::JoinHandle<()> {
+pub fn spawn_disk_quota_manager(dir: PathBuf, max_bytes: u64) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
         loop {
@@ -106,6 +106,8 @@ fn collect_log_files(dir: &Path) -> std::io::Result<Vec<LogFileEntry>> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

@@ -1,7 +1,12 @@
 pub mod auth;
 pub mod config;
+pub mod disk_quota;
 pub mod handlers;
+pub(crate) mod model;
+pub(crate) mod namespace;
 pub mod proxy;
+pub mod request_log;
+pub(crate) mod route_strategy;
 pub mod router;
 pub mod usage;
 

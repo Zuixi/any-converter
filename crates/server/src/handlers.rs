@@ -14,8 +14,12 @@ use reqwest::Client;
 use serde_json::Value;
 
 use crate::auth::{self, AuthError};
-use crate::config::ServerConfig;
-use crate::proxy::build_upstream_url;
+use crate::config::{RouteStrategy, ServerConfig};
+use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
+use crate::namespace::{extract_namespace_map, patch_response_namespaces};
+use crate::proxy::build_upstream_url_for_provider;
+use crate::request_log::{RequestLogContext, RequestLogger};
+use crate::route_strategy::order_provider_names;
 use crate::router::RouteInfo;
 use crate::usage::{self, UsageLogger, UsageRecord};
 
@@ -24,6 +28,7 @@ pub struct AppState {
     pub config: ServerConfig,
     pub client: Client,
     pub usage_logger: Option<Arc<UsageLogger>>,
+    pub request_logger: Option<Arc<RequestLogger>>,
 }
 
 pub async fn handle_health() -> impl IntoResponse {
@@ -251,6 +256,8 @@ struct RequestContext {
     ns_map: std::collections::HashMap<String, (String, String)>,
     streaming: bool,
     provider_names: Vec<String>,
+    strategy: RouteStrategy,
+    log_ctx: Option<RequestLogContext>,
 }
 
 fn prepare_request(
@@ -285,7 +292,7 @@ fn prepare_request(
         warn!("no model in request body request_id={}", req_id);
     }
 
-    let body = strip_private_fields(body);
+    let stripped_body = strip_private_fields(body);
 
     let resolved = state
         .config
@@ -305,8 +312,27 @@ fn prepare_request(
             ))
         })?;
 
-    let ns_map = extract_namespace_map(&body, route_info.client_format);
-    let streaming = is_streaming_request(&body, route_info);
+    let ns_map = extract_namespace_map(&stripped_body, route_info.client_format);
+    let streaming = is_streaming_request(&stripped_body, route_info);
+
+    let log_ctx = if state.request_logger.is_some() {
+        Some(RequestLogContext {
+            req_id,
+            start_time,
+            client_format: route_info.client_format,
+            client_model: client_model.clone(),
+            upstream_model: resolved.upstream_model.clone(),
+            streaming,
+            method: "POST".to_string(),
+            path: path_for_route(route_info, gemini_model.unwrap_or(&client_model)),
+            request_body: body.to_vec(),
+            provider_name: String::new(),
+            upstream_url: String::new(),
+            upstream_request_body: Vec::new(),
+        })
+    } else {
+        None
+    };
 
     Ok((
         RequestContext {
@@ -317,16 +343,33 @@ fn prepare_request(
             ns_map,
             streaming,
             provider_names: resolved.provider_names,
+            strategy: resolved.strategy,
+            log_ctx,
         },
-        body,
+        stripped_body,
     ))
+}
+
+fn path_for_route(route_info: RouteInfo, model: &str) -> String {
+    match route_info.client_format {
+        Format::OpenAIChat => "/v1/chat/completions".to_string(),
+        Format::Claude => "/v1/messages".to_string(),
+        Format::OpenAIResponses => "/v1/responses".to_string(),
+        Format::Gemini => {
+            if route_info.path_streaming {
+                format!("/v1beta/models/{model}:streamGenerateContent")
+            } else {
+                format!("/v1beta/models/{model}:generateContent")
+            }
+        }
+    }
 }
 
 fn convert_and_build_upstream(
     state: &AppState,
     body: &[u8],
     route_info: RouteInfo,
-    ctx: &RequestContext,
+    ctx: &mut RequestContext,
     provider: &crate::config::ProviderConfig,
 ) -> Result<(Vec<u8>, String, Vec<(String, String)>), Box<Response>> {
     if state.config.logging.conversion_log {
@@ -362,14 +405,15 @@ fn convert_and_build_upstream(
         }
     };
 
-    let url = build_upstream_url(
-        provider.format,
-        &provider.base_url,
-        &ctx.upstream_model,
-        ctx.streaming,
-    );
+    let url = build_upstream_url_for_provider(provider, &ctx.upstream_model, ctx.streaming);
 
-    let auth_headers = auth::build_upstream_auth_headers(provider.format, &provider.api_key);
+    let auth_headers = auth::build_upstream_auth_headers_for_provider(provider);
+
+    if let Some(ref mut log_ctx) = ctx.log_ctx {
+        log_ctx.provider_name = provider.name.clone();
+        log_ctx.upstream_url = url.clone();
+        log_ctx.upstream_request_body = converted_body.clone();
+    }
 
     Ok((converted_body, url, auth_headers))
 }
@@ -421,6 +465,20 @@ fn build_non_streaming_response(
         });
     }
 
+    if let Some(ref logger) = state.request_logger {
+        if let Some(ref log_ctx) = ctx.log_ctx {
+            crate::request_log::log_non_streaming(
+                logger,
+                log_ctx,
+                upstream_body,
+                &converted,
+                status,
+                provider.format,
+                &state.config.logging.request_log,
+            );
+        }
+    }
+
     Ok(Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
@@ -435,14 +493,15 @@ async fn process_request(
     route_info: RouteInfo,
     gemini_model: Option<&str>,
 ) -> Response {
-    let (ctx, body) = match prepare_request(state, headers, body, route_info, gemini_model) {
+    let (mut ctx, body) = match prepare_request(state, headers, body, route_info, gemini_model) {
         Ok(pair) => pair,
         Err(response) => return *response,
     };
 
     let mut last_error: Option<String> = None;
+    let provider_names = order_provider_names(&ctx.provider_names, &ctx.strategy);
 
-    for (attempt, provider_name) in ctx.provider_names.iter().enumerate() {
+    for (attempt, provider_name) in provider_names.iter().enumerate() {
         let provider = match state.config.find_provider(provider_name) {
             Some(p) => p,
             None => {
@@ -456,7 +515,7 @@ async fn process_request(
         };
 
         let (converted_body, url, auth_headers) =
-            match convert_and_build_upstream(state, &body, route_info, &ctx, provider) {
+            match convert_and_build_upstream(state, &body, route_info, &mut ctx, provider) {
                 Ok(v) => v,
                 Err(response) => return *response,
             };
@@ -480,6 +539,9 @@ async fn process_request(
                 provider.format,
                 route_info.client_format,
                 &ctx.ns_map,
+                ctx.log_ctx.clone(),
+                state.request_logger.clone(),
+                state.config.logging.request_log.max_capture_bytes,
             )
             .await
             {
@@ -504,7 +566,7 @@ async fn process_request(
         .await
         {
             Ok((status, upstream_body)) => {
-                if is_retryable_status(status) && attempt + 1 < ctx.provider_names.len() {
+                if is_retryable_status(status) && attempt + 1 < provider_names.len() {
                     warn!(
                         "upstream returned {} request_id={} provider={}, trying next provider",
                         status, ctx.req_id, provider.name
@@ -541,17 +603,6 @@ async fn process_request(
 
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504 | 529)
-}
-
-fn strip_private_fields(body: &[u8]) -> Vec<u8> {
-    if let Ok(mut val) = serde_json::from_slice::<serde_json::Value>(body) {
-        if let Some(obj) = val.as_object_mut() {
-            obj.retain(|key, _| !key.starts_with('_'));
-        }
-        serde_json::to_vec(&val).unwrap_or_else(|_| body.to_vec())
-    } else {
-        body.to_vec()
-    }
 }
 
 fn truncated_body(body: &[u8], max_len: usize) -> String {
@@ -677,105 +728,10 @@ pub fn is_streaming_request(body: &[u8], route_info: RouteInfo) -> bool {
         .unwrap_or(false)
 }
 
-/// Extract namespace mapping from Responses API request tools.
-/// Returns a map: qualified_name → (namespace, short_name).
-/// For `{type:"namespace", name:"mcp__srv", tools:[{name:"fn1"}]}`,
-/// the entry is `"mcp__srv__fn1" → ("mcp__srv", "fn1")`.
-pub(crate) fn extract_namespace_map(
-    body: &[u8],
-    client_format: Format,
-) -> HashMap<String, (String, String)> {
-    if client_format != Format::OpenAIResponses {
-        return HashMap::new();
-    }
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return HashMap::new();
-    };
-    let Some(tools) = value.get("tools").and_then(|v| v.as_array()) else {
-        return HashMap::new();
-    };
-    let mut map = HashMap::new();
-    for tool in tools {
-        if tool.get("type").and_then(|v| v.as_str()) != Some("namespace") {
-            continue;
-        }
-        let ns = tool.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        if ns.is_empty() {
-            continue;
-        }
-        let Some(children) = tool.get("tools").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for child in children {
-            if let Some(name) = child.get("name").and_then(|v| v.as_str()) {
-                let qualified = format!("{ns}__{name}");
-                map.insert(qualified, (ns.to_string(), name.to_string()));
-            }
-        }
-    }
-    map
-}
-
-/// Patch function_call items in a Responses API response body to include
-/// the `namespace` field and restore the short tool name. This is required
-/// for Codex CLI which dispatches tool calls via `ToolName{namespace, name}`.
-fn patch_response_namespaces(body: &mut Vec<u8>, ns_map: &HashMap<String, (String, String)>) {
-    if ns_map.is_empty() {
-        return;
-    }
-    let Ok(mut value) = serde_json::from_slice::<Value>(body) else {
-        return;
-    };
-    let mut patched = false;
-    if let Some(output) = value.get_mut("output").and_then(|v| v.as_array_mut()) {
-        for item in output {
-            if item.get("type").and_then(|v| v.as_str()) != Some("function_call") {
-                continue;
-            }
-            if let Some(name) = item.get("name").and_then(|v| v.as_str()).map(String::from) {
-                if let Some((ns, short)) = ns_map.get(&name) {
-                    item["name"] = Value::String(short.clone());
-                    item["namespace"] = Value::String(ns.clone());
-                    patched = true;
-                }
-            }
-        }
-    }
-    if patched {
-        if let Ok(bytes) = serde_json::to_vec(&value) {
-            *body = bytes;
-        }
-    }
-}
-
-fn extract_model_from_body(body: &[u8]) -> Option<String> {
-    serde_json::from_slice::<Value>(body)
-        .ok()
-        .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(str::to_string))
-}
-
-fn patch_model_in_body(
-    body: &mut Vec<u8>,
-    format: Format,
-    model: &str,
-) -> Result<(), serde_json::Error> {
-    let mut value: Value = serde_json::from_slice(body)?;
-    match format {
-        Format::Gemini => {
-            if value.get("model").is_some() {
-                value["model"] = Value::String(model.to_string());
-            }
-        }
-        _ => {
-            value["model"] = Value::String(model.to_string());
-        }
-    }
-    *body = serde_json::to_vec(&value)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use crate::config::{LoggingConfig, ProviderConfig, RouteConfig, ServerSettings};
     use std::collections::HashMap;
@@ -794,6 +750,8 @@ mod tests {
                     base_url: "https://api.openai.com".into(),
                     api_key: "sk-test".into(),
                     model_map: [("*".into(), "gpt-4.1".into())].into(),
+                    endpoints: Default::default(),
+                    auth: Default::default(),
                 }],
                 model_routes: vec![],
                 routes: vec![RouteConfig {
@@ -805,6 +763,7 @@ mod tests {
             },
             client: Client::new(),
             usage_logger: None,
+            request_logger: None,
         }
     }
 
@@ -855,6 +814,7 @@ mod tests {
             },
             client: Client::new(),
             usage_logger: None,
+            request_logger: None,
         });
 
         let route_info = RouteInfo {
@@ -900,24 +860,5 @@ mod tests {
                 .resolve_model("claude-3"),
             "gpt-4.1"
         );
-    }
-
-    #[test]
-    fn test_strip_private_fields_removes_underscore_keys() {
-        let body = br#"{"model":"gpt-4.1","_stream_tokens":true,"messages":[]}"#;
-        let result = strip_private_fields(body);
-        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
-        assert!(parsed.get("model").is_some());
-        assert!(parsed.get("messages").is_some());
-        assert!(parsed.get("_stream_tokens").is_none());
-    }
-
-    #[test]
-    fn test_strip_private_fields_preserves_normal_keys() {
-        let body = br#"{"model":"gpt-4.1","stream":true}"#;
-        let result = strip_private_fields(body);
-        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
-        assert_eq!(parsed.get("model").unwrap().as_str().unwrap(), "gpt-4.1");
-        assert_eq!(parsed.get("stream").unwrap().as_bool().unwrap(), true);
     }
 }

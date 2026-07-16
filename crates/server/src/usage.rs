@@ -102,6 +102,8 @@ pub fn create_usage_logger(log_dir: Option<&str>) -> Option<Arc<UsageLogger>> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]

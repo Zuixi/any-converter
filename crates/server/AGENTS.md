@@ -8,13 +8,18 @@
 
 ```
 src/
-├── lib.rs        — Server entry: run(config) -> Result
-├── router.rs     — Axum route table + path→format detection
-├── handlers.rs   — Request handlers: model extraction, routing, failover, forward, respond
-├── proxy.rs      — Upstream HTTP client logic (reqwest)
-├── auth.rs       — Client key validation + upstream auth header building
-├── config.rs     — TOML config: providers, model_routes, legacy routes, logging
-└── usage.rs      — Async usage logger: UsageRecord → JSON Lines files
+├── lib.rs           — Server entry: run(config) -> Result
+├── router.rs        — Axum route table + path→format detection
+├── handlers.rs      — Request handlers: model extraction, routing, failover, forward, respond
+├── proxy.rs         — Upstream HTTP client logic (reqwest)
+├── auth.rs          — Client key validation + upstream auth header building
+├── config.rs        — TOML config: providers, model_routes, legacy routes, logging
+├── model.rs         — Model extraction, model patching, private-field filtering
+├── namespace.rs     — Responses namespace tool map extraction and response patching
+├── route_strategy.rs — Provider pool ordering (priority / round_robin)
+├── usage.rs         — Async usage logger: UsageRecord → JSON Lines files
+├── disk_quota.rs    — Background disk quota manager for the logging directory
+└── request_log.rs   — Async full request/response logger → JSON Lines files
 ```
 
 ## Domain Constraints
@@ -39,7 +44,7 @@ src/
 - `api_key` in `ServerConfig` is for **client authentication** (optional).
 - `ProviderConfig.api_key` is the **upstream provider key** (always required).
 - Use `auth::validate_client_key` for incoming requests.
-- Use `auth::build_upstream_auth_headers` when forwarding — each provider has distinct header conventions (Bearer, x-api-key, x-goog-api-key).
+- Use `auth::build_upstream_auth_headers_for_provider` when forwarding — defaults are derived from format, and provider-level `auth.scheme` / `auth.headers` may override them.
 
 ### 5. Upstream Error Handling
 - Network errors → `502 Bad Gateway` with `upstream_error` type.
@@ -53,7 +58,8 @@ src/
   2. Legacy `routes` — format-based fallback
 - Returns `ResolvedRoute` with a **provider pool** (multiple names for failover).
 - `ProviderConfig.resolve_model` further maps client model names to upstream names via `model_map`.
-- `process_request` iterates the provider pool: on retryable upstream errors (429/5xx), tries next provider.
+- `route_strategy::order_provider_names` orders the provider pool. `priority` preserves config order; `round_robin` rotates the starting provider while preserving failover order.
+- `process_request` iterates the ordered provider pool: on retryable upstream errors (429/5xx), tries next provider.
 - Patch the upstream model name into the converted request body before forwarding (`patch_model_in_body`).
 
 ### 7. Usage Logging
@@ -62,12 +68,22 @@ src/
 - Token usage extracted from upstream response bodies (`usage::extract_usage_from_response`).
 - Records include: request_id, timestamp, client/upstream model, provider, tokens, latency, status.
 
-### 7. Namespace Tool Support (Codex CLI)
+### 8. Request/Response Logging
+- `RequestLogger` writes full request/response audit records to daily `requests.YYYY-MM-DD.jsonl` files via async mpsc channel.
+- Enabled by `[logging.request_log] enabled = true` and requires `logging.dir`.
+- Captures both non-streaming (full JSON body) and streaming (SSE lines) responses.
+- Streaming latency is measured as **time-to-first-byte** (TTFB) of the upstream response.
+- Token usage is extracted from upstream response bodies for non-streaming requests; streaming usage comes from `StreamState.accumulated_usage`.
+- Request bodies, upstream request bodies, and response bodies are truncated at `max_capture_bytes` and marked with `truncated: true`.
+- Sensitive headers and body keys (`api_key`, `authorization`, etc.) are redacted before writing.
+- The background disk quota manager (`disk_quota.rs`) enforces `logging.max_disk_mb` by deleting oldest files first.
+
+### 9. Namespace Tool Support (Codex CLI)
 - Responses API supports `{type: "namespace", name: "...", tools: [...]}`.
 - Extract namespace mapping before conversion (`extract_namespace_map`).
 - Patch `function_call` items back to `{name, namespace}` after response conversion (`patch_response_namespaces`, `patch_sse_namespaces`).
 
-### 8. Request Preprocessing
+### 10. Request Preprocessing
 - **Private field filtering**: Before forwarding, `process_request` strips all `_`-prefixed fields from the JSON body. These are internal client markers (e.g. `_stream_tokens`, `_internal_id`) that could cause upstream API rejection.
 - **Empty model defense**: If the request body has no `model` field and no Gemini path model, an empty string is used instead of the old `"default"` hardcode — preventing the literal string `"default"` from reaching upstream.
 

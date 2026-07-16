@@ -1,0 +1,12 @@
+# Generated native addon bindings
+packages/bridge/index.js
+packages/bridge/index.d.ts
+
+# Build outputs
+target/
+.next/
+dist/
+node_modules/
+
+# Lockfile
+pnpm-lock.yaml

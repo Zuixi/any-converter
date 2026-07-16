@@ -108,7 +108,7 @@ async fn concurrent_404_requests() {
             let resp = app
                 .oneshot(
                     Request::builder()
-                        .uri(&format!("/nonexistent/{i}"))
+                        .uri(format!("/nonexistent/{i}"))
                         .body(Body::empty())
                         .unwrap(),
                 )

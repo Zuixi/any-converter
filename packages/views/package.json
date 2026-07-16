@@ -1,0 +1,25 @@
+{
+  "name": "@any-converter/views",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@any-converter/core": "workspace:*",
+    "@any-converter/shared": "workspace:*",
+    "@any-converter/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@any-converter/tsconfig": "workspace:*",
+    "@types/react": "^18.3.5",
+    "typescript": "^5.5.4"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

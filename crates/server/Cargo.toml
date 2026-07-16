@@ -26,6 +26,7 @@ http-body-util = "0.1"
 tokio = { workspace = true }
 pretty_assertions = "1"
 tower = "0.5"
+tempfile = "3"
 
 [lints]
 workspace = true
