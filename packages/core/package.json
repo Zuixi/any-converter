@@ -11,7 +11,9 @@
   "dependencies": {
     "@any-converter/shared": "workspace:*",
     "@any-converter/ui": "workspace:*",
-    "recharts": "^2.12.7"
+    "react-markdown": "^10.1.0",
+    "recharts": "^2.12.7",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@any-converter/tsconfig": "workspace:*",

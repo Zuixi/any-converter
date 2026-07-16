@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { parseJsonl } from "@any-converter/shared";
 import type { RequestLogRecord } from "@any-converter/shared";
 
+import { readRequestLogsFromSqlite } from "../log-store";
+
+export const runtime = "nodejs";
+
 function getLogDir(): string {
   const dir = process.env.LOG_DIR;
   if (!dir) {
@@ -16,6 +20,11 @@ function getLogDir(): string {
 export async function GET() {
   try {
     const logDir = getLogDir();
+    const sqliteRecords = readRequestLogsFromSqlite(logDir, 500);
+    if (sqliteRecords && sqliteRecords.length > 0) {
+      return NextResponse.json({ records: sqliteRecords });
+    }
+
     const files = await readdir(logDir);
     const requestFiles = files
       .filter((name) => name.startsWith("requests.") && name.endsWith(".jsonl"))

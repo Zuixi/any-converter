@@ -19,7 +19,11 @@ export interface SanitizedBody {
   truncated: boolean;
 }
 
-export type ResponseBodyKind = { type: "Json"; text: string } | { type: "SseLines"; lines: string[] };
+export type ResponseBodyKind =
+  | { text: string }
+  | { lines: string[] }
+  | { type: "Json"; text: string }
+  | { type: "SseLines"; lines: string[] };
 
 export interface RequestLogRecord {
   request_id: string;
@@ -37,7 +41,43 @@ export interface RequestLogRecord {
   response_body: ResponseBodyKind;
   latency_ms: number;
   usage: UsageRecord;
+  trace?: RequestTraceSummary;
   truncated: boolean;
+}
+
+export interface RequestTraceSummary {
+  client: TraceBodySummary;
+  upstream: TraceBodySummary;
+  response: TraceBodySummary;
+}
+
+export interface TraceBodySummary {
+  messages: TraceMessage[];
+  tool_definitions: TraceToolDefinition[];
+  tool_calls: TraceToolCall[];
+  tool_results: TraceToolResult[];
+}
+
+export interface TraceMessage {
+  role: string;
+  content_preview: string;
+}
+
+export interface TraceToolDefinition {
+  name: string;
+  namespace?: string;
+}
+
+export interface TraceToolCall {
+  id?: string;
+  name: string;
+  namespace?: string;
+  arguments_preview: string;
+}
+
+export interface TraceToolResult {
+  id?: string;
+  content_preview: string;
 }
 
 export interface UsageRecord {
@@ -56,6 +96,9 @@ export interface AggregatedUsage {
   request_count: number;
   status: number;
   latency_ms: number;
+  avg_latency_ms?: number;
+  max_latency_ms?: number;
+  error_count?: number;
   provider: string;
   client_model: string;
 }
@@ -93,6 +136,8 @@ export interface LoggingConfig {
   request_log?: {
     enabled: boolean;
     max_capture_bytes?: number;
+    trace_enabled?: boolean;
+    trace_max_preview_bytes?: number;
   };
 }
 

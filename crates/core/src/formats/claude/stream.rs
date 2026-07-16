@@ -133,6 +133,7 @@ fn parse_content_block_delta(
         ClaudeStreamDelta::ThinkingDelta { thinking } => {
             Ok(vec![CanonicalStreamEvent::ThinkingDelta(thinking)])
         }
+        ClaudeStreamDelta::SignatureDelta { .. } => Ok(vec![]),
     }
 }
 
@@ -399,6 +400,18 @@ mod tests {
             CanonicalStreamEvent::ToolCallDelta { arguments_delta, .. }
                 if arguments_delta == r#"{"q":"#
         ));
+    }
+
+    #[test]
+    fn test_parse_content_block_delta_signature_delta_is_ignored() {
+        let event = SseEvent {
+            event: Some("content_block_delta".into()),
+            data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_abc"}}"#.into(),
+        };
+        let mut state = StreamState::new();
+        let events = ClaudeStreamAdapter::parse_sse_event(&event, &mut state).unwrap();
+        assert!(events.is_empty());
+        assert_eq!(state.block_index, 0);
     }
 
     #[test]

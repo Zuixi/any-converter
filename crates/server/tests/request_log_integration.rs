@@ -50,6 +50,8 @@ fn test_config(base_url: &str, log_path: PathBuf) -> ServerConfig {
             request_log: RequestLogConfig {
                 enabled: true,
                 max_capture_bytes: 1024 * 1024,
+                trace_enabled: true,
+                trace_max_preview_bytes: 2048,
             },
             ..Default::default()
         },
@@ -117,6 +119,8 @@ async fn request_log_non_streaming_captures_body_usage_latency() {
             &RequestLogConfig {
                 enabled: true,
                 max_capture_bytes: 1024 * 1024,
+                trace_enabled: true,
+                trace_max_preview_bytes: 2048,
             },
         ),
     });
@@ -165,6 +169,11 @@ async fn request_log_non_streaming_captures_body_usage_latency() {
 
     assert_eq!(record["usage"]["input_tokens"], 10);
     assert_eq!(record["usage"]["output_tokens"], 1);
+    assert_eq!(record["trace"]["client"]["messages"][0]["role"], "user");
+    assert_eq!(
+        record["trace"]["upstream"]["messages"][0]["content_preview"],
+        "hi"
+    );
     assert!(!record["truncated"].as_bool().unwrap());
 }
 
@@ -213,6 +222,8 @@ async fn request_log_streaming_captures_ttfb_and_sse_lines() {
             &RequestLogConfig {
                 enabled: true,
                 max_capture_bytes: 1024 * 1024,
+                trace_enabled: true,
+                trace_max_preview_bytes: 2048,
             },
         ),
     });
@@ -251,5 +262,6 @@ async fn request_log_streaming_captures_ttfb_and_sse_lines() {
     assert!(record["latency_ms"].as_u64().is_some());
     let lines = record["response_body"]["lines"].as_array().unwrap();
     assert!(!lines.is_empty());
+    assert_eq!(record["trace"]["client"]["messages"][0]["role"], "user");
     assert!(!record["truncated"].as_bool().unwrap());
 }

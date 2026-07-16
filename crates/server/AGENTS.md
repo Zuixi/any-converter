@@ -19,6 +19,8 @@ src/
 ├── route_strategy.rs — Provider pool ordering (priority / round_robin)
 ├── usage.rs         — Async usage logger: UsageRecord → JSON Lines files
 ├── disk_quota.rs    — Background disk quota manager for the logging directory
+├── observability.rs — Structured message/tool trace summaries for request logs
+├── storage.rs       — SQLite mirror for structured request/usage logs
 └── request_log.rs   — Async full request/response logger → JSON Lines files
 ```
 
@@ -64,16 +66,19 @@ src/
 
 ### 7. Usage Logging
 - `UsageLogger` writes `UsageRecord` to daily `usage.YYYY-MM-DD.jsonl` files via async mpsc channel.
+- When `logging.dir` is configured, `UsageLogger` also mirrors records into `{logging.dir}/any-converter.sqlite3`; JSONL remains the fallback if SQLite initialization or writes fail.
 - Enabled when `logging.dir` is configured; created in `create_router` and stored in `AppState`.
 - Token usage extracted from upstream response bodies (`usage::extract_usage_from_response`).
 - Records include: request_id, timestamp, client/upstream model, provider, tokens, latency, status.
 
 ### 8. Request/Response Logging
 - `RequestLogger` writes full request/response audit records to daily `requests.YYYY-MM-DD.jsonl` files via async mpsc channel.
+- Request records are also mirrored into `{logging.dir}/any-converter.sqlite3` through `storage::SqliteStorage`; SQLite write failures must never prevent JSONL fallback writes.
 - Enabled by `[logging.request_log] enabled = true` and requires `logging.dir`.
 - Captures both non-streaming (full JSON body) and streaming (SSE lines) responses.
 - Streaming latency is measured as **time-to-first-byte** (TTFB) of the upstream response.
 - Token usage is extracted from upstream response bodies for non-streaming requests; streaming usage comes from `StreamState.accumulated_usage`.
+- Structured trace summaries extract message previews, tool definitions, tool calls, and tool results into `trace.client`, `trace.upstream`, and `trace.response`.
 - Request bodies, upstream request bodies, and response bodies are truncated at `max_capture_bytes` and marked with `truncated: true`.
 - Sensitive headers and body keys (`api_key`, `authorization`, etc.) are redacted before writing.
 - The background disk quota manager (`disk_quota.rs`) enforces `logging.max_disk_mb` by deleting oldest files first.

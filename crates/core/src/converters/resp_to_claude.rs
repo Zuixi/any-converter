@@ -158,7 +158,7 @@ fn parse_input_to_messages(
 
     let mut messages = Vec::new();
     for item in items {
-        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let item_type = infer_input_item_type(item).unwrap_or("");
         let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("");
 
         if item_type == ITEM_TYPE_MESSAGE && (role == "developer" || role == "system") {
@@ -176,9 +176,7 @@ fn parse_input_to_messages(
 }
 
 fn parse_input_item(item: &serde_json::Value) -> Result<ClaudeMessage, ConvertError> {
-    let item_type = item
-        .get("type")
-        .and_then(|v| v.as_str())
+    let item_type = infer_input_item_type(item)
         .ok_or_else(|| ConvertError::MissingField("input item type".into()))?;
 
     match item_type {
@@ -187,16 +185,7 @@ fn parse_input_item(item: &serde_json::Value) -> Result<ClaudeMessage, ConvertEr
                 .get("role")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ConvertError::MissingField("message role".into()))?;
-            let blocks = item
-                .get("content")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .map(parse_message_content_part)
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?
-                .unwrap_or_default();
+            let blocks = parse_message_content_value(item.get("content"))?;
 
             match role_str {
                 "user" => Ok(ClaudeMessage {
@@ -250,6 +239,37 @@ fn parse_input_item(item: &serde_json::Value) -> Result<ClaudeMessage, ConvertEr
     }
 }
 
+fn infer_input_item_type(item: &serde_json::Value) -> Option<&str> {
+    if let Some(item_type) = item.get("type").and_then(|v| v.as_str()) {
+        return Some(item_type);
+    }
+    if item.get("role").and_then(|v| v.as_str()).is_some() {
+        return Some(ITEM_TYPE_MESSAGE);
+    }
+    None
+}
+
+fn parse_message_content_value(
+    value: Option<&serde_json::Value>,
+) -> Result<Vec<serde_json::Value>, ConvertError> {
+    let Some(value) = value else {
+        return Ok(vec![]);
+    };
+    match value {
+        serde_json::Value::String(text) => {
+            Ok(vec![serde_json::json!({"type": "text", "text": text})])
+        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(parse_message_content_part)
+            .collect::<Result<Vec<_>, _>>(),
+        _ => Err(ConvertError::InvalidField {
+            field: "content".into(),
+            reason: "expected string or array".into(),
+        }),
+    }
+}
+
 fn parse_message_content_part(part: &serde_json::Value) -> Result<serde_json::Value, ConvertError> {
     let part_type = part
         .get("type")
@@ -257,7 +277,7 @@ fn parse_message_content_part(part: &serde_json::Value) -> Result<serde_json::Va
         .ok_or_else(|| ConvertError::MissingField("content part type".into()))?;
 
     match part_type {
-        ITEM_TYPE_INPUT_TEXT | ITEM_TYPE_OUTPUT_TEXT => {
+        ITEM_TYPE_INPUT_TEXT | ITEM_TYPE_OUTPUT_TEXT | "text" => {
             let text = part
                 .get("text")
                 .and_then(|v| v.as_str())
@@ -578,6 +598,77 @@ mod tests {
         let req: ClaudeRequest = serde_json::from_slice(&result).unwrap();
 
         assert!(req.thinking.is_none());
+    }
+
+    #[test]
+    fn test_typeless_responses_message_converts_to_claude() {
+        let req_bytes = serde_json::to_vec(&serde_json::json!({
+            "model": "o1",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hello"}
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_request(&req_bytes).unwrap();
+        let req: ClaudeRequest = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
+        assert_eq!(req.messages[0].content, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn test_typeless_responses_message_with_string_content_converts_to_claude() {
+        let req_bytes = serde_json::to_vec(&serde_json::json!({
+            "model": "o1",
+            "input": [
+                {
+                    "role": "user",
+                    "content": "hello"
+                }
+            ]
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_request(&req_bytes).unwrap();
+        let req: ClaudeRequest = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
+        assert_eq!(req.messages[0].content, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn test_typeless_system_message_converts_to_claude_system() {
+        let req_bytes = serde_json::to_vec(&serde_json::json!({
+            "model": "o1",
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "text", "text": "You are concise."}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": "hello"
+                }
+            ]
+        }))
+        .unwrap();
+        let converter = Converter;
+        let result = converter.convert_request(&req_bytes).unwrap();
+        let req: ClaudeRequest = serde_json::from_slice(&result).unwrap();
+
+        assert_eq!(req.system, Some(serde_json::json!("You are concise.")));
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
     }
 
     #[test]

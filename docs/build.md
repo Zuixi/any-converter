@@ -379,7 +379,7 @@ cargo clippy --all-targets --all-features
 The web interface is a Next.js app located in `apps/web`. It runs **as a separate process** next to the Rust proxy server and provides:
 
 - **Conversion Playground** (`/playground`) — interactive request/response conversion.
-- **Request Log Explorer** (`/logs`) — browse `requests.YYYY-MM-DD.jsonl`.
+- **Request Log Explorer** (`/logs`) — browse request logs, including structured message/tool/usage trace summaries when request logging is enabled.
 - **Usage Dashboard** (`/usage`) — token volume and latency charts.
 - **Proxy Status** (`/status`) — health, disk usage, and recent errors.
 - **Config Editor** (`/config`) — view/edit `config.toml`.
@@ -398,7 +398,7 @@ The web interface is a Next.js app located in `apps/web`. It runs **as a separat
                                        └──────────────────────┘
 ```
 
-The web app does **not** start the Rust server for you. Start the server first, then start the web app and point it at the server.
+The web app does **not** start the Rust server for you. Start the server first, then start the web app and point it at the server. For `/logs` and `/usage`, the web API reads `{LOG_DIR}/any-converter.sqlite3` first and falls back to `requests.*.jsonl` / `usage.*.jsonl` when SQLite is missing, empty, or unreadable.
 
 ### 1. (Optional) Build the Rust bridge
 
@@ -456,13 +456,13 @@ pnpm --filter @any-converter/web dev -- -p 9000
 
 ### 4. Environment variables
 
-| Variable          | Default                 | Purpose                                                                                                                                     |
-| ----------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SERVER_URL`      | `http://127.0.0.1:8080` | URL of the running `any-converter-server`. Required for `/status` and live config reloading.                                                |
-| `LOG_DIR`         | —                       | Directory containing `requests.*.jsonl` and `usage.*.jsonl`. Required for `/logs` and `/usage`.                                             |
-| `CONFIG_PATH`     | `config.toml`           | Path to the TOML config file. Required for `/config`.                                                                                       |
-| `LOG_MAX_DISK_MB` | —                       | Disk quota for the log directory. If set, the status page shows usage percentage. This should match `logging.max_disk_mb` in `config.toml`. |
-| `PORT`            | `3000`                  | Port for the Next.js dev server.                                                                                                            |
+| Variable          | Default                 | Purpose                                                                                                                                                                                                                                                                            |
+| ----------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SERVER_URL`      | `http://127.0.0.1:8080` | URL of the running `any-converter-server`. Required for `/status` and live config reloading.                                                                                                                                                                                       |
+| `LOG_DIR`         | —                       | Directory containing `any-converter.sqlite3`, `requests.*.jsonl`, and `usage.*.jsonl`. Required for `/logs` and `/usage`; SQLite is read first, JSONL is the fallback. Request logs may include `trace` summaries for messages, tool calls, tool results, and token usage context. |
+| `CONFIG_PATH`     | `config.toml`           | Path to the TOML config file. Required for `/config`.                                                                                                                                                                                                                              |
+| `LOG_MAX_DISK_MB` | —                       | Disk quota for the log directory. If set, the status page shows usage percentage. This should match `logging.max_disk_mb` in `config.toml`.                                                                                                                                        |
+| `PORT`            | `3000`                  | Port for the Next.js dev server.                                                                                                                                                                                                                                                   |
 
 ### 5. Build for production
 

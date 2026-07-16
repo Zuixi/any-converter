@@ -1,0 +1,39 @@
+[package]
+name = "any-converter-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Tauri desktop management console for any-converter"
+
+[lib]
+name = "any_converter_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "any-converter-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+any-converter-core = { workspace = true }
+any-converter-server = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-shell = "=2.2.1"
+keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

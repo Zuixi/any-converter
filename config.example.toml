@@ -105,15 +105,17 @@ upstream_model = "gpt-4.1-mini"
 
 [logging]
 level = "info"
-dir = "./logs"          # Also enables usage logging (usage.YYYY-MM-DD.jsonl)
+dir = "./logs"          # Enables JSONL logs and SQLite mirror at logs/any-converter.sqlite3
 max_disk_mb = 500
 
 # Optional full request/response audit logging.
 # When enabled, each request is written as one JSON Lines record to
-# requests.YYYY-MM-DD.jsonl in the logging directory.
+# requests.YYYY-MM-DD.jsonl and mirrored into any-converter.sqlite3.
 [logging.request_log]
 enabled = true
 max_capture_bytes = 10485760  # 10 MiB per captured body
+trace_enabled = true          # Extract message/tool summaries into request log records
+trace_max_preview_bytes = 2048
 
 [logging.console]
 enabled = true

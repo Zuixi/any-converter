@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 
 import type { ServerConfig } from "@any-converter/shared";
 
+import { useApiClient } from "./api-client";
+
 export function useConfig() {
+  const api = useApiClient();
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [raw, setRaw] = useState("");
   const [loading, setLoading] = useState(false);
@@ -15,12 +18,7 @@ export function useConfig() {
     async function load() {
       setLoading(true);
       try {
-        const res = await fetch("/api/config");
-        if (!res.ok) {
-          setError(`Failed to load config: ${res.statusText}`);
-          return;
-        }
-        const data = (await res.json()) as { config: ServerConfig; raw: string };
+        const data = await api.getConfig();
         setConfig(data.config);
         setRaw(data.raw);
       } catch (err) {
@@ -30,22 +28,13 @@ export function useConfig() {
       }
     }
     void load();
-  }, []);
+  }, [api]);
 
   const save = async (nextRaw: string) => {
     setLoading(true);
     setSaved(false);
     try {
-      const res = await fetch("/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw: nextRaw }),
-      });
-      if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
-        setError(data.error ?? "Failed to save config");
-        return;
-      }
+      await api.saveConfig(nextRaw);
       setSaved(true);
       setRaw(nextRaw);
       setError("");

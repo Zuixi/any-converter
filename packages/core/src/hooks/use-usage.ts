@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 
 import type { AggregatedUsage } from "@any-converter/shared";
 
+import { useApiClient } from "./api-client";
+
 export function useUsage() {
+  const api = useApiClient();
   const [data, setData] = useState<AggregatedUsage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -13,13 +16,7 @@ export function useUsage() {
     async function load() {
       setLoading(true);
       try {
-        const res = await fetch("/api/usage");
-        if (!res.ok) {
-          setError(`Failed to load usage: ${res.statusText}`);
-          return;
-        }
-        const result = (await res.json()) as { records: AggregatedUsage[] };
-        setData(result.records);
+        setData(await api.getUsage());
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error");
       } finally {
@@ -27,7 +24,7 @@ export function useUsage() {
       }
     }
     void load();
-  }, []);
+  }, [api]);
 
   return { data, loading, error };
 }

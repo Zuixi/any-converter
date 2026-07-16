@@ -9,13 +9,15 @@ export function LogsView() {
   return (
     <div className="grid gap-6">
       <div className="grid gap-2">
-        <h1 className="text-3xl font-bold">Request Logs</h1>
-        <p className="text-muted-foreground">Inspect captured request/response lifecycles from the proxy server.</p>
+        <h1 className="text-3xl font-bold">Conversation Logs</h1>
+        <p className="text-muted-foreground">
+          Inspect client messages, tool activity, and LLM responses captured by the proxy server.
+        </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Records</CardTitle>
+          <CardTitle>Timeline</CardTitle>
         </CardHeader>
         <CardContent>
           {loading && <p className="text-muted-foreground">Loading logs...</p>}

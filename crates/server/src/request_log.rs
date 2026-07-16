@@ -6,11 +6,13 @@ use std::time::Instant;
 use any_converter_core::convert::Format;
 use any_converter_core::ir::Usage;
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::config::RequestLogConfig;
+use crate::observability::{RequestTraceSummary, summarize_request_trace, summarize_stream_trace};
 use crate::request_log::redactor::{SanitizedBody, sanitize_body};
+use crate::storage::{SqliteStorage, open_sqlite_storage_for_log_dir};
 
 pub mod redactor;
 
@@ -32,7 +34,7 @@ pub struct RequestLogContext {
 }
 
 /// A captured response body, either JSON for non-streaming or SSE lines for streaming.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponseBodyKind {
     Json { text: String },
@@ -40,7 +42,7 @@ pub enum ResponseBodyKind {
 }
 
 /// A single request/response log record written as one JSON Lines entry.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestLogRecord {
     pub request_id: String,
     pub timestamp: String,
@@ -57,6 +59,8 @@ pub struct RequestLogRecord {
     pub response_body: ResponseBodyKind,
     pub latency_ms: u64,
     pub usage: Usage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<RequestTraceSummary>,
     pub truncated: bool,
 }
 
@@ -69,11 +73,24 @@ pub struct RequestLogger {
 impl RequestLogger {
     /// Spawn a background writer and return the logger handle.
     pub fn new(log_dir: PathBuf) -> Self {
+        Self::with_sqlite(
+            log_dir.clone(),
+            open_sqlite_storage_for_log_dir(log_dir.to_str()),
+        )
+    }
+
+    /// Spawn a background writer with an optional SQLite mirror.
+    pub fn with_sqlite(log_dir: PathBuf, sqlite: Option<SqliteStorage>) -> Self {
         let (tx, mut rx) = mpsc::channel::<RequestLogRecord>(256);
         tokio::spawn(async move {
             while let Some(record) = rx.recv().await {
                 if let Err(e) = write_record(&log_dir, &record) {
                     log::error!("failed to write request log record: {e}");
+                }
+                if let Some(ref storage) = sqlite {
+                    if let Err(e) = storage.insert_request_log(&record) {
+                        log::error!("failed to write request log record to sqlite: {e}");
+                    }
                 }
             }
         });
@@ -130,6 +147,17 @@ pub fn log_non_streaming(
     let truncated = request_body.as_ref().is_some_and(|b| b.truncated)
         || upstream_request_body.as_ref().is_some_and(|b| b.truncated)
         || response_sanitized.truncated;
+    let trace = cfg.trace_enabled.then(|| {
+        summarize_request_trace(
+            &ctx.request_body,
+            ctx.client_format,
+            &ctx.upstream_request_body,
+            provider_format,
+            response_body,
+            ctx.client_format,
+            cfg.trace_max_preview_bytes,
+        )
+    });
 
     let record = RequestLogRecord {
         request_id: ctx.req_id.to_string(),
@@ -149,6 +177,7 @@ pub fn log_non_streaming(
         },
         latency_ms: ctx.start_time.elapsed().as_millis() as u64,
         usage: extract_usage(upstream_body, provider_format),
+        trace,
         truncated,
     };
     logger.log(record);
@@ -161,10 +190,13 @@ pub fn log_streaming(
     ctx: &RequestLogContext,
     sse_lines: Vec<String>,
     status: reqwest::StatusCode,
+    provider_format: Format,
     time_to_first_byte_ms: u64,
     usage: Usage,
     response_truncated: bool,
     max_capture_bytes: usize,
+    trace_enabled: bool,
+    trace_max_preview_bytes: usize,
 ) {
     let max = max_capture_bytes;
     let request_body = Some(sanitize_body(&ctx.request_body, max));
@@ -173,6 +205,29 @@ pub fn log_streaming(
     let truncated = request_body.as_ref().is_some_and(|b| b.truncated)
         || upstream_request_body.as_ref().is_some_and(|b| b.truncated)
         || response_truncated;
+    let trace = trace_enabled.then(|| {
+        summarize_stream_trace(
+            &ctx.request_body,
+            ctx.client_format,
+            &ctx.upstream_request_body,
+            provider_format,
+            &sse_lines,
+            ctx.client_format,
+            trace_max_preview_bytes,
+        )
+    });
+
+    let stream_usage = extract_stream_usage_from_sse_lines(&sse_lines, ctx.client_format);
+    let usage = if stream_usage.input_tokens > 0
+        || stream_usage.output_tokens > 0
+        || stream_usage.cache_read_tokens.is_some()
+        || stream_usage.cache_write_tokens.is_some()
+        || stream_usage.reasoning_tokens.is_some()
+    {
+        stream_usage
+    } else {
+        usage
+    };
 
     let record = RequestLogRecord {
         request_id: ctx.req_id.to_string(),
@@ -190,6 +245,7 @@ pub fn log_streaming(
         response_body: ResponseBodyKind::SseLines { lines: sse_lines },
         latency_ms: time_to_first_byte_ms,
         usage,
+        trace,
         truncated,
     };
     logger.log(record);
@@ -286,6 +342,77 @@ fn extract_gemini_usage(value: &serde_json::Value) -> Usage {
     }
 }
 
+fn extract_stream_usage_from_sse_lines(lines: &[String], format: Format) -> Usage {
+    let mut latest = Usage::default();
+    for line in lines {
+        for data in extract_sse_data_payloads(line) {
+            if data == "[DONE]" {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+                continue;
+            };
+            let usage = match format {
+                Format::OpenAIResponses => value
+                    .get("response")
+                    .and_then(|response| response.get("usage"))
+                    .map(|usage| extract_openai_usage(&serde_json::json!({ "usage": usage })))
+                    .unwrap_or_default(),
+                Format::OpenAIChat => extract_openai_usage(&value),
+                Format::Claude => extract_claude_usage(&value).or_else(|| {
+                    value
+                        .get("message")
+                        .and_then(|message| message.get("usage"))
+                        .map(|usage| extract_claude_usage(&serde_json::json!({ "usage": usage })))
+                        .unwrap_or_default()
+                }),
+                Format::Gemini => extract_gemini_usage(&value),
+            };
+            if usage.input_tokens > 0
+                || usage.output_tokens > 0
+                || usage.cache_read_tokens.is_some()
+                || usage.cache_write_tokens.is_some()
+                || usage.reasoning_tokens.is_some()
+            {
+                latest = usage;
+            }
+        }
+    }
+    latest
+}
+
+trait UsageExt {
+    fn or_else<F>(self, fallback: F) -> Self
+    where
+        F: FnOnce() -> Self;
+}
+
+impl UsageExt for Usage {
+    fn or_else<F>(self, fallback: F) -> Self
+    where
+        F: FnOnce() -> Self,
+    {
+        if self.input_tokens > 0
+            || self.output_tokens > 0
+            || self.cache_read_tokens.is_some()
+            || self.cache_write_tokens.is_some()
+            || self.reasoning_tokens.is_some()
+        {
+            self
+        } else {
+            fallback()
+        }
+    }
+}
+
+fn extract_sse_data_payloads(block: &str) -> impl Iterator<Item = &str> {
+    block
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -326,6 +453,27 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_usage_from_responses_completed_sse_lines() {
+        let lines = vec![format!(
+            "event: response.completed\ndata: {}\n\n",
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "usage": {
+                        "input_tokens": 1122,
+                        "output_tokens": 52,
+                        "total_tokens": 1174
+                    }
+                }
+            })
+        )];
+
+        let usage = extract_stream_usage_from_sse_lines(&lines, Format::OpenAIResponses);
+        assert_eq!(usage.input_tokens, 1122);
+        assert_eq!(usage.output_tokens, 52);
+    }
+
+    #[test]
     fn test_log_record_serialization() {
         let record = RequestLogRecord {
             request_id: "req-1".to_string(),
@@ -351,6 +499,7 @@ mod tests {
                 cache_write_tokens: None,
                 reasoning_tokens: None,
             },
+            trace: None,
             truncated: false,
         };
         let json = serde_json::to_string(&record).unwrap();

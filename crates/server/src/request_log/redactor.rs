@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const SENSITIVE_HEADERS: &[&str] = &[
     "authorization",
@@ -11,7 +11,7 @@ const SENSITIVE_HEADERS: &[&str] = &[
 const SENSITIVE_BODY_KEYS: &[&str] = &["api_key", "apiKey", "authorization", "x-api-key", "secret"];
 
 /// A body that has been sanitized for logging.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SanitizedBody {
     /// JSON-serialized body if it was valid JSON, otherwise the raw text.
     pub text: String,

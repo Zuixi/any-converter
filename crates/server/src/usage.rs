@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::storage::{SqliteStorage, open_sqlite_storage_for_log_dir};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageRecord {
     pub request_id: String,
@@ -29,11 +31,24 @@ pub struct UsageLogger {
 impl UsageLogger {
     /// Spawn a background writer and return the logger handle.
     pub fn new(log_dir: PathBuf) -> Self {
+        Self::with_sqlite(
+            log_dir.clone(),
+            open_sqlite_storage_for_log_dir(log_dir.to_str()),
+        )
+    }
+
+    /// Spawn a background writer with an optional SQLite mirror.
+    pub fn with_sqlite(log_dir: PathBuf, sqlite: Option<SqliteStorage>) -> Self {
         let (tx, mut rx) = mpsc::channel::<UsageRecord>(256);
         tokio::spawn(async move {
             while let Some(record) = rx.recv().await {
                 if let Err(e) = write_record(&log_dir, &record) {
                     log::error!("failed to write usage record: {e}");
+                }
+                if let Some(ref storage) = sqlite {
+                    if let Err(e) = storage.insert_usage_record(&record) {
+                        log::error!("failed to write usage record to sqlite: {e}");
+                    }
                 }
             }
         });

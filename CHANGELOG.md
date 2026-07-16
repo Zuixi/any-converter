@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Structured request trace summaries**: Request logs can now include `trace.client`, `trace.upstream`, and `trace.response` summaries with message previews, tool definitions, tool calls, and tool results across OpenAI Responses, OpenAI Chat, Claude Messages, Gemini, and captured SSE output.
+- **SQLite log storage mirror**: When `logging.dir` is configured, usage logs and full request logs are now mirrored into `{logging.dir}/any-converter.sqlite3` while continuing to write JSONL files as the fallback/debug format.
+- **SQLite-backed Web UI logs and usage**: `/api/logs` and `/api/usage` now read `any-converter.sqlite3` first and fall back to JSONL files when SQLite is missing, empty, or unreadable.
+- **Remote test helper script**: `scripts/om-any-converter-tunnel.sh` starts a local any-converter server and opens an SSH reverse tunnel to `om` for pi/codex testing.
 - **Provider transport overrides**: Providers can now override upstream endpoint paths (`[providers.endpoints] path` / `stream_path`) and authentication behavior (`[providers.auth] scheme` / `headers`) while retaining format-based defaults.
 - **Next.js web interface** (`apps/web/`): Local web UI for `any-converter` with five pages:
   - **Conversion Playground** (`/playground`): Interactive request/response conversion across OpenAI Chat, OpenAI Responses, Claude, and Gemini formats.
@@ -17,10 +21,16 @@
 
 ### Changed
 
+- The Web UI request log detail view now displays structured trace summaries for downstream messages, model tool calls, and tool results when present in request logs.
 - `Cargo.toml` workspace members now include `crates/web-bridge`.
 - `docs/build.md` updated with web UI prerequisites, build steps, and environment variables.
 - `round_robin` model route strategy now rotates the first provider attempted while retaining configured failover order.
 - Server handler responsibilities were split into focused `model`, `namespace`, and `route_strategy` modules.
+
+### Fixed
+
+- Claude-compatible streaming now accepts and ignores `signature_delta` chunks, preventing Kimi/Claude thinking signature events from breaking SSE conversion.
+- OpenAI Responses → Claude request conversion now accepts typeless message items such as `{role, content}`, including `system`/`developer` messages that must become Claude `system` instructions, matching pi and common Responses client payloads.
 
 ## Unreleased — Protocol conversion fidelity improvements
 

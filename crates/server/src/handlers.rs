@@ -542,6 +542,8 @@ async fn process_request(
                 ctx.log_ctx.clone(),
                 state.request_logger.clone(),
                 state.config.logging.request_log.max_capture_bytes,
+                state.config.logging.request_log.trace_enabled,
+                state.config.logging.request_log.trace_max_preview_bytes,
             )
             .await
             {

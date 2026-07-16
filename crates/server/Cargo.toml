@@ -21,6 +21,7 @@ chrono = { workspace = true }
 futures-util = "0.3"
 tokio-stream = "0.1"
 http-body-util = "0.1"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

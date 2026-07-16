@@ -10,14 +10,14 @@
 
 ## Reading Paths
 
-| Goal | Read these sections |
-|------|---------------------|
-| **30-second overview** | Section 1 only |
-| **Understand components** | Sections 1–2 |
+| Goal                       | Read these sections                                                           |
+| -------------------------- | ----------------------------------------------------------------------------- |
+| **30-second overview**     | Section 1 only                                                                |
+| **Understand components**  | Sections 1–2                                                                  |
 | **Implement a new format** | Sections 1, 3.1–3.3, then [`crates/core/AGENTS.md`](../crates/core/AGENTS.md) |
-| **Understand the server** | Sections 1, 4, then [`crates/server/AGENTS.md`](../crates/server/AGENTS.md) |
-| **Understand the CLI** | Sections 1, 5, then [`crates/cli/AGENTS.md`](../crates/cli/AGENTS.md) |
-| **Full deep dive** | All sections |
+| **Understand the server**  | Sections 1, 4, then [`crates/server/AGENTS.md`](../crates/server/AGENTS.md)   |
+| **Understand the CLI**     | Sections 1, 5, then [`crates/cli/AGENTS.md`](../crates/cli/AGENTS.md)         |
+| **Full deep dive**         | All sections                                                                  |
 
 ---
 
@@ -25,13 +25,11 @@
 
 **Any Converter** is a Rust workspace that translates between major LLM provider API formats. It operates in three modes:
 
-
 | Mode           | Entry Point                  | Use Case                            |
 | -------------- | ---------------------------- | ----------------------------------- |
 | **Library**    | `any-converter-core` crate   | Embed format conversion in your app |
 | **CLI**        | `any-converter` binary       | Offline JSON/SSE conversion         |
 | **HTTP Proxy** | `any-converter-server` crate | Transparent API gateway             |
-
 
 ### 1.1 Core Design Pattern: Pairwise Converters
 
@@ -50,6 +48,7 @@ Each (source, target) format pair has a **dedicated converter** that translates 
 ```
 
 **Benefits:**
+
 - No data loss from lossy IR normalization
 - Each converter optimized for its specific pair
 - Streaming reuses `CanonicalStreamEvent` as a lightweight intermediate
@@ -59,14 +58,14 @@ Each (source, target) format pair has a **dedicated converter** that translates 
 ## 2. System Components
 
 ```
-┌─────────────────────────────────────────────────────────────┐    
-│                        CLI Binary                           │    
-│                   (argument parsing)                        │    
-└──────────────┬───────────────────────────────┬──────────────┘    
-               │                               │                   
-               │          depends on           │   depends on      
-               │                               │                   
-               ▼                               ▼                   
+┌─────────────────────────────────────────────────────────────┐
+│                        CLI Binary                           │
+│                   (argument parsing)                        │
+└──────────────┬───────────────────────────────┬──────────────┘
+               │                               │
+               │          depends on           │   depends on
+               │                               │
+               ▼                               ▼
 ┌────────────────────────────┐       ┌────────────────────────────┐
 │    HTTP Proxy Server       │       │    Conversion Engine       │
 │  (Axum + reqwest + tokio)  │  ◄──  │   (pure serde library)     │
@@ -80,13 +79,11 @@ Each (source, target) format pair has a **dedicated converter** that translates 
 
 ### Component Boundaries
 
-
 | Component             | Responsibility                                                   | External Dependencies                                     |
 | --------------------- | ---------------------------------------------------------------- | --------------------------------------------------------- |
 | **Conversion Engine** | Parse, transform, serialize LLM API payloads                     | `serde`, `thiserror`                                      |
 | **HTTP Proxy Server** | Accept HTTP requests, convert, forward to upstream, convert back | `axum`, `reqwest`, `tokio`, `Conversion Engine`           |
 | **CLI**               | Parse arguments, dispatch to Engine or Server                    | `clap`, `tokio`, `Conversion Engine`, `HTTP Proxy Server` |
-
 
 ---
 
@@ -113,12 +110,12 @@ pub trait FormatConverter: Send + Sync {
 
 **Converter modules** (12 total):
 
-| Source \ Target | Claude | OpenAI Chat | OpenAI Responses | Gemini |
-|-----------------|--------|-------------|------------------|--------|
-| **Claude**      | identity | `claude_to_chat` | `claude_to_resp` | `claude_to_gemini` |
-| **OpenAI Chat** | `chat_to_claude` | identity | `chat_to_resp` | `chat_to_gemini` |
-| **OpenAI Resp** | `resp_to_claude` | `resp_to_chat` | identity | `resp_to_gemini` |
-| **Gemini**      | `gemini_to_claude` | `gemini_to_chat` | `gemini_to_resp` | identity |
+| Source \ Target | Claude             | OpenAI Chat      | OpenAI Responses | Gemini             |
+| --------------- | ------------------ | ---------------- | ---------------- | ------------------ |
+| **Claude**      | identity           | `claude_to_chat` | `claude_to_resp` | `claude_to_gemini` |
+| **OpenAI Chat** | `chat_to_claude`   | identity         | `chat_to_resp`   | `chat_to_gemini`   |
+| **OpenAI Resp** | `resp_to_claude`   | `resp_to_chat`   | identity         | `resp_to_gemini`   |
+| **Gemini**      | `gemini_to_claude` | `gemini_to_chat` | `gemini_to_resp` | identity           |
 
 Identity conversions (same format) pass through raw bytes without parsing.
 
@@ -126,12 +123,12 @@ Identity conversions (same format) pass through raw bytes without parsing.
 
 Streaming still uses lightweight canonical types as an intermediate between parse and emit:
 
-| Type                   | Purpose                            | Key Fields                                              |
-| ---------------------- | ---------------------------------- | ------------------------------------------------------- |
-| `CanonicalStreamEvent` | One SSE delta in canonical form    | `TextDelta`, `ToolCallStart`, `ToolCallDelta`, `Done`   |
-| `StreamState`          | Mutable accumulator for streaming  | `accumulated_text`, `accumulated_tool_calls`, `phase`   |
-| `StopReason`           | Why generation stopped             | `EndTurn`, `MaxTokens`, `ToolUse`, etc.                 |
-| `Usage`                | Token counts                       | `input_tokens`, `output_tokens`, optional cache fields  |
+| Type                   | Purpose                           | Key Fields                                             |
+| ---------------------- | --------------------------------- | ------------------------------------------------------ |
+| `CanonicalStreamEvent` | One SSE delta in canonical form   | `TextDelta`, `ToolCallStart`, `ToolCallDelta`, `Done`  |
+| `StreamState`          | Mutable accumulator for streaming | `accumulated_text`, `accumulated_tool_calls`, `phase`  |
+| `StopReason`           | Why generation stopped            | `EndTurn`, `MaxTokens`, `ToolUse`, etc.                |
+| `Usage`                | Token counts                      | `input_tokens`, `output_tokens`, optional cache fields |
 
 **Stream conversion flow:**
 
@@ -205,7 +202,6 @@ provider = "openai"
 
 The Router maps incoming HTTP paths to detected client formats:
 
-
 | Path Pattern                                   | Detected Format  | Streaming Source            |
 | ---------------------------------------------- | ---------------- | --------------------------- |
 | `/v1/chat/completions`                         | OpenAI Chat      | request body `stream` field |
@@ -214,26 +210,25 @@ The Router maps incoming HTTP paths to detected client formats:
 | `/v1beta/models/{model}:generateContent`       | Gemini           | path suffix (non-streaming) |
 | `/v1beta/models/{model}:streamGenerateContent` | Gemini           | path suffix (streaming)     |
 
-
 ### 4.3 Request Processing Pipeline
 
 **Request Flow:**
 
 ```
-                             Client Request                             
-                                   │                                    
-                                   ▼                                    
+                             Client Request
+                                   │
+                                   ▼
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │   Router    │───▶│    Auth     │───▶│   Convert   │───▶│   Proxy     │
 │ detect path │    │ validate key│    │ req + model │    │ to upstream │
 │   → Format  │    │             │    │   patch     │    │             │
 └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-                                                              │         
-                                                              ▼         
-                                                       ┌─────────────┐  
-                                                       │   Upstream  │  
-                                                       │  Provider   │  
-                                                       └─────────────┘  
+                                                              │
+                                                              ▼
+                                                       ┌─────────────┐
+                                                       │   Upstream  │
+                                                       │  Provider   │
+                                                       └─────────────┘
 ```
 
 **Response Flow:**
@@ -243,22 +238,22 @@ The Router maps incoming HTTP paths to detected client formats:
                                                        │   Upstream  │
                                                        │  Provider   │
                                                        └──────┬──────┘
-                                                              │       
-                                                              ▼       
+                                                              │
+                                                              ▼
                                                        ┌──────┬──────┐
                                                        │   Proxy     │
                                                        │  response   │
                                                        │   back      │
                                                        └──────┬──────┘
-                                                              │       
-                ┌───────────────────────────────────────────────┘     
-                │                                                     
-                ▼                                                     
-         ┌─────────────┐    ┌─────────────┐                           
-         │   Pairwise  │───▶│  Response   │                           
-         │  Converter  │    │  to client  │                           
-         │  (direct)   │    │             │                           
-         └─────────────┘    └─────────────┘                           
+                                                              │
+                ┌───────────────────────────────────────────────┘
+                │
+                ▼
+         ┌─────────────┐    ┌─────────────┐
+         │   Pairwise  │───▶│  Response   │
+         │  Converter  │    │  to client  │
+         │  (direct)   │    │             │
+         └─────────────┘    └─────────────┘
 ```
 
 **Pipeline stages:**
@@ -301,22 +296,26 @@ Two responsibilities:
 
 1. **Client validation** — verify `Authorization: Bearer <key>` header against configured `api_key` (optional)
 2. **Upstream header building** — generate provider-specific auth headers:
-  - **OpenAI Chat / Responses:** `Authorization: Bearer <key>`
-  - **Claude:** `x-api-key: <key>` + `anthropic-version: 2023-06-01`
-  - **Gemini:** `x-goog-api-key: <key>`
+
+- **OpenAI Chat / Responses:** `Authorization: Bearer <key>`
+- **Claude:** `x-api-key: <key>` + `anthropic-version: 2023-06-01`
+- **Gemini:** `x-goog-api-key: <key>`
 
 ### 4.6 Request/Response Logging
 
 An optional audit logger captures the full lifecycle of every request:
 
 - **Config:** `[logging.request_log] enabled = true` plus `logging.dir`.
-- **Storage:** one JSON Lines file per UTC day: `{dir}/requests.YYYY-MM-DD.jsonl`.
+- **Storage:** one JSON Lines file per UTC day: `{dir}/requests.YYYY-MM-DD.jsonl`, mirrored into `{dir}/any-converter.sqlite3` when SQLite initialization succeeds.
 - **Capture:**
   - Non-streaming: full JSON request body, upstream request body, and response body.
   - Streaming: request bodies plus every converted SSE line emitted to the client.
 - **Latency:** non-streaming records total elapsed time; streaming records time-to-first-byte (TTFB).
 - **Usage:** token counts extracted from upstream responses (non-streaming) or accumulated by `StreamState` (streaming).
+- **Trace summary:** each record may include `trace.client`, `trace.upstream`, and `trace.response` summaries. These extract message previews, tool definitions, tool calls, and tool results from OpenAI Responses, OpenAI Chat, Claude Messages, Gemini JSON, and captured SSE lines. Codex tool calls are parsed from OpenAI Responses events such as `response.output_item.done`.
 - **Privacy:** sensitive headers and body keys (`api_key`, `authorization`, etc.) are redacted; bodies are truncated at `max_capture_bytes` and marked `truncated: true`.
+- **Fallback:** JSONL writes and SQLite writes are independent. SQLite errors are logged but must not block JSONL audit files.
+- **Read path:** the Web UI reads `any-converter.sqlite3` first for `/logs` and `/usage`; if SQLite is missing, empty, or unreadable, it falls back to scanning the JSONL files.
 
 ### 4.7 Disk Quota
 
@@ -330,14 +329,12 @@ A thin wrapper that wires the Conversion Engine and HTTP Proxy Server to command
 
 **Commands:**
 
-
 | Command                                                  | Purpose                                       |
 | -------------------------------------------------------- | --------------------------------------------- |
 | `convert --from X --to Y [file]`                         | Offline JSON conversion (request or response) |
 | `stream --from X --to Y`                                 | Pipe SSE stream through stdin → stdout        |
 | `serve --config file.toml`                               | Start HTTP proxy server with full config      |
 | `serve --port 8080 --provider X --format Y --base-url …` | Quick-start single-provider mode              |
-
 
 ---
 
@@ -404,11 +401,10 @@ When a `finish_reason: "tool_calls"` arrives, the adapter emits a complete `resp
 
 ## 7. Key Design Decisions
 
-
 | Decision                                        | Rationale                                                                                             |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Pairwise converters** (not hub-and-spoke IR)  | No data loss from IR normalization. Each converter can preserve format-specific fields.                |
-| **Canonical stream events** (lightweight IR)    | Streaming deltas are inherently similar across formats; a canonical event avoids N² stream parsers.    |
+| **Pairwise converters** (not hub-and-spoke IR)  | No data loss from IR normalization. Each converter can preserve format-specific fields.               |
+| **Canonical stream events** (lightweight IR)    | Streaming deltas are inherently similar across formats; a canonical event avoids N² stream parsers.   |
 | **Separate Conversion Engine crate**            | Pure library, no async runtime dependency. Testable in isolation without network.                     |
 | **StreamState for accumulation**                | Tool call arguments span multiple SSE chunks; state must persist across `convert_stream_event` calls. |
 | **Dual StreamState** (`state_in` + `state_out`) | Input and output formats may both need independent accumulation during streaming.                     |
@@ -417,21 +413,18 @@ When a `finish_reason: "tool_calls"` arrives, the adapter emits a complete `resp
 | **Model wildcard `*`**                          | Simplifies config when all client model names map to one upstream model.                              |
 | **Buffer-based SSE parsing**                    | reqwest yields arbitrary byte chunks, not event-aligned blocks.                                       |
 
-
 ---
 
 ## 8. Testing Strategy
 
-
-| Layer                   | Scope                        | What to Verify                                                    |
-| ----------------------- | ---------------------------- | ----------------------------------------------------------------- |
-| **IR unit tests**       | StopReason, Usage, StreamState | Roundtrip serialization, conversion helpers                       |
-| **Stream adapter tests**| Each format's stream adapter | SSE block → canonical events → SSE lines                          |
-| **Converter tests**     | Pairwise converters          | Request/response JSON roundtrip, field mapping                    |
-| **Integration tests**   | Full conversion pipeline     | End-to-end request/response/stream conversion across format pairs |
-| **Server tests**        | Router + handlers            | Route detection, auth rejection, missing route handling           |
-| **Proxy tests**         | Forwarder logic              | URL building, SSE block extraction, buffer drain                  |
-
+| Layer                    | Scope                          | What to Verify                                                    |
+| ------------------------ | ------------------------------ | ----------------------------------------------------------------- |
+| **IR unit tests**        | StopReason, Usage, StreamState | Roundtrip serialization, conversion helpers                       |
+| **Stream adapter tests** | Each format's stream adapter   | SSE block → canonical events → SSE lines                          |
+| **Converter tests**      | Pairwise converters            | Request/response JSON roundtrip, field mapping                    |
+| **Integration tests**    | Full conversion pipeline       | End-to-end request/response/stream conversion across format pairs |
+| **Server tests**         | Router + handlers              | Route detection, auth rejection, missing route handling           |
+| **Proxy tests**          | Forwarder logic                | URL building, SSE block extraction, buffer drain                  |
 
 Run all tests:
 

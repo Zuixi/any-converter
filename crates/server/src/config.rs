@@ -170,6 +170,10 @@ pub struct RequestLogConfig {
     pub enabled: bool,
     #[serde(default = "default_max_capture_bytes")]
     pub max_capture_bytes: usize,
+    #[serde(default = "default_true")]
+    pub trace_enabled: bool,
+    #[serde(default = "default_trace_preview_bytes")]
+    pub trace_max_preview_bytes: usize,
 }
 
 impl Default for RequestLogConfig {
@@ -177,6 +181,8 @@ impl Default for RequestLogConfig {
         Self {
             enabled: default_false(),
             max_capture_bytes: default_max_capture_bytes(),
+            trace_enabled: default_true(),
+            trace_max_preview_bytes: default_trace_preview_bytes(),
         }
     }
 }
@@ -251,6 +257,10 @@ fn default_false() -> bool {
 
 fn default_max_capture_bytes() -> usize {
     10 * 1024 * 1024
+}
+
+fn default_trace_preview_bytes() -> usize {
+    2048
 }
 
 fn default_host() -> String {
@@ -564,6 +574,8 @@ provider = "openai"
         assert!(config.files.is_empty());
         assert!(!config.request_log.enabled);
         assert_eq!(config.request_log.max_capture_bytes, 10 * 1024 * 1024);
+        assert!(config.request_log.trace_enabled);
+        assert_eq!(config.request_log.trace_max_preview_bytes, 2048);
     }
 
     #[test]

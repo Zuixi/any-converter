@@ -108,6 +108,8 @@ pub async fn forward_streaming(
     log_ctx: Option<RequestLogContext>,
     logger: Option<Arc<RequestLogger>>,
     max_capture_bytes: usize,
+    trace_enabled: bool,
+    trace_max_preview_bytes: usize,
 ) -> Result<Response, String> {
     let mut req = client
         .post(url)
@@ -244,16 +246,30 @@ pub async fn forward_streaming(
         );
 
         if let (Some(ctx), Some(logger)) = (log_ctx, logger) {
-            let usage = state_out.accumulated_usage.unwrap_or_default();
+            let out_usage = state_out.accumulated_usage.clone().unwrap_or_default();
+            let in_usage = state_in.accumulated_usage.clone().unwrap_or_default();
+            let usage = if out_usage.input_tokens > 0
+                || out_usage.output_tokens > 0
+                || out_usage.cache_read_tokens.is_some()
+                || out_usage.cache_write_tokens.is_some()
+                || out_usage.reasoning_tokens.is_some()
+            {
+                out_usage
+            } else {
+                in_usage
+            };
             log_streaming(
                 &logger,
                 &ctx,
                 sse_lines,
                 status,
+                from_format,
                 time_to_first_byte_ms.unwrap_or(0),
                 usage,
                 response_truncated,
                 max_capture_bytes,
+                trace_enabled,
+                trace_max_preview_bytes,
             );
         }
     });

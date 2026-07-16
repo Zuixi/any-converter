@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 
 import type { RequestLogRecord } from "@any-converter/shared";
 
+import { useApiClient } from "./api-client";
+
 export function useLogs() {
+  const api = useApiClient();
   const [records, setRecords] = useState<RequestLogRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -13,13 +16,7 @@ export function useLogs() {
     async function load() {
       setLoading(true);
       try {
-        const res = await fetch("/api/logs");
-        if (!res.ok) {
-          setError(`Failed to load logs: ${res.statusText}`);
-          return;
-        }
-        const data = (await res.json()) as { records: RequestLogRecord[] };
-        setRecords(data.records);
+        setRecords(await api.getLogs());
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error");
       } finally {
@@ -27,7 +24,7 @@ export function useLogs() {
       }
     }
     void load();
-  }, []);
+  }, [api]);
 
   return { records, loading, error };
 }
