@@ -1,68 +1,85 @@
 # any-converter — Agent Entrypoint
 
-> **What is this?** A Rust workspace that translates between major LLM provider API formats via a typed Intermediate Representation.
+> **What is this?** A workspace for running one LLM client protocol against a different upstream provider protocol, with conversion, routing, logging, Web UI, and Desktop control surfaces.
 >
-> **Progressive Disclosure**: This file is the navigation hub only. Pick your task below, then drill down to the crate-specific `AGENTS.md`.
+> **Progressive Disclosure**: This file is the workspace navigation hub only. Pick the domain you are changing, then drill down into that domain's `AGENTS.md`.
 
 ---
 
-## Task Routing Matrix
+## Workspace Routing Matrix
 
 | If you are working on... | Go to |
 |--------------------------|-------|
-| Format conversion logic (parsing, serialization, IR) | [`crates/core/AGENTS.md`](./crates/core/AGENTS.md) |
-| HTTP routing, proxying, auth, or streaming SSE | [`crates/server/AGENTS.md`](./crates/server/AGENTS.md) |
-| CLI commands, argument parsing, or config assembly | [`crates/cli/AGENTS.md`](./crates/cli/AGENTS.md) |
-| Adding a **new LLM API format** | [`crates/core/AGENTS.md`](./crates/core/AGENTS.md) **+** update [`crates/AGENTS.md`](./crates/AGENTS.md) |
-| Bug spanning multiple crates / cross-crate refactor | Start at [`crates/AGENTS.md`](./crates/AGENTS.md) (universal constraints) |
-| Documentation or project-wide rules | This file + [`crates/AGENTS.md`](./crates/AGENTS.md) |
+| Rust conversion, proxying, CLI, or native bridge code | [`crates/AGENTS.md`](./crates/AGENTS.md) |
+| Web or Desktop application code | [`apps/AGENTS.md`](./apps/AGENTS.md) |
+| Shared frontend components, hooks, types, or UI primitives | [`packages/AGENTS.md`](./packages/AGENTS.md) |
+| Build, architecture, design notes, or memory docs | [`docs/AGENTS.md`](./docs/AGENTS.md) |
+| Cross-workspace test fixtures or future integration tests | [`tests/AGENTS.md`](./tests/AGENTS.md) |
+| Utility shell scripts and local workflow helpers | [`scripts/AGENTS.md`](./scripts/AGENTS.md) |
+| Bug spanning multiple domains | Start here, then read the relevant domain `AGENTS.md` files |
 
 ---
 
 ## Quick Orientation
 
-### Crate Graph
+### Workspace Map
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      CLI Binary (any-converter)              │
-│                   ┌──────────────────┐                      │
-│                   │  crates/cli      │                      │
-│                   └────────┬─────────┘                      │
-│                            │ depends on                     │
-│            ┌───────────────┴───────────────┐                │
-│            ▼                               ▼                │
-│   ┌─────────────────┐            ┌─────────────────┐       │
-│   │  crates/server  │            │  crates/core    │       │
-│   │  (axum + reqwest│◄───────────│  (pure serde    │       │
-│   │   + tokio)      │  depends on│   library)      │       │
-│   └─────────────────┘            └─────────────────┘       │
-│                                                         │
-└─────────────────────────────────────────────────────────────┘
+any-converter/
+├── crates/     # Rust runtime and native bridge code
+├── apps/       # User-facing Web and Desktop applications
+├── packages/   # Shared frontend building blocks
+├── docs/       # Build, architecture, design, and memory docs
+├── tests/      # Cross-workspace fixtures / future integration harnesses
+└── scripts/    # Local utility scripts
 ```
 
-### Key Documents
+### Primary Runtime Graph
+
+```
+Clients
+  │
+  ▼
+apps/web ───────────────┐
+apps/desktop ───────────┼────► crates/server ───► upstream providers
+                        │
+packages/views/core/ui ─┘
+
+crates/cli ─────────────► crates/server / crates/core
+packages/bridge ────────► crates/web-bridge ─► crates/core
+```
+
+### Read These Next
 
 | Document | Purpose | When to read |
 |----------|---------|--------------|
-| [`crates/AGENTS.md`](./crates/AGENTS.md) | Universal constraints + crate navigation | Before any cross-crate work |
-| [`docs/architecture.md`](./docs/architecture.md) | Full system architecture (529 lines) | When you need the big picture |
-| [`docs/memory/AGENTS.md`](./docs/memory/AGENTS.md) | Known gotchas + project context | Before touching code |
-| [`docs/build.md`](./docs/build.md) | Build & test commands | When setting up |
-| [`CHANGELOG.md`](./CHANGELOG.md) | Version history with root-cause analysis | To understand recent changes |
+| [`crates/AGENTS.md`](./crates/AGENTS.md) | Rust-domain routing and constraints | Before touching any Rust crate |
+| [`apps/AGENTS.md`](./apps/AGENTS.md) | App-domain routing for Web and Desktop | Before touching app entrypoints |
+| [`packages/AGENTS.md`](./packages/AGENTS.md) | Shared frontend package boundaries | Before touching hooks, views, or shared types |
+| [`docs/AGENTS.md`](./docs/AGENTS.md) | Documentation routing | Before updating docs beyond a single file |
+| [`docs/architecture.md`](./docs/architecture.md) | Full architecture and data flow | When you need the big picture |
+| [`docs/memory/AGENTS.md`](./docs/memory/AGENTS.md) | Known gotchas and project context | Before touching tricky behavior |
+
+---
+
+## Boundary Rules
+
+- This file should stay high-level. Do not duplicate crate-level or package-level implementation details here.
+- Every child `AGENTS.md` should link back to its parent and route further down when needed.
+- Prefer adding or updating the narrowest relevant `AGENTS.md` rather than expanding this file with component detail.
 
 ---
 
 ## Maintenance Checklist
 
-Before finishing this task, review whether the following docs need updates:
+Before finishing a task, review whether the following docs need updates:
 
-- [ ] **This AGENTS.md** — Did you introduce new architectural patterns or constraints?
-- [ ] **Crate AGENTS.md** — Did you change crate-specific rules, boundaries, or pitfalls?
-- [ ] **`docs/memory/known-gotchas.md`** — Did you discover a new critical edge case?
-- [ ] **`docs/memory/project_context.md`** — Did the project structure or scope change?
-- [ ] **`docs/architecture.md`** — Did you add/remove components or change data flow?
+- [ ] **This AGENTS.md** — Did you change workspace-level routing or domain boundaries?
+- [ ] **Domain AGENTS.md** — Did you add or reshape a major area under `crates/`, `apps/`, `packages/`, `docs/`, `tests/`, or `scripts/`?
+- [ ] **Component AGENTS.md** — Did you change a component's ownership boundary, substructure, or pitfalls?
+- [ ] **`docs/memory/project_context.md`** — Did project structure or product scope change?
+- [ ] **`docs/architecture.md`** — Did cross-domain data flow or runtime topology change?
 - [ ] **`CHANGELOG.md`** — Is this a user-visible fix or feature?
-- [ ] **`README.md`** — Did public APIs or setup steps change?
+- [ ] **`README.md` / `README-zh.md`** — Did public setup or user-facing behavior change?
 
-**Rule:** If you checked any box, update the corresponding file before ending the session. Ask the user for confirmation before adding new permanent principles.
+**Rule:** If you add a new lasting rule or principle for future agents, ask the user before encoding it as a permanent constraint.
