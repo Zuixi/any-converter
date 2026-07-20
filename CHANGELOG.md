@@ -29,6 +29,8 @@
 
 ### Fixed
 
+- Desktop app (`apps/desktop/`) now shares the Web UI design system: its Tailwind config defines the shadcn semantic tokens, CSS variables are loaded, and conflicting global element styles were removed, so the shared Playground/Logs/Usage views render correctly instead of unstyled.
+- Desktop Dashboard/Providers/Routes/Settings pages now compose `@any-converter/ui` components; IPC failures surface as error banners instead of silent empty states, providers can be deleted from the UI, and route provider selection uses checkboxes instead of raw comma-separated IDs.
 - Claude-compatible streaming now accepts and ignores `signature_delta` chunks, preventing Kimi/Claude thinking signature events from breaking SSE conversion.
 - OpenAI Responses → Claude request conversion now accepts typeless message items such as `{role, content}`, including `system`/`developer` messages that must become Claude `system` instructions, matching pi and common Responses client payloads.
 
