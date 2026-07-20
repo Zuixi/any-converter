@@ -2,6 +2,11 @@
 
 use any_converter_core::convert::Format;
 use any_converter_desktop::db::DesktopDb;
+use std::path::PathBuf;
+
+fn desktop_tauri_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
 
 #[test]
 fn builds_server_config_from_sqlite_provider_routes_and_settings() {
@@ -41,4 +46,50 @@ fn builds_server_config_from_sqlite_provider_routes_and_settings() {
     assert_eq!(config.model_routes[0].providers, vec!["kimi".to_string()]);
     assert_eq!(config.logging.max_disk_mb, 256);
     assert!(config.logging.request_log.enabled);
+}
+
+#[test]
+fn tauri_bundle_declares_platform_icon_assets() {
+    let tauri_dir = desktop_tauri_dir();
+    let config_path = tauri_dir.join("tauri.conf.json");
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+    let icons = config["bundle"]["icon"].as_array().unwrap();
+    let icon_paths = icons
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert!(
+        icon_paths.iter().any(|path| path.ends_with(".ico")),
+        "Windows bundles require an .ico asset in bundle.icon"
+    );
+    assert!(
+        icon_paths.iter().any(|path| path.ends_with("32x32.png")),
+        "bundle.icon should include a 32x32 PNG asset"
+    );
+    assert!(
+        icon_paths.iter().any(|path| path.ends_with("128x128.png")),
+        "bundle.icon should include a 128x128 PNG asset"
+    );
+    assert!(
+        icon_paths
+            .iter()
+            .any(|path| path.ends_with("128x128@2x.png")),
+        "bundle.icon should include a 128x128@2x PNG asset"
+    );
+    assert!(
+        icon_paths.iter().any(|path| path.ends_with("icon.png")),
+        "bundle.icon should include the base icon.png asset"
+    );
+
+    for relative_path in icon_paths {
+        let asset_path = tauri_dir.join(relative_path);
+        assert!(
+            asset_path.exists(),
+            "missing icon asset: {}",
+            asset_path.display()
+        );
+    }
 }
