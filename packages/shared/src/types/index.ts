@@ -30,6 +30,7 @@ export interface RequestLogRecord {
   timestamp: string;
   client_format: string;
   client_id?: string;
+  session_id?: string;
   provider: string;
   client_model: string;
   upstream_model: string;

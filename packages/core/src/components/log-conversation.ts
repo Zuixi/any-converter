@@ -26,8 +26,82 @@ export interface ConversationDetail {
   timelineEntries: ConversationEntry[];
 }
 
+export interface SessionSummary {
+  key: string;
+  clientId: string;
+  sessionId?: string;
+  title: string;
+  subtitle: string;
+  requestCount: number;
+  latestTimestamp: string;
+  records: RequestLogRecord[];
+}
+
 export function sortRecordsAscending(records: RequestLogRecord[]): RequestLogRecord[] {
   return [...records].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+}
+
+/**
+ * Group request records into sessions.
+ *
+ * A session is identified by `(client_id, session_id)`. Records without a
+ * `session_id` are treated as individual single-request sessions.
+ */
+export function buildSessionSummaries(records: RequestLogRecord[]): SessionSummary[] {
+  const sorted = sortRecordsAscending(records);
+  const sessions = new Map<string, RequestLogRecord[]>();
+
+  for (const record of sorted) {
+    const clientId = record.client_id ?? record.client_format;
+    const key = record.session_id ? `${clientId}:${record.session_id}` : `${clientId}:__single_${record.request_id}`;
+    const list = sessions.get(key) ?? [];
+    list.push(record);
+    sessions.set(key, list);
+  }
+
+  const summaries: SessionSummary[] = [];
+  for (const [key, sessionRecords] of sessions) {
+    const first = sessionRecords[0];
+    const latest = sessionRecords[sessionRecords.length - 1];
+    if (!first || !latest) {
+      continue;
+    }
+    const clientId = first.client_id ?? first.client_format;
+
+    // Find the first user message across all requests in the session for the title.
+    let title = "";
+    for (const record of sessionRecords) {
+      const detail = buildConversationDetail(record, undefined);
+      const userEntry = detail.timelineEntries.find((e) => e.kind === "user");
+      if (userEntry) {
+        title = compactText(userEntry.content, 80);
+        break;
+      }
+    }
+    if (!title) {
+      title = first.path || first.request_id;
+    }
+
+    const totalTokens = sessionRecords.reduce((sum, r) => {
+      const usage = effectiveUsage(r);
+      return sum + usage.input_tokens + usage.output_tokens;
+    }, 0);
+
+    summaries.push({
+      key,
+      clientId,
+      sessionId: first.session_id,
+      title,
+      subtitle: `${clientId} · ${sessionRecords.length} requests · ${totalTokens.toLocaleString()} tokens`,
+      requestCount: sessionRecords.length,
+      latestTimestamp: latest.timestamp,
+      records: sessionRecords,
+    });
+  }
+
+  // Sort by latest activity descending.
+  summaries.sort((a, b) => b.latestTimestamp.localeCompare(a.latestTimestamp));
+  return summaries;
 }
 
 export function buildRequestSummaries(records: RequestLogRecord[]): ConversationRequestSummary[] {

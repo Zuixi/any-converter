@@ -283,6 +283,24 @@ fn extract_client_id(headers: &HeaderMap) -> Option<String> {
         })
 }
 
+/// Extract a session identifier from request headers.
+///
+/// Looks for common session/conversation/correlation id headers.
+fn extract_session_id(headers: &HeaderMap) -> Option<String> {
+    const SESSION_HEADERS: &[&str] = &[
+        "x-session-id",
+        "x-conversation-id",
+        "x-correlation-id",
+        "x-request-id",
+    ];
+    for name in SESSION_HEADERS {
+        if let Some(value) = headers.get(*name).and_then(|v| v.to_str().ok()) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 fn prepare_request(
     state: &AppState,
     headers: &HeaderMap,
@@ -338,6 +356,7 @@ fn prepare_request(
     let ns_map = extract_namespace_map(&stripped_body, route_info.client_format);
     let streaming = is_streaming_request(&stripped_body, route_info);
     let client_id = extract_client_id(headers);
+    let session_id = extract_session_id(headers);
 
     let log_ctx = if state.request_logger.is_some() {
         Some(RequestLogContext {
@@ -345,6 +364,7 @@ fn prepare_request(
             start_time,
             client_format: route_info.client_format,
             client_id: client_id.clone(),
+            session_id: session_id.clone(),
             client_model: client_model.clone(),
             upstream_model: resolved.upstream_model.clone(),
             streaming,

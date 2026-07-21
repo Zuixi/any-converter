@@ -10,13 +10,13 @@ import { formatBytes, formatDuration, formatTimestamp } from "@any-converter/sha
 
 import {
   buildConversationDetail,
-  buildRequestSummaries,
+  buildSessionSummaries,
   effectiveUsage,
   responseBodyToText,
   sortRecordsAscending,
   totalUsage,
   type ConversationEntry,
-  type ConversationRequestSummary,
+  type SessionSummary,
 } from "./log-conversation";
 import { useI18n } from "../i18n";
 
@@ -26,44 +26,36 @@ interface LogTableProps {
 
 export function LogTable({ records }: LogTableProps) {
   const { t } = useI18n();
-  const [selectedId, setSelectedId] = useState<string | null>(records[0]?.request_id ?? null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [showRaw, setShowRaw] = useState(false);
 
-  const summaries = useMemo(() => buildRequestSummaries(records), [records]);
+  const sessions = useMemo(() => buildSessionSummaries(records), [records]);
   const totals = useMemo(() => totalUsage(records), [records]);
+
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) {
-      return summaries;
+      return sessions;
     }
-    return summaries.filter(({ record, title, subtitle }) =>
-      [title, subtitle, record.request_id, record.client_model, record.upstream_model, record.path]
+    return sessions.filter((session) =>
+      [session.title, session.subtitle, session.clientId, session.sessionId ?? ""]
         .join(" ")
         .toLowerCase()
         .includes(q),
     );
-  }, [filter, summaries]);
+  }, [filter, sessions]);
 
   const selected = useMemo(() => {
     if (filtered.length === 0) {
       return null;
     }
-    return filtered.find((item) => item.record.request_id === selectedId) ?? filtered[0];
-  }, [filtered, selectedId]);
+    return filtered.find((s) => s.key === selectedKey) ?? filtered[0];
+  }, [filtered, selectedKey]);
 
-  const previous = useMemo(() => {
-    if (!selected) {
-      return undefined;
-    }
-    const sorted = sortRecordsAscending(records);
-    const index = sorted.findIndex((record) => record.request_id === selected.record.request_id);
-    return index > 0 ? sorted[index - 1] : undefined;
-  }, [records, selected]);
-
-  const detail = useMemo(
-    () => (selected ? buildConversationDetail(selected.record, previous) : null),
-    [previous, selected],
+  const sortedRecords = useMemo(
+    () => (selected ? sortRecordsAscending(selected.records) : []),
+    [selected],
   );
 
   return (
@@ -87,23 +79,27 @@ export function LogTable({ records }: LogTableProps) {
 
       <div className="grid min-h-[640px] grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="min-w-0 lg:col-span-1">
-          <RequestList
-            summaries={filtered}
-            selectedId={selected?.record.request_id ?? null}
-            onSelect={(summary) => {
-              setSelectedId(summary.record.request_id);
+          <SessionList
+            sessions={filtered}
+            selectedKey={selected?.key ?? null}
+            onSelect={(session) => {
+              setSelectedKey(session.key);
               setShowRaw(false);
             }}
           />
         </div>
 
-        {selected && detail ? (
+        {selected && sortedRecords.length > 0 ? (
           <div className="grid min-w-0 gap-4 rounded-md border bg-background p-4 lg:col-span-2">
-            <RequestHeader summary={selected} />
+            <SessionHeader session={selected} />
 
-            <div className="flex flex-col gap-3">
-              {detail.timelineEntries.map((entry) => (
-                <ConversationBubble key={entry.id} entry={entry} />
+            <div className="flex flex-col gap-6">
+              {sortedRecords.map((record, index) => (
+                <RequestBlock
+                  key={record.request_id}
+                  record={record}
+                  previous={index > 0 ? sortedRecords[index - 1] : undefined}
+                />
               ))}
             </div>
 
@@ -111,7 +107,7 @@ export function LogTable({ records }: LogTableProps) {
               <Button variant="outline" size="sm" className="w-fit" onClick={() => setShowRaw((value) => !value)}>
                 {showRaw ? t("logs.hideRaw") : t("logs.showRaw")}
               </Button>
-              {showRaw && <RawPayloads record={selected.record} />}
+              {showRaw && <RawPayloads records={sortedRecords} />}
             </div>
           </div>
         ) : (
@@ -124,73 +120,97 @@ export function LogTable({ records }: LogTableProps) {
   );
 }
 
-function RequestList({
-  summaries,
-  selectedId,
+function SessionList({
+  sessions,
+  selectedKey,
   onSelect,
 }: {
-  summaries: ConversationRequestSummary[];
-  selectedId: string | null;
-  onSelect: (summary: ConversationRequestSummary) => void;
+  sessions: SessionSummary[];
+  selectedKey: string | null;
+  onSelect: (session: SessionSummary) => void;
 }) {
   const { t } = useI18n();
 
   return (
     <div className="overflow-hidden rounded-md border">
-      <div className="border-b bg-muted px-3 py-2 text-sm font-medium">{t("logs.requests")}</div>
+      <div className="border-b bg-muted px-3 py-2 text-sm font-medium">{t("logs.sessions")}</div>
       <div className="max-h-[calc(100vh-280px)] overflow-auto">
-        {summaries.map((summary) => {
-          const selected = summary.record.request_id === selectedId;
-          const clientLabel = summary.record.client_id ?? summary.record.client_format;
+        {sessions.map((session) => {
+          const selected = session.key === selectedKey;
           return (
             <button
-              key={summary.record.request_id}
+              key={session.key}
               type="button"
               className={cn(
                 "grid w-full gap-2 border-b px-3 py-3 text-left text-sm transition-colors hover:bg-accent",
                 selected && "bg-accent",
               )}
-              onClick={() => onSelect(summary)}
+              onClick={() => onSelect(session)}
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 font-medium leading-5">{summary.title}</div>
-                <Badge variant={summary.record.response_status >= 400 ? "destructive" : "secondary"}>
-                  {summary.record.response_status}
-                </Badge>
+                <div className="min-w-0 font-medium leading-5">{session.title}</div>
+                <Badge variant="secondary">{session.requestCount}</Badge>
               </div>
               <div className="grid gap-1 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground/80">{clientLabel}</span>
-                <span>{formatTimestamp(summary.record.timestamp)}</span>
-                <span>
-                  {summary.record.upstream_model} · {formatDuration(summary.record.latency_ms)} ·{" "}
-                  {summary.record.streaming ? "stream" : "json"}
-                </span>
+                <span className="font-medium text-foreground/80">{session.clientId}</span>
+                {session.sessionId && <span className="font-mono text-[10px]">{session.sessionId}</span>}
+                <span>{formatTimestamp(session.latestTimestamp)}</span>
               </div>
             </button>
           );
         })}
-        {summaries.length === 0 && <EmptyState text={t("logs.noMatches")} />}
+        {sessions.length === 0 && <EmptyState text={t("logs.noMatches")} />}
       </div>
     </div>
   );
 }
 
-function RequestHeader({ summary }: { summary: ConversationRequestSummary }) {
+function SessionHeader({ session }: { session: SessionSummary }) {
   const { t } = useI18n();
-  const { record } = summary;
-  const usage = effectiveUsage(record);
+  const latest = session.records[session.records.length - 1];
+  const totalIn = session.records.reduce((sum, r) => sum + effectiveUsage(r).input_tokens, 0);
+  const totalOut = session.records.reduce((sum, r) => sum + effectiveUsage(r).output_tokens, 0);
+
   return (
     <div className="grid gap-2 border-b pb-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold leading-tight">{t("logs.conversationRequest")}</h2>
+        <h2 className="text-lg font-semibold leading-tight">{t("logs.session")}</h2>
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={record.response_status >= 400 ? "destructive" : "default"}>{record.response_status}</Badge>
-          <Badge variant="outline">{record.client_format}</Badge>
-          <Badge variant="secondary">{record.provider}</Badge>
+          <Badge variant="outline">{session.clientId}</Badge>
+          <Badge variant="secondary">{session.requestCount} requests</Badge>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        {session.sessionId && (
+          <>
+            <span className="font-mono">{session.sessionId}</span>
+            <span>·</span>
+          </>
+        )}
+        <span>{formatTimestamp(session.latestTimestamp)}</span>
+        <span>·</span>
+        <span>{totalIn.toLocaleString()} in / {totalOut.toLocaleString()} out</span>
+        {latest && (
+          <>
+            <span>·</span>
+            <span>{latest.provider}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RequestBlock({ record, previous }: { record: RequestLogRecord; previous?: RequestLogRecord }) {
+  const detail = buildConversationDetail(record, previous);
+  const usage = effectiveUsage(record);
+
+  return (
+    <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span className="font-mono">{record.request_id}</span>
+        <span>·</span>
+        <Badge variant={record.response_status >= 400 ? "destructive" : "default"}>{record.response_status}</Badge>
         <span>·</span>
         <span>{record.client_model} → {record.upstream_model}</span>
         <span>·</span>
@@ -199,6 +219,12 @@ function RequestHeader({ summary }: { summary: ConversationRequestSummary }) {
         <span>{usage.input_tokens.toLocaleString()} in / {usage.output_tokens.toLocaleString()} out</span>
         <span>·</span>
         <span>{record.path}</span>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        {detail.timelineEntries.map((entry) => (
+          <ConversationBubble key={entry.id} entry={entry} />
+        ))}
       </div>
     </div>
   );
@@ -222,7 +248,7 @@ function ConversationBubble({ entry }: { entry: ConversationEntry }) {
         className={cn(
           "max-w-[85%] rounded-lg border p-3",
           isUser
-            ? "border-slate-700 bg-slate-800 text-white"
+            ? "border-[#5a8ae8] bg-[#6f9af9] text-white"
             : "border-border bg-muted",
           isTool && "border-l-2 border-l-violet-400",
         )}
@@ -274,7 +300,7 @@ function MarkdownContent({ content, dark }: { content: string; dark?: boolean })
                 <code
                   className={cn(
                     "rounded px-1 py-0.5 font-mono text-[0.9em]",
-                    dark ? "bg-slate-700 text-slate-100" : "bg-muted",
+                    dark ? "bg-[#4a7ad8] text-slate-100" : "bg-muted",
                   )}
                 >
                   {children}
@@ -312,15 +338,22 @@ function MarkdownContent({ content, dark }: { content: string; dark?: boolean })
   );
 }
 
-function RawPayloads({ record }: { record: RequestLogRecord }) {
-  const requestText = record.request_body?.text ?? "";
-  const upstreamText = record.upstream_request_body?.text ?? "";
-  const responseText = responseBodyToText(record.response_body);
+function RawPayloads({ records }: { records: RequestLogRecord[] }) {
   return (
     <div className="grid gap-3">
-      {requestText && <RawBlock title="Client request" text={requestText} />}
-      {upstreamText && <RawBlock title="Upstream request" text={upstreamText} />}
-      <RawBlock title="Response" text={responseText} />
+      {records.map((record) => {
+        const requestText = record.request_body?.text ?? "";
+        const upstreamText = record.upstream_request_body?.text ?? "";
+        const responseText = responseBodyToText(record.response_body);
+        return (
+          <div key={record.request_id} className="grid gap-3 rounded-md border p-3">
+            <div className="text-xs font-mono text-muted-foreground">{record.request_id}</div>
+            {requestText && <RawBlock title="Client request" text={requestText} />}
+            {upstreamText && <RawBlock title="Upstream request" text={upstreamText} />}
+            <RawBlock title="Response" text={responseText} />
+          </div>
+        );
+      })}
     </div>
   );
 }
