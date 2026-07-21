@@ -231,11 +231,15 @@ The Tauri desktop app provides a local control plane for:
 - Local logs and usage views
 - Conversion playground
 
-Run it from the repo:
+Run it from the **repo root** (always reinstall after pulling dependency changes):
 
 ```bash
+pnpm install
 pnpm --filter @any-converter/desktop tauri dev
+pnpm --filter @any-converter/desktop tauri build
 ```
+
+`tauri build` runs `pnpm install && pnpm build` before packaging, so a fresh pull that adds frontend deps (for example `react-router-dom`) will not fail with `TS2307: Cannot find module` once install completes.
 
 ## CLI utilities
 

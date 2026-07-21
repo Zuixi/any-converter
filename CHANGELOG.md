@@ -32,6 +32,7 @@
 
 ### Fixed
 
+- Desktop `tauri build` now runs `pnpm install` before the frontend build (`beforeBuildCommand` / `pretauri`), preventing stale `node_modules` after pulling new deps such as `react-router-dom` from failing with `TS2307: Cannot find module`.
 - Desktop Logs and Usage now read request records from the embedded server log database at `{app_data_dir}/logs/any-converter.sqlite3` instead of the separate Desktop app-state database.
 - Desktop app (`apps/desktop/`) now shares the Web UI design system: its Tailwind config defines the shadcn semantic tokens, CSS variables are loaded, and conflicting global element styles were removed, so the shared Playground/Logs/Usage views render correctly instead of unstyled.
 - Desktop Dashboard/Providers/Routes/Settings pages now compose `@any-converter/ui` components; IPC failures surface as error banners instead of silent empty states, providers can be deleted from the UI, and route provider selection uses checkboxes instead of raw comma-separated IDs.

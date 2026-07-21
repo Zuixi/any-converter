@@ -5,7 +5,7 @@
   "identifier": "dev.any-converter.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm install && pnpm build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },

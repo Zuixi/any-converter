@@ -494,23 +494,25 @@ any-converter/
 │   └── tsconfig/      # Shared TypeScript configs
 ```
 
-## Future: Desktop Client Build
+## Desktop Client Build
 
-When the Tauri Desktop Client is implemented (see [desktop_design.md](./desktop_design.md)):
+See also [desktop_design.md](./desktop_design.md). Build from the **repo root** with pnpm workspace install:
 
 ```bash
-# Install prerequisites
-npm install -g pnpm
-
-# Install frontend dependencies
+# Install frontend workspace dependencies (required after every pull that changes package.json / pnpm-lock.yaml)
 pnpm install
 
-# Run dev mode (frontend + Tauri)
-pnpm tauri dev
+# Dev (frontend + Tauri)
+pnpm --filter @any-converter/desktop tauri dev
 
-# Build Desktop app
-pnpm tauri build
+# Production Desktop package
+pnpm --filter @any-converter/desktop tauri build
 ```
+
+Notes:
+
+- `apps/desktop/src-tauri/tauri.conf.json` `beforeBuildCommand` is `pnpm install && pnpm build`, so packaging re-syncs deps before `tsc`.
+- If you see `TS2307: Cannot find module 'react-router-dom'`, the local `node_modules` is stale — run `pnpm install` from the repo root, then rebuild.
 
 ## CI/CD Reference
 
