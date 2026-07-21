@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { AppProviders } from "@/components/app-providers";
 import { Navigation } from "@/components/navigation";
 import "./globals.css";
 
@@ -15,8 +16,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="min-h-screen bg-background font-sans antialiased">
-        <Navigation />
-        <main className="container py-6">{children}</main>
+        <AppProviders>
+          <Navigation />
+          <main className="container py-6">{children}</main>
+        </AppProviders>
       </body>
     </html>
   );

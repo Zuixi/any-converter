@@ -1,5 +1,8 @@
 use any_converter_core::convert::{Format, convert_request, convert_response};
+use any_converter_server::request_log::RequestLogRecord;
+use any_converter_server::storage::{HourlyUsage, SqliteStorage};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tauri::State;
 
 use crate::db::{DesktopModelRoute, DesktopProvider};
@@ -142,21 +145,35 @@ pub async fn convert_payload(
 pub async fn list_request_logs(
     state: State<'_, AppState>,
     limit: Option<u64>,
-) -> Result<Vec<any_converter_server::request_log::RequestLogRecord>, String> {
-    state
-        .db()
-        .list_request_logs(limit.unwrap_or(500))
-        .map_err(to_error)
+) -> Result<Vec<RequestLogRecord>, String> {
+    list_request_logs_from_log_dir(state.log_dir(), limit.unwrap_or(500))
 }
 
 #[tauri::command]
 pub async fn get_usage_summary(
     state: State<'_, AppState>,
     limit: Option<u64>,
-) -> Result<Vec<any_converter_server::storage::HourlyUsage>, String> {
-    state
-        .db()
-        .hourly_usage(limit.unwrap_or(50))
+) -> Result<Vec<HourlyUsage>, String> {
+    get_usage_summary_from_log_dir(state.log_dir(), limit.unwrap_or(50))
+}
+
+pub fn list_request_logs_from_log_dir(
+    log_dir: impl AsRef<Path>,
+    limit: u64,
+) -> Result<Vec<RequestLogRecord>, String> {
+    SqliteStorage::open_in_log_dir(log_dir)
+        .map_err(to_error)?
+        .recent_request_logs(limit)
+        .map_err(to_error)
+}
+
+pub fn get_usage_summary_from_log_dir(
+    log_dir: impl AsRef<Path>,
+    limit: u64,
+) -> Result<Vec<HourlyUsage>, String> {
+    SqliteStorage::open_in_log_dir(log_dir)
+        .map_err(to_error)?
+        .hourly_usage_from_request_logs(limit)
         .map_err(to_error)
 }
 

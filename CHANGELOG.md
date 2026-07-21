@@ -4,6 +4,8 @@
 
 ### Added
 
+- **English/Chinese UI language support**: Web and Desktop frontends now share a lightweight i18n provider with a persisted language toggle and automatic first-run language detection.
+- **Guided Desktop setup forms**: Desktop Providers and Routes now include provider presets, field labels, examples, strategy explanations, disabled invalid submits, and empty-state next steps; Playground now makes clear it converts payload format only and includes per-format examples.
 - **Structured request trace summaries**: Request logs can now include `trace.client`, `trace.upstream`, and `trace.response` summaries with message previews, tool definitions, tool calls, and tool results across OpenAI Responses, OpenAI Chat, Claude Messages, Gemini, and captured SSE output.
 - **SQLite log storage mirror**: When `logging.dir` is configured, usage logs and full request logs are now mirrored into `{logging.dir}/any-converter.sqlite3` while continuing to write JSONL files as the fallback/debug format.
 - **SQLite-backed Web UI logs and usage**: `/api/logs` and `/api/usage` now read `any-converter.sqlite3` first and fall back to JSONL files when SQLite is missing, empty, or unreadable.
@@ -29,6 +31,7 @@
 
 ### Fixed
 
+- Desktop Logs and Usage now read request records from the embedded server log database at `{app_data_dir}/logs/any-converter.sqlite3` instead of the separate Desktop app-state database.
 - Desktop app (`apps/desktop/`) now shares the Web UI design system: its Tailwind config defines the shadcn semantic tokens, CSS variables are loaded, and conflicting global element styles were removed, so the shared Playground/Logs/Usage views render correctly instead of unstyled.
 - Desktop Dashboard/Providers/Routes/Settings pages now compose `@any-converter/ui` components; IPC failures surface as error banners instead of silent empty states, providers can be deleted from the UI, and route provider selection uses checkboxes instead of raw comma-separated IDs.
 - Claude-compatible streaming now accepts and ignores `signature_delta` chunks, preventing Kimi/Claude thinking signature events from breaking SSE conversion.

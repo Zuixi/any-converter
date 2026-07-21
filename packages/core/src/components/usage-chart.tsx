@@ -2,6 +2,7 @@
 
 import type { AggregatedUsage } from "@any-converter/shared";
 import { Card, CardContent, CardHeader, CardTitle } from "@any-converter/ui";
+import { useI18n } from "../i18n";
 
 interface UsageChartProps {
   data: AggregatedUsage[];
@@ -49,10 +50,12 @@ const CHART = {
 };
 
 export function UsageChart({ data }: UsageChartProps) {
+  const { t } = useI18n();
+
   if (data.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center rounded-md border text-muted-foreground">
-        No usage data available.
+        {t("usage.empty")}
       </div>
     );
   }
@@ -69,47 +72,47 @@ export function UsageChart({ data }: UsageChartProps) {
   return (
     <div className="grid gap-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-        <SummaryCard title="Total tokens" value={formatNumber(summary.totalTokens)} accent={COLORS.total} />
-        <SummaryCard title="Input tokens" value={formatNumber(summary.inputTokens)} accent={COLORS.input} />
-        <SummaryCard title="Output tokens" value={formatNumber(summary.outputTokens)} accent={COLORS.output} />
-        <SummaryCard title="Requests" value={formatNumber(summary.requests)} accent={COLORS.requests} />
-        <SummaryCard title="Avg latency" value={`${formatNumber(summary.avgLatency)} ms`} accent={COLORS.latency} />
+        <SummaryCard title={t("usage.totalTokens")} value={formatNumber(summary.totalTokens)} accent={COLORS.total} />
+        <SummaryCard title={t("usage.inputTokens")} value={formatNumber(summary.inputTokens)} accent={COLORS.input} />
+        <SummaryCard title={t("usage.outputTokens")} value={formatNumber(summary.outputTokens)} accent={COLORS.output} />
+        <SummaryCard title={t("usage.requests")} value={formatNumber(summary.requests)} accent={COLORS.requests} />
+        <SummaryCard title={t("usage.avgLatency")} value={`${formatNumber(summary.avgLatency)} ms`} accent={COLORS.latency} />
       </div>
 
-      <ChartCard title="Token Trend">
+      <ChartCard title={t("usage.tokenTrend")}>
         <LineChart
           data={chartData}
           maxValue={maxOf(chartData, ["total_tokens"])}
           valueFormatter={formatCompact}
           series={[
-            { key: "input_tokens", name: "Input tokens", color: COLORS.input },
-            { key: "output_tokens", name: "Output tokens", color: COLORS.output },
-            { key: "total_tokens", name: "Total tokens", color: COLORS.total },
+            { key: "input_tokens", name: t("usage.inputTokens"), color: COLORS.input },
+            { key: "output_tokens", name: t("usage.outputTokens"), color: COLORS.output },
+            { key: "total_tokens", name: t("usage.totalTokens"), color: COLORS.total },
           ]}
         />
       </ChartCard>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <ChartCard title="Request Volume">
+        <ChartCard title={t("usage.requestVolume")}>
           <BarChart
             data={chartData}
             maxValue={maxOf(chartData, ["request_count", "error_count"])}
             valueFormatter={formatNumber}
             series={[
-              { key: "request_count", name: "Requests", color: COLORS.requests },
-              { key: "error_count", name: "Errors", color: COLORS.errors },
+              { key: "request_count", name: t("usage.requests"), color: COLORS.requests },
+              { key: "error_count", name: t("usage.errors"), color: COLORS.errors },
             ]}
           />
         </ChartCard>
 
-        <ChartCard title="Latency">
+        <ChartCard title={t("usage.latency")}>
           <LineChart
             data={chartData}
             maxValue={maxOf(chartData, ["avg_latency_ms", "max_latency_ms"])}
             valueFormatter={formatLatencyTick}
             series={[
-              { key: "avg_latency_ms", name: "Avg latency", color: COLORS.latency },
-              { key: "max_latency_ms", name: "Max latency", color: COLORS.maxLatency, dashed: true },
+              { key: "avg_latency_ms", name: t("usage.avgLatency"), color: COLORS.latency },
+              { key: "max_latency_ms", name: t("usage.maxLatency"), color: COLORS.maxLatency, dashed: true },
             ]}
           />
         </ChartCard>

@@ -2,8 +2,8 @@ import React, { useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ApiClientProvider } from "@any-converter/core";
-import type { ApiClient } from "@any-converter/core";
+import { ApiClientProvider, I18nProvider, useI18n } from "@any-converter/core";
+import type { ApiClient, TranslationKey } from "@any-converter/core";
 import type { AggregatedUsage, ConvertApiRequest, RequestLogRecord, StatusData } from "@any-converter/shared";
 import {
   Badge,
@@ -57,15 +57,24 @@ const PROVIDER_FORMATS = [
   { value: "gemini", label: "Gemini" },
 ] as const;
 
-const navItems: Array<{ id: Page; label: string }> = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "providers", label: "Providers" },
-  { id: "routes", label: "Routes" },
-  { id: "playground", label: "Playground" },
-  { id: "logs", label: "Logs" },
-  { id: "usage", label: "Usage" },
-  { id: "settings", label: "Settings" },
+const navItems: Array<{ id: Page; label: TranslationKey }> = [
+  { id: "dashboard", label: "nav.dashboard" },
+  { id: "providers", label: "nav.providers" },
+  { id: "routes", label: "nav.routes" },
+  { id: "playground", label: "nav.playground" },
+  { id: "logs", label: "nav.logs" },
+  { id: "usage", label: "nav.usage" },
+  { id: "settings", label: "nav.settings" },
 ];
+
+const PROVIDER_PRESETS = [
+  { id: "custom", label: "Custom", name: "", format: "openai_responses", base_url: "" },
+  { id: "openai", label: "OpenAI", name: "openai", format: "openai_responses", base_url: "https://api.openai.com" },
+  { id: "anthropic", label: "Anthropic", name: "anthropic", format: "claude", base_url: "https://api.anthropic.com" },
+  { id: "gemini", label: "Google Gemini", name: "gemini", format: "gemini", base_url: "https://generativelanguage.googleapis.com" },
+  { id: "deepseek", label: "DeepSeek", name: "deepseek", format: "openai_chat", base_url: "https://api.deepseek.com" },
+  { id: "moonshot", label: "Moonshot", name: "moonshot", format: "openai_responses", base_url: "https://api.moonshot.cn" },
+] as const;
 
 function createDesktopApiClient(): ApiClient {
   return {
@@ -105,6 +114,7 @@ function createDesktopApiClient(): ApiClient {
 }
 
 function App() {
+  const { t } = useI18n();
   const [page, setPage] = useState<Page>("dashboard");
   const apiClient = useMemo(() => createDesktopApiClient(), []);
 
@@ -116,10 +126,11 @@ function App() {
           <nav>
             {navItems.map((item) => (
               <button key={item.id} className={page === item.id ? "nav-item active" : "nav-item"} onClick={() => setPage(item.id)}>
-                {item.label}
+                {t(item.label)}
               </button>
             ))}
           </nav>
+          <LanguageToggle />
         </aside>
         <main className="main-panel">
           {page === "dashboard" && <Dashboard />}
@@ -143,6 +154,7 @@ const statusBadgeVariant: Record<ServerStatus["state"], "default" | "secondary" 
 };
 
 function Dashboard() {
+  const { t } = useI18n();
   const [status, setStatus, error, setError] = useAsyncState<ServerStatus>("get_server_status");
 
   const run = async (command: "start_server" | "stop_server" | "restart_server" | "get_server_status") => {
@@ -156,12 +168,12 @@ function Dashboard() {
 
   return (
     <section className="grid gap-6">
-      <Header title="Dashboard" subtitle="Embedded server control and local proxy status." />
+      <Header title={t("nav.dashboard")} subtitle={t("desktop.dashboard.subtitle")} />
       {error && <ErrorBanner message={error} />}
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Server</CardTitle>
+            <CardTitle className="text-lg">{t("desktop.dashboard.server")}</CardTitle>
             <CardDescription>
               {status ? `${status.host}:${status.port}` : "Loading…"}
             </CardDescription>
@@ -172,20 +184,20 @@ function Dashboard() {
             </Badge>
             {status?.last_error && <p className="text-sm text-destructive">{status.last_error}</p>}
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => void run("start_server")}>Start</Button>
-              <Button size="sm" variant="secondary" onClick={() => void run("stop_server")}>Stop</Button>
-              <Button size="sm" variant="secondary" onClick={() => void run("restart_server")}>Restart</Button>
-              <Button size="sm" variant="outline" onClick={() => void run("get_server_status")}>Refresh</Button>
+              <Button size="sm" onClick={() => void run("start_server")}>{t("desktop.dashboard.start")}</Button>
+              <Button size="sm" variant="secondary" onClick={() => void run("stop_server")}>{t("desktop.dashboard.stop")}</Button>
+              <Button size="sm" variant="secondary" onClick={() => void run("restart_server")}>{t("desktop.dashboard.restart")}</Button>
+              <Button size="sm" variant="outline" onClick={() => void run("get_server_status")}>{t("desktop.dashboard.refresh")}</Button>
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Next steps</CardTitle>
+            <CardTitle className="text-lg">{t("desktop.dashboard.nextSteps")}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
-              Add providers, create model routes, start the embedded server, then inspect logs and usage.
+              {t("desktop.dashboard.nextStepsBody")}
             </p>
           </CardContent>
         </Card>
@@ -195,8 +207,24 @@ function Dashboard() {
 }
 
 function Providers() {
+  const { t } = useI18n();
   const [providers, setProviders, error, setError] = useAsyncState<DesktopProvider[]>("list_providers", []);
   const [form, setForm] = useState({ name: "", format: "openai_responses", base_url: "", api_key: "" });
+  const [preset, setPreset] = useState("custom");
+
+  const applyPreset = (id: string) => {
+    setPreset(id);
+    const next = PROVIDER_PRESETS.find((item) => item.id === id);
+    if (!next || next.id === "custom") {
+      return;
+    }
+    setForm((current) => ({
+      ...current,
+      name: next.name,
+      format: next.format,
+      base_url: next.base_url,
+    }));
+  };
 
   const create = async () => {
     try {
@@ -219,35 +247,62 @@ function Providers() {
 
   return (
     <section className="grid gap-6">
-      <Header title="Providers" subtitle="Manage upstream model providers and credentials." />
+      <Header title={t("nav.providers")} subtitle={t("desktop.providers.subtitle")} />
       {error && <ErrorBanner message={error} />}
       <Card>
-        <CardContent className="grid gap-3 pt-6 md:grid-cols-[1fr_1fr_1fr_1fr_auto]">
-          <Input placeholder="Name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-          <Select value={form.format} onValueChange={(format) => setForm({ ...form, format })}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PROVIDER_FORMATS.map((format) => (
-                <SelectItem key={format.value} value={format.value}>{format.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Input placeholder="Base URL" value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} />
-          <Input placeholder="API key" type="password" value={form.api_key} onChange={(event) => setForm({ ...form, api_key: event.target.value })} />
-          <Button onClick={() => void create()}>Add Provider</Button>
+        <CardContent className="grid gap-4 pt-6">
+          <Field label={t("desktop.providers.preset")} help={t("desktop.providers.empty")}>
+            <Select value={preset} onValueChange={applyPreset}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROVIDER_PRESETS.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.id === "custom" ? t("desktop.providers.custom") : item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label={t("desktop.providers.name")} help={t("desktop.providers.nameHelp")}>
+              <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+            </Field>
+            <Field label={t("desktop.providers.format")} help={t("desktop.providers.formatHelp")}>
+              <Select value={form.format} onValueChange={(format) => setForm({ ...form, format })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PROVIDER_FORMATS.map((format) => (
+                    <SelectItem key={format.value} value={format.value}>{format.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={t("desktop.providers.baseUrl")} help={t("desktop.providers.baseUrlHelp")}>
+              <Input value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} />
+            </Field>
+            <Field label={t("desktop.providers.apiKey")} help={t("desktop.providers.apiKeyHelp")}>
+              <Input type="password" value={form.api_key} onChange={(event) => setForm({ ...form, api_key: event.target.value })} />
+            </Field>
+          </div>
+          <Button className="w-fit" onClick={() => void create()} disabled={!form.name || !form.base_url || !form.api_key}>
+            {t("desktop.providers.add")}
+          </Button>
         </CardContent>
       </Card>
       <Table
-        headers={["Name", "Format", "Base URL", "Secret", ""]}
+        emptyText={t("desktop.providers.empty")}
+        headers={[t("desktop.providers.name"), t("desktop.providers.format"), t("desktop.providers.baseUrl"), t("desktop.providers.secret"), ""]}
         rows={(providers ?? []).map((provider) => [
           provider.name,
           provider.format,
           provider.base_url,
           provider.keychain_ref,
           <Button key={provider.id} size="sm" variant="destructive" onClick={() => void remove(provider.id)}>
-            Delete
+            {t("desktop.providers.delete")}
           </Button>,
         ])}
       />
@@ -256,6 +311,7 @@ function Providers() {
 }
 
 function Routes() {
+  const { t } = useI18n();
   const [routes, setRoutes, error, setError] = useAsyncState<DesktopRoute[]>("list_model_routes", []);
   const [providers] = useAsyncState<DesktopProvider[]>("list_providers", []);
   const [form, setForm] = useState({ pattern: "*", upstream_model: "", strategy: "priority" });
@@ -288,28 +344,36 @@ function Routes() {
 
   return (
     <section className="grid gap-6">
-      <Header title="Routes" subtitle="Map client model patterns to provider pools." />
+      <Header title={t("nav.routes")} subtitle={t("desktop.routes.subtitle")} />
       {error && <ErrorBanner message={error} />}
       <Card>
         <CardContent className="grid gap-4 pt-6">
-          <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto]">
-            <Input placeholder="Pattern, e.g. gpt-*" value={form.pattern} onChange={(event) => setForm({ ...form, pattern: event.target.value })} />
-            <Input placeholder="Upstream model (optional)" value={form.upstream_model} onChange={(event) => setForm({ ...form, upstream_model: event.target.value })} />
-            <Select value={form.strategy} onValueChange={(strategy) => setForm({ ...form, strategy })}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="priority">Priority</SelectItem>
-                <SelectItem value="round_robin">Round robin</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button onClick={() => void create()} disabled={selectedProviderIds.length === 0}>Add Route</Button>
+          <div className="grid gap-4 md:grid-cols-3">
+            <Field label={t("desktop.routes.pattern")} help={t("desktop.routes.patternHelp")}>
+              <Input value={form.pattern} onChange={(event) => setForm({ ...form, pattern: event.target.value })} />
+            </Field>
+            <Field label={t("desktop.routes.upstream")} help={t("desktop.routes.upstreamHelp")}>
+              <Input value={form.upstream_model} onChange={(event) => setForm({ ...form, upstream_model: event.target.value })} />
+            </Field>
+            <Field
+              label={t("desktop.routes.strategy")}
+              help={form.strategy === "priority" ? t("desktop.routes.priorityHelp") : t("desktop.routes.roundRobinHelp")}
+            >
+              <Select value={form.strategy} onValueChange={(strategy) => setForm({ ...form, strategy })}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="priority">{t("desktop.routes.priority")}</SelectItem>
+                  <SelectItem value="round_robin">{t("desktop.routes.roundRobin")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
           </div>
           <div className="grid gap-2">
-            <Label>Providers in pool</Label>
+            <Label>{t("desktop.routes.providerPool")}</Label>
             {(providers ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No providers yet — add one on the Providers page first.</p>
+              <p className="text-sm text-muted-foreground">{t("desktop.routes.noProviders")}</p>
             ) : (
               <div className="flex flex-wrap gap-4">
                 {(providers ?? []).map((provider) => (
@@ -326,10 +390,14 @@ function Routes() {
               </div>
             )}
           </div>
+          <Button className="w-fit" onClick={() => void create()} disabled={selectedProviderIds.length === 0 || !form.pattern}>
+            {t("desktop.routes.add")}
+          </Button>
         </CardContent>
       </Card>
       <Table
-        headers={["Pattern", "Providers", "Upstream", "Strategy"]}
+        emptyText={t("desktop.routes.empty")}
+        headers={[t("desktop.routes.pattern"), t("desktop.routes.providers"), t("desktop.routes.upstreamColumn"), t("desktop.routes.strategy")]}
         rows={(routes ?? []).map((route) => [route.pattern, route.providers.join(", "), route.upstream_model ?? "", route.strategy])}
       />
     </section>
@@ -337,6 +405,7 @@ function Routes() {
 }
 
 function Settings() {
+  const { t } = useI18n();
   const [settings, setSettings, error, setError] = useAsyncState<Record<string, string>>("get_settings", {});
   const [key, setKey] = useState("server.port");
   const [value, setValue] = useState("");
@@ -353,16 +422,16 @@ function Settings() {
 
   return (
     <section className="grid gap-6">
-      <Header title="Settings" subtitle="Configure embedded server defaults and logging." />
+      <Header title={t("nav.settings")} subtitle={t("desktop.settings.subtitle")} />
       {error && <ErrorBanner message={error} />}
       <Card>
         <CardContent className="flex flex-wrap items-center gap-3 pt-6">
-          <Input className="max-w-xs" value={key} onChange={(event) => setKey(event.target.value)} placeholder="Key" />
-          <Input className="max-w-xs" value={value} onChange={(event) => setValue(event.target.value)} placeholder="Value" />
-          <Button onClick={() => void save()}>Save Setting</Button>
+          <Input className="max-w-xs" value={key} onChange={(event) => setKey(event.target.value)} placeholder={t("desktop.settings.key")} />
+          <Input className="max-w-xs" value={value} onChange={(event) => setValue(event.target.value)} placeholder={t("desktop.settings.value")} />
+          <Button onClick={() => void save()}>{t("desktop.settings.save")}</Button>
         </CardContent>
       </Card>
-      <Table headers={["Key", "Value"]} rows={Object.entries(settings ?? {})} />
+      <Table headers={[t("desktop.settings.key"), t("desktop.settings.value")]} rows={Object.entries(settings ?? {})} />
     </section>
   );
 }
@@ -380,7 +449,30 @@ function ErrorBanner({ message }: { message: string }) {
   return <p className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">{message}</p>;
 }
 
-function Table({ headers, rows }: { headers: string[]; rows: React.ReactNode[][] }) {
+function LanguageToggle() {
+  const { language, setLanguage, t } = useI18n();
+  return (
+    <button
+      type="button"
+      className="nav-item"
+      onClick={() => setLanguage(language === "en" ? "zh-CN" : "en")}
+    >
+      {t("common.language")}: {language === "en" ? t("common.chinese") : t("common.english")}
+    </button>
+  );
+}
+
+function Field({ label, help, children }: { label: string; help: string; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-2">
+      <Label>{label}</Label>
+      {children}
+      <span className="text-xs leading-5 text-muted-foreground">{help}</span>
+    </label>
+  );
+}
+
+function Table({ headers, rows, emptyText }: { headers: string[]; rows: React.ReactNode[][]; emptyText?: string }) {
   return (
     <Card className="overflow-x-auto p-0">
       <table className="w-full border-collapse">
@@ -394,7 +486,13 @@ function Table({ headers, rows }: { headers: string[]; rows: React.ReactNode[][]
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, index) => (
+          {rows.length === 0 && emptyText ? (
+            <tr>
+              <td className="px-4 py-6 text-sm text-muted-foreground" colSpan={headers.length}>
+                {emptyText}
+              </td>
+            </tr>
+          ) : rows.map((row, index) => (
             <tr key={index}>
               {row.map((cell, cellIndex) => (
                 <td key={cellIndex} className="border-b px-4 py-3 align-top text-sm last:border-b-0">
@@ -437,6 +535,8 @@ function useAsyncState<T>(
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <I18nProvider>
+      <App />
+    </I18nProvider>
   </React.StrictMode>,
 );

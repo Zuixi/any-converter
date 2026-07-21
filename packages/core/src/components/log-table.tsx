@@ -18,12 +18,14 @@ import {
   type ConversationEntry,
   type ConversationRequestSummary,
 } from "./log-conversation";
+import { useI18n } from "../i18n";
 
 interface LogTableProps {
   records: RequestLogRecord[];
 }
 
 export function LogTable({ records }: LogTableProps) {
+  const { t } = useI18n();
   const [selectedId, setSelectedId] = useState<string | null>(records[0]?.request_id ?? null);
   const [filter, setFilter] = useState("");
   const [showRaw, setShowRaw] = useState(false);
@@ -67,17 +69,17 @@ export function LogTable({ records }: LogTableProps) {
   return (
     <div className="grid gap-4">
       <div className="grid gap-3 rounded-md border bg-muted/40 p-3 text-sm md:grid-cols-4">
-        <Metric label="Requests" value={String(records.length)} />
-        <Metric label="Input tokens" value={totals.input_tokens.toLocaleString()} />
-        <Metric label="Output tokens" value={totals.output_tokens.toLocaleString()} />
-        <Metric label="Total tokens" value={(totals.input_tokens + totals.output_tokens).toLocaleString()} />
+        <Metric label={t("logs.requests")} value={String(records.length)} />
+        <Metric label={t("logs.inputTokens")} value={totals.input_tokens.toLocaleString()} />
+        <Metric label={t("logs.outputTokens")} value={totals.output_tokens.toLocaleString()} />
+        <Metric label={t("logs.totalTokens")} value={(totals.input_tokens + totals.output_tokens).toLocaleString()} />
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor="log-search">Search conversations</Label>
+        <Label htmlFor="log-search">{t("logs.search")}</Label>
         <Input
           id="log-search"
-          placeholder="Filter by message, provider, model, status..."
+          placeholder={t("logs.searchPlaceholder")}
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
         />
@@ -100,7 +102,7 @@ export function LogTable({ records }: LogTableProps) {
             <RequestHeader summary={selected} />
 
             <div className="grid gap-3">
-              <SectionTitle title="Conversation delta" description="New client-side context compared with the previous request." />
+              <SectionTitle title={t("logs.conversationDelta")} description={t("logs.conversationDeltaHelp")} />
               {detail.contextEntries.length > 0 ? (
                 <div className="grid gap-3">
                   {detail.contextEntries.map((entry) => (
@@ -108,12 +110,12 @@ export function LogTable({ records }: LogTableProps) {
                   ))}
                 </div>
               ) : (
-                <EmptyState text="No new client context detected for this request." />
+                <EmptyState text={t("logs.noContext")} />
               )}
             </div>
 
             <div className="grid gap-3">
-              <SectionTitle title="LLM output" description="Aggregated model response and model tool calls returned to the client." />
+              <SectionTitle title={t("logs.llmOutput")} description={t("logs.llmOutputHelp")} />
               {detail.responseEntries.length > 0 ? (
                 <div className="grid gap-3">
                   {detail.responseEntries.map((entry) => (
@@ -121,20 +123,20 @@ export function LogTable({ records }: LogTableProps) {
                   ))}
                 </div>
               ) : (
-                <EmptyState text="No response content captured." />
+                <EmptyState text={t("logs.noResponse")} />
               )}
             </div>
 
             <div className="grid gap-2 border-t pt-3">
               <Button variant="outline" size="sm" className="w-fit" onClick={() => setShowRaw((value) => !value)}>
-                {showRaw ? "Hide raw payloads" : "Show raw payloads"}
+                {showRaw ? t("logs.hideRaw") : t("logs.showRaw")}
               </Button>
               {showRaw && <RawPayloads record={selected.record} />}
             </div>
           </div>
         ) : (
           <div className="flex min-h-[520px] items-center justify-center rounded-md border p-8 text-sm text-muted-foreground lg:col-span-2">
-            No request logs found.
+            {t("logs.noLogs")}
           </div>
         )}
       </div>
@@ -151,9 +153,11 @@ function RequestList({
   selectedId: string | null;
   onSelect: (summary: ConversationRequestSummary) => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="overflow-hidden rounded-md border">
-      <div className="border-b bg-muted px-3 py-2 text-sm font-medium">Requests</div>
+      <div className="border-b bg-muted px-3 py-2 text-sm font-medium">{t("logs.requests")}</div>
       <div className="max-h-[760px] overflow-auto">
         {summaries.map((summary) => {
           const selected = summary.record.request_id === selectedId;
@@ -177,26 +181,27 @@ function RequestList({
                 <span>{formatTimestamp(summary.record.timestamp)}</span>
                 <span>{summary.subtitle}</span>
                 <span>
-                  {summary.record.streaming ? "stream" : "json"} · {summary.newItemCount} visible items
+                  {summary.record.streaming ? "stream" : "json"} · {summary.newItemCount} {t("logs.visibleItems")}
                 </span>
               </div>
             </button>
           );
         })}
-        {summaries.length === 0 && <EmptyState text="No matching logs." />}
+        {summaries.length === 0 && <EmptyState text={t("logs.noMatches")} />}
       </div>
     </div>
   );
 }
 
 function RequestHeader({ summary }: { summary: ConversationRequestSummary }) {
+  const { t } = useI18n();
   const { record } = summary;
   const usage = effectiveUsage(record);
   return (
     <div className="grid gap-3 border-b pb-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="grid gap-1">
-          <h2 className="text-xl font-semibold leading-tight">Conversation Request</h2>
+          <h2 className="text-xl font-semibold leading-tight">{t("logs.conversationRequest")}</h2>
           <p className="text-sm text-muted-foreground">{record.request_id}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -206,13 +211,13 @@ function RequestHeader({ summary }: { summary: ConversationRequestSummary }) {
         </div>
       </div>
       <div className="grid gap-2 text-sm text-muted-foreground md:grid-cols-4">
-        <Metric label="Model" value={`${record.client_model} -> ${record.upstream_model}`} />
-        <Metric label="Latency" value={formatDuration(record.latency_ms)} />
+        <Metric label={t("logs.model")} value={`${record.client_model} -> ${record.upstream_model}`} />
+        <Metric label={t("logs.latency")} value={formatDuration(record.latency_ms)} />
         <Metric
-          label="Tokens"
+          label={t("logs.tokens")}
           value={`${usage.input_tokens.toLocaleString()} in / ${usage.output_tokens.toLocaleString()} out`}
         />
-        <Metric label="Path" value={record.path} />
+        <Metric label={t("logs.path")} value={record.path} />
       </div>
     </div>
   );

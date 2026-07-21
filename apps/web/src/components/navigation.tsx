@@ -3,10 +3,19 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { NAV_ITEMS } from "@any-converter/shared";
+import { useI18n } from "@any-converter/core";
 import { cn } from "@any-converter/ui";
 
+const navItems = [
+  { href: "/playground", label: "nav.playground" },
+  { href: "/logs", label: "nav.logs" },
+  { href: "/usage", label: "nav.usage" },
+  { href: "/status", label: "nav.status" },
+  { href: "/config", label: "nav.config" },
+] as const;
+
 export function Navigation() {
+  const { language, setLanguage, t } = useI18n();
   const pathname = usePathname();
 
   return (
@@ -16,7 +25,7 @@ export function Navigation() {
           any-converter
         </Link>
         <nav className="flex items-center gap-4 text-sm">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <Link
               key={item.href}
               href={item.href}
@@ -25,10 +34,17 @@ export function Navigation() {
                 pathname === item.href ? "text-foreground font-medium" : "text-muted-foreground",
               )}
             >
-              {item.label}
+              {t(item.label)}
             </Link>
           ))}
         </nav>
+        <button
+          type="button"
+          className="ml-auto rounded-md border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+          onClick={() => setLanguage(language === "en" ? "zh-CN" : "en")}
+        >
+          {language === "en" ? t("common.chinese") : t("common.english")}
+        </button>
       </div>
     </header>
   );

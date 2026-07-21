@@ -1,7 +1,13 @@
 #![allow(clippy::unwrap_used)]
 
 use any_converter_core::convert::Format;
+use any_converter_core::ir::Usage;
+use any_converter_desktop::commands::{
+    get_usage_summary_from_log_dir, list_request_logs_from_log_dir,
+};
 use any_converter_desktop::db::DesktopDb;
+use any_converter_server::request_log::{RequestLogRecord, ResponseBodyKind};
+use any_converter_server::storage::SqliteStorage;
 use std::path::PathBuf;
 
 fn desktop_tauri_dir() -> PathBuf {
@@ -92,4 +98,59 @@ fn tauri_bundle_declares_platform_icon_assets() {
             asset_path.display()
         );
     }
+}
+
+#[test]
+fn reads_request_logs_and_usage_from_server_log_sqlite() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_db = DesktopDb::open(temp.path().join("any-converter.sqlite3")).unwrap();
+    app_db
+        .create_provider(
+            "empty-app-db",
+            Format::OpenAIChat,
+            "https://api.openai.com",
+            "keychain:any-converter:empty-app-db",
+        )
+        .unwrap();
+
+    let log_dir = temp.path().join("logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let storage = SqliteStorage::open_in_log_dir(&log_dir).unwrap();
+    storage
+        .insert_request_log(&RequestLogRecord {
+            request_id: "req-from-log-db".to_string(),
+            timestamp: "2026-07-16T12:00:00Z".to_string(),
+            client_format: "openai_chat".to_string(),
+            provider: "openai".to_string(),
+            client_model: "gpt-4.1".to_string(),
+            upstream_model: "gpt-4.1".to_string(),
+            streaming: false,
+            method: "POST".to_string(),
+            path: "/v1/chat/completions".to_string(),
+            request_body: None,
+            upstream_request_body: None,
+            response_status: 200,
+            response_body: ResponseBodyKind::Json {
+                text: "{}".to_string(),
+            },
+            latency_ms: 42,
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            },
+            trace: None,
+            truncated: false,
+        })
+        .unwrap();
+
+    let logs = list_request_logs_from_log_dir(&log_dir, 10).unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].request_id, "req-from-log-db");
+
+    let usage = get_usage_summary_from_log_dir(&log_dir, 10).unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].total_tokens, 15);
 }
