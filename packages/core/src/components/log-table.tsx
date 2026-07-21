@@ -101,30 +101,10 @@ export function LogTable({ records }: LogTableProps) {
           <div className="grid min-w-0 gap-4 rounded-md border bg-background p-4 lg:col-span-2">
             <RequestHeader summary={selected} />
 
-            <div className="grid gap-3">
-              <SectionTitle title={t("logs.conversationDelta")} description={t("logs.conversationDeltaHelp")} />
-              {detail.contextEntries.length > 0 ? (
-                <div className="grid gap-3">
-                  {detail.contextEntries.map((entry) => (
-                    <ConversationBubble key={entry.id} entry={entry} />
-                  ))}
-                </div>
-              ) : (
-                <EmptyState text={t("logs.noContext")} />
-              )}
-            </div>
-
-            <div className="grid gap-3">
-              <SectionTitle title={t("logs.llmOutput")} description={t("logs.llmOutputHelp")} />
-              {detail.responseEntries.length > 0 ? (
-                <div className="grid gap-3">
-                  {detail.responseEntries.map((entry) => (
-                    <ConversationBubble key={entry.id} entry={entry} />
-                  ))}
-                </div>
-              ) : (
-                <EmptyState text={t("logs.noResponse")} />
-              )}
+            <div className="flex flex-col gap-3">
+              {detail.timelineEntries.map((entry) => (
+                <ConversationBubble key={entry.id} entry={entry} />
+              ))}
             </div>
 
             <div className="grid gap-2 border-t pt-3">
@@ -158,9 +138,10 @@ function RequestList({
   return (
     <div className="overflow-hidden rounded-md border">
       <div className="border-b bg-muted px-3 py-2 text-sm font-medium">{t("logs.requests")}</div>
-      <div className="max-h-[760px] overflow-auto">
+      <div className="max-h-[calc(100vh-280px)] overflow-auto">
         {summaries.map((summary) => {
           const selected = summary.record.request_id === selectedId;
+          const clientLabel = summary.record.client_id ?? summary.record.client_format;
           return (
             <button
               key={summary.record.request_id}
@@ -178,10 +159,11 @@ function RequestList({
                 </Badge>
               </div>
               <div className="grid gap-1 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground/80">{clientLabel}</span>
                 <span>{formatTimestamp(summary.record.timestamp)}</span>
-                <span>{summary.subtitle}</span>
                 <span>
-                  {summary.record.streaming ? "stream" : "json"} · {summary.newItemCount} {t("logs.visibleItems")}
+                  {summary.record.upstream_model} · {formatDuration(summary.record.latency_ms)} ·{" "}
+                  {summary.record.streaming ? "stream" : "json"}
                 </span>
               </div>
             </button>
@@ -198,63 +180,79 @@ function RequestHeader({ summary }: { summary: ConversationRequestSummary }) {
   const { record } = summary;
   const usage = effectiveUsage(record);
   return (
-    <div className="grid gap-3 border-b pb-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="grid gap-1">
-          <h2 className="text-xl font-semibold leading-tight">{t("logs.conversationRequest")}</h2>
-          <p className="text-sm text-muted-foreground">{record.request_id}</p>
-        </div>
+    <div className="grid gap-2 border-b pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold leading-tight">{t("logs.conversationRequest")}</h2>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={record.response_status >= 400 ? "destructive" : "default"}>{record.response_status}</Badge>
           <Badge variant="outline">{record.client_format}</Badge>
           <Badge variant="secondary">{record.provider}</Badge>
         </div>
       </div>
-      <div className="grid gap-2 text-sm text-muted-foreground md:grid-cols-4">
-        <Metric label={t("logs.model")} value={`${record.client_model} -> ${record.upstream_model}`} />
-        <Metric label={t("logs.latency")} value={formatDuration(record.latency_ms)} />
-        <Metric
-          label={t("logs.tokens")}
-          value={`${usage.input_tokens.toLocaleString()} in / ${usage.output_tokens.toLocaleString()} out`}
-        />
-        <Metric label={t("logs.path")} value={record.path} />
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span className="font-mono">{record.request_id}</span>
+        <span>·</span>
+        <span>{record.client_model} → {record.upstream_model}</span>
+        <span>·</span>
+        <span>{formatDuration(record.latency_ms)}</span>
+        <span>·</span>
+        <span>{usage.input_tokens.toLocaleString()} in / {usage.output_tokens.toLocaleString()} out</span>
+        <span>·</span>
+        <span>{record.path}</span>
       </div>
     </div>
   );
 }
 
 function ConversationBubble({ entry }: { entry: ConversationEntry }) {
+  const [expanded, setExpanded] = useState(!entry.collapsible);
+
+  const isUser = entry.side === "right";
+  const isTool = entry.kind === "tool_call" || entry.kind === "tool_result";
+
   return (
     <article
       className={cn(
-        "grid gap-2 rounded-md border p-3",
-        entry.kind === "response" && "border-emerald-200 bg-emerald-50/60",
-        entry.kind === "assistant" && "border-blue-200 bg-blue-50/60",
-        entry.kind === "user" && "border-slate-200 bg-slate-50",
-        entry.kind === "system" && "border-amber-200 bg-amber-50/70",
-        entry.kind === "tool_call" && "border-violet-200 bg-violet-50/60",
-        entry.kind === "tool_result" && "border-zinc-200 bg-zinc-50",
+        "flex w-full flex-col gap-2",
+        isUser ? "items-end" : "items-start",
+        isTool && "pl-3",
       )}
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant={entry.kind === "response" ? "default" : "outline"}>{entry.title}</Badge>
-      </div>
-      <div className="min-w-0 overflow-hidden text-sm leading-6 text-foreground">
-        {entry.kind === "response" || entry.kind === "assistant" ? (
-          <MarkdownContent content={entry.content} />
-        ) : (
-          <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words font-sans text-sm leading-6">
-            {entry.content}
-          </pre>
+      <div
+        className={cn(
+          "max-w-[85%] rounded-lg border p-3",
+          isUser
+            ? "border-slate-700 bg-slate-800 text-white"
+            : "border-border bg-muted",
+          isTool && "border-l-2 border-l-violet-400",
+        )}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={entry.kind === "response" ? "default" : "outline"}>{entry.title}</Badge>
+          {entry.collapsible && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "▲" : "▼"} {entry.collapsedTitle}
+            </Button>
+          )}
+        </div>
+        {expanded && (
+          <div className="mt-2 min-w-0 overflow-hidden text-sm leading-6">
+            <MarkdownContent content={entry.content} dark={isUser} />
+          </div>
         )}
       </div>
     </article>
   );
 }
 
-function MarkdownContent({ content }: { content: string }) {
+function MarkdownContent({ content, dark }: { content: string; dark?: boolean }) {
   return (
-    <div className="max-h-[560px] min-w-0 overflow-auto">
+    <div className="min-w-0 overflow-auto">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -272,7 +270,16 @@ function MarkdownContent({ content }: { content: string }) {
             const codeText = String(children);
             const block = Boolean(className) || codeText.includes("\n");
             if (!block) {
-              return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]">{children}</code>;
+              return (
+                <code
+                  className={cn(
+                    "rounded px-1 py-0.5 font-mono text-[0.9em]",
+                    dark ? "bg-slate-700 text-slate-100" : "bg-muted",
+                  )}
+                >
+                  {children}
+                </code>
+              );
             }
             return (
               <code className={cn("block whitespace-pre font-mono text-zinc-50", className)}>
@@ -326,15 +333,6 @@ function RawBlock({ title, text }: { title: string; text: string }) {
         <span className="text-xs text-muted-foreground">{formatBytes(new Blob([text]).size)}</span>
       </div>
       <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs leading-5">{text}</pre>
-    </div>
-  );
-}
-
-function SectionTitle({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="grid gap-1">
-      <h3 className="text-sm font-semibold text-muted-foreground">{title}</h3>
-      <p className="text-sm text-muted-foreground">{description}</p>
     </div>
   );
 }

@@ -7,6 +7,12 @@ export interface ConversationEntry {
   kind: ConversationEntryKind;
   title: string;
   content: string;
+  /** "left" = AI/system/tool, "right" = user */
+  side: "left" | "right";
+  /** Whether the entry should render collapsed by default */
+  collapsible?: boolean;
+  /** Short summary shown when collapsed */
+  collapsedTitle?: string;
 }
 
 export interface ConversationRequestSummary {
@@ -17,8 +23,7 @@ export interface ConversationRequestSummary {
 }
 
 export interface ConversationDetail {
-  contextEntries: ConversationEntry[];
-  responseEntries: ConversationEntry[];
+  timelineEntries: ConversationEntry[];
 }
 
 export function sortRecordsAscending(records: RequestLogRecord[]): RequestLogRecord[] {
@@ -30,13 +35,13 @@ export function buildRequestSummaries(records: RequestLogRecord[]): Conversation
   return sorted.map((record, index) => {
     const previous = sorted[index - 1];
     const detail = buildConversationDetail(record, previous);
-    const latestUser = [...detail.contextEntries].reverse().find((entry) => entry.kind === "user");
+    const latestUser = [...detail.timelineEntries].reverse().find((entry) => entry.kind === "user");
     const fallback = record.path || record.request_id;
     return {
       record,
       title: latestUser ? compactText(latestUser.content, 80) : fallback,
       subtitle: `${record.provider} · ${record.upstream_model} · ${record.response_status}`,
-      newItemCount: detail.contextEntries.length + detail.responseEntries.length,
+      newItemCount: detail.timelineEntries.length,
     };
   });
 }
@@ -44,7 +49,19 @@ export function buildRequestSummaries(records: RequestLogRecord[]): Conversation
 export function buildConversationDetail(record: RequestLogRecord, previous?: RequestLogRecord): ConversationDetail {
   const contextEntries = buildContextEntries(record, previous);
   const responseEntries = buildResponseEntries(record);
-  return { contextEntries, responseEntries };
+
+  // Merge into a single chronological timeline.
+  const timeline: ConversationEntry[] = [];
+  const systemEntries = contextEntries.filter((e) => e.kind === "system");
+  const nonSystemContext = contextEntries.filter((e) => e.kind !== "system");
+
+  if (systemEntries.length > 0) {
+    timeline.push(...systemEntries);
+  }
+  timeline.push(...nonSystemContext);
+  timeline.push(...responseEntries);
+
+  return { timelineEntries: timeline };
 }
 
 export function responseBodyToText(body: ResponseBodyKind): string {
@@ -95,11 +112,16 @@ function buildContextEntries(record: RequestLogRecord, previous?: RequestLogReco
     if (!message.content_preview.trim()) {
       return;
     }
+    const kind = messageKind(message.role);
+    const content = normalizeContentPreview(message.content_preview);
     entries.push({
       id: `${record.request_id}-message-${messageStart + index}`,
-      kind: messageKind(message.role),
+      kind,
       title: roleTitle(message.role),
-      content: normalizeContentPreview(message.content_preview),
+      content,
+      side: kind === "user" ? "right" : "left",
+      collapsible: kind === "system" && content.length > 200,
+      collapsedTitle: kind === "system" ? `System prompt · ${content.length} chars` : undefined,
     });
   });
 
@@ -114,6 +136,7 @@ function buildContextEntries(record: RequestLogRecord, previous?: RequestLogReco
       kind: "tool_call",
       title: `Tool call · ${name}`,
       content: tool.arguments_preview || "{}",
+      side: "left",
     });
   });
 
@@ -127,17 +150,25 @@ function buildContextEntries(record: RequestLogRecord, previous?: RequestLogReco
       kind: "tool_result",
       title: result.id ? `Tool result · ${result.id}` : "Tool result",
       content: result.content_preview,
+      side: "left",
+      collapsible: true,
+      collapsedTitle: result.id ? `Tool result · ${result.id}` : "Tool result",
     });
   });
 
   if (entries.length === 0 && current.messages.length > 0) {
     const latest = current.messages[current.messages.length - 1];
     if (latest) {
+      const kind = messageKind(latest.role);
+      const content = normalizeContentPreview(latest.content_preview);
       entries.push({
         id: `${record.request_id}-latest-message`,
-        kind: messageKind(latest.role),
+        kind,
         title: `Latest ${roleTitle(latest.role)}`,
-        content: normalizeContentPreview(latest.content_preview),
+        content,
+        side: kind === "user" ? "right" : "left",
+        collapsible: kind === "system" && content.length > 200,
+        collapsedTitle: kind === "system" ? `System prompt · ${content.length} chars` : undefined,
       });
     }
   }
@@ -152,8 +183,9 @@ function buildResponseEntries(record: RequestLogRecord): ConversationEntry[] {
     entries.push({
       id: `${record.request_id}-response-text`,
       kind: "response",
-      title: "LLM response",
+      title: "Assistant",
       content: text,
+      side: "left",
     });
   }
 
@@ -164,8 +196,9 @@ function buildResponseEntries(record: RequestLogRecord): ConversationEntry[] {
       entries.push({
         id: `${record.request_id}-response-tool-call-${index}`,
         kind: "tool_call",
-        title: `LLM tool call · ${name}`,
+        title: `Tool call · ${name}`,
         content: tool.arguments_preview || "{}",
+        side: "left",
       });
     });
 
@@ -176,8 +209,9 @@ function buildResponseEntries(record: RequestLogRecord): ConversationEntry[] {
           entries.push({
             id: `${record.request_id}-response-message-${index}`,
             kind: "response",
-            title: "LLM response",
+            title: "Assistant",
             content: normalizeContentPreview(message.content_preview),
+            side: "left",
           });
         });
     }
