@@ -75,3 +75,12 @@ export function safeJsonParse(text: string): unknown {
     return null;
   }
 }
+
+/** Pretty-print JSON text; returns the original string when parsing fails. */
+export function prettyJson(text: string, space = 2): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, space);
+  } catch {
+    return text;
+  }
+}

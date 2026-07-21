@@ -25,3 +25,4 @@ src/
 2. Keep presentational primitives in [`../ui/AGENTS.md`](../ui/AGENTS.md).
 3. Keep page composition in [`../views/AGENTS.md`](../views/AGENTS.md).
 4. Keep shared contract types in [`../shared/AGENTS.md`](../shared/AGENTS.md).
+5. Playground response examples in `conversion-playground.tsx` must stay schema-complete for every format (required fields such as OpenAI Chat `choices[].index` / `object`, Claude `type`+`role`, Responses `object`+`status`); incomplete fixtures cause convert failures that surface as opaque client errors.

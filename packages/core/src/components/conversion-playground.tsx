@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 
-import { type Format, FORMAT_LABELS } from "@any-converter/shared";
-import { Button, FormatSelector, JsonEditor, Label, Textarea } from "@any-converter/ui";
+import { type Format, FORMAT_LABELS, prettyJson } from "@any-converter/shared";
+import { Button, FormatSelector, JsonEditor, Label } from "@any-converter/ui";
 
 import { useI18n } from "../i18n";
 import { useConvert } from "../hooks/use-convert";
@@ -16,10 +16,52 @@ const EXAMPLES = {
     gemini: { contents: [{ role: "user", parts: [{ text: "Hello, world!" }] }] },
   },
   response: {
-    openai_chat: { id: "chatcmpl_123", model: "gpt-4.1", choices: [{ message: { role: "assistant", content: "Hello!" } }] },
-    openai_responses: { id: "resp_123", model: "gpt-4.1", output: [{ type: "message", content: [{ type: "output_text", text: "Hello!" }] }] },
-    claude: { id: "msg_123", model: "claude-sonnet-4-20250514", content: [{ type: "text", text: "Hello!" }] },
-    gemini: { candidates: [{ content: { parts: [{ text: "Hello!" }] } }] },
+    openai_chat: {
+      id: "chatcmpl_123",
+      object: "chat.completion",
+      created: 0,
+      model: "gpt-4.1",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "Hello!" },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    },
+    openai_responses: {
+      id: "resp_123",
+      object: "response",
+      created_at: 0,
+      model: "gpt-4.1",
+      status: "completed",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hello!" }],
+        },
+      ],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    },
+    claude: {
+      id: "msg_123",
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-4-20250514",
+      content: [{ type: "text", text: "Hello!" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+    gemini: {
+      candidates: [
+        {
+          content: { role: "model", parts: [{ text: "Hello!" }] },
+          finishReason: "STOP",
+        },
+      ],
+    },
   },
 } satisfies Record<"request" | "response", Record<Format, unknown>>;
 
@@ -36,12 +78,19 @@ export function ConversionPlayground() {
   const { output, error, loading, convert } = useConvert();
 
   const handleConvert = () => {
-    void convert(input, from, to, mode);
+    const formatted = prettyJson(input);
+    if (formatted !== input) {
+      setInput(formatted);
+    }
+    void convert(formatted, from, to, mode);
   };
 
   const swap = () => {
-    setFrom(to);
-    setTo(from);
+    const nextFrom = to;
+    const nextTo = from;
+    setFrom(nextFrom);
+    setTo(nextTo);
+    setInput(examplePayload(mode, nextFrom));
   };
 
   const changeMode = (next: "request" | "response") => {
@@ -52,6 +101,10 @@ export function ConversionPlayground() {
   const changeFrom = (next: Format) => {
     setFrom(next);
     setInput(examplePayload(mode, next));
+  };
+
+  const beautifyInput = () => {
+    setInput(prettyJson(input));
   };
 
   return (
@@ -76,6 +129,9 @@ export function ConversionPlayground() {
         <Button variant="secondary" onClick={() => setInput(examplePayload(mode, from))}>
           {t("playground.loadExample")}
         </Button>
+        <Button variant="outline" onClick={beautifyInput}>
+          {t("playground.beautify")}
+        </Button>
         <Button onClick={handleConvert} disabled={loading}>
           {loading ? t("playground.converting") : `${t("playground.convertTo")} ${FORMAT_LABELS[to]}`}
         </Button>
@@ -92,13 +148,12 @@ export function ConversionPlayground() {
           <Label>
             {t("playground.output")} ({FORMAT_LABELS[to]})
           </Label>
-          <Textarea
+          <JsonEditor
             value={output}
             readOnly
-            className="min-h-[320px] font-mono"
             placeholder={t("playground.outputPlaceholder")}
+            error={error || undefined}
           />
-          {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
       </div>
     </div>
