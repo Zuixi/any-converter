@@ -46,10 +46,19 @@ impl AppState {
     }
 }
 
-fn seed_defaults(db: &DesktopDb) -> Result<(), DbError> {
+pub fn seed_defaults(db: &DesktopDb) -> Result<(), DbError> {
     let settings = db.settings()?;
+    // Bind all interfaces by default so LAN clients can reach the embedded server.
     if !settings.contains_key("server.host") {
-        db.upsert_setting("server.host", "127.0.0.1")?;
+        db.upsert_setting("server.host", "0.0.0.0")?;
+    } else if !settings.contains_key("server.host.lan_default_applied")
+        && settings.get("server.host").map(String::as_str) == Some("127.0.0.1")
+    {
+        // One-time migration from the previous localhost-only product default.
+        db.upsert_setting("server.host", "0.0.0.0")?;
+    }
+    if !settings.contains_key("server.host.lan_default_applied") {
+        db.upsert_setting("server.host.lan_default_applied", "1")?;
     }
     if !settings.contains_key("server.port") {
         db.upsert_setting("server.port", "8080")?;

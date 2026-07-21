@@ -1,5 +1,15 @@
+import type { ComponentType, SVGProps } from "react";
 import type { TranslationKey } from "@any-converter/core";
 
+import {
+  DashboardIcon,
+  LogsIcon,
+  PlaygroundIcon,
+  ProvidersIcon,
+  RoutesIcon,
+  SettingsIcon,
+  UsageIcon,
+} from "../components/layout/nav-icons";
 import type { AppPath } from "../types";
 
 export const PROVIDER_FORMATS = [
@@ -9,14 +19,16 @@ export const PROVIDER_FORMATS = [
   { value: "gemini", label: "Gemini" },
 ] as const;
 
-export const navItems: Array<{ path: AppPath; label: TranslationKey }> = [
-  { path: "/dashboard", label: "nav.dashboard" },
-  { path: "/providers", label: "nav.providers" },
-  { path: "/routes", label: "nav.routes" },
-  { path: "/playground", label: "nav.playground" },
-  { path: "/logs", label: "nav.logs" },
-  { path: "/usage", label: "nav.usage" },
-  { path: "/settings", label: "nav.settings" },
+type NavIcon = ComponentType<SVGProps<SVGSVGElement>>;
+
+export const navItems: Array<{ path: AppPath; label: TranslationKey; Icon: NavIcon }> = [
+  { path: "/dashboard", label: "nav.dashboard", Icon: DashboardIcon },
+  { path: "/providers", label: "nav.providers", Icon: ProvidersIcon },
+  { path: "/routes", label: "nav.routes", Icon: RoutesIcon },
+  { path: "/playground", label: "nav.playground", Icon: PlaygroundIcon },
+  { path: "/logs", label: "nav.logs", Icon: LogsIcon },
+  { path: "/usage", label: "nav.usage", Icon: UsageIcon },
+  { path: "/settings", label: "nav.settings", Icon: SettingsIcon },
 ];
 
 export const PROVIDER_PRESETS = [
@@ -27,3 +39,5 @@ export const PROVIDER_PRESETS = [
   { id: "deepseek", label: "DeepSeek", name: "deepseek", format: "openai_chat", base_url: "https://api.deepseek.com" },
   { id: "moonshot", label: "Moonshot", name: "moonshot", format: "openai_responses", base_url: "https://api.moonshot.cn" },
 ] as const;
+
+export const SIDEBAR_COLLAPSED_KEY = "any-converter.desktop.sidebarCollapsed";

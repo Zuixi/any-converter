@@ -51,6 +51,9 @@ export function DashboardPage() {
             <Badge variant={status ? statusBadgeVariant[status.state] : "secondary"} className="w-fit capitalize">
               {status?.state ?? "loading"}
             </Badge>
+            {status?.host === "0.0.0.0" && (
+              <p className="text-sm text-muted-foreground">{t("desktop.dashboard.lanHint")}</p>
+            )}
             {status?.last_error && <p className="text-sm text-destructive">{status.last_error}</p>}
             <div className="flex flex-wrap gap-2">
               <Button size="sm" onClick={() => void run(api.startServer)}>{t("desktop.dashboard.start")}</Button>

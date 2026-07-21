@@ -17,7 +17,7 @@ apps/desktop/
 ├── src/
 │   ├── main.tsx                 # React mount + I18nProvider
 │   ├── App.tsx                  # ApiClientProvider + HashRouter routes
-│   ├── components/layout/       # AppShell, Sidebar, shared form/table helpers
+│   ├── components/layout/       # AppShell, fixed/collapsible Sidebar + nav icons, form/table helpers
 │   ├── pages/                   # Dashboard, Providers, Routes, Playground, Logs, Usage, Settings
 │   ├── hooks/                   # useAsyncState and other desktop hooks
 │   ├── lib/
@@ -46,3 +46,4 @@ apps/desktop/
 4. Tauri commands should be thin IPC entrypoints around focused backend modules such as `db.rs`, `server_manager.rs`, and `secrets.rs`.
 5. If Desktop changes embedded server behavior or config shape, sync with the corresponding Rust crate docs under [`../../crates/AGENTS.md`](../../crates/AGENTS.md).
 6. After pulling dependency changes, install from the **repo root** (`pnpm install`). `tauri build` also runs `pnpm install` via `beforeBuildCommand` / `pretauri` so packaging does not use a stale `node_modules`.
+7. Embedded server defaults to `server.host=0.0.0.0` (LAN-reachable). Keep intentional localhost binds after the one-time `server.host.lan_default_applied` migration marker is set.

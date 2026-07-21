@@ -103,6 +103,7 @@ const en = {
   "config.saved": "Saved. Please restart any-converter-server to apply changes.",
   "desktop.dashboard.subtitle": "Embedded server control and local proxy status.",
   "desktop.dashboard.server": "Server",
+  "desktop.dashboard.lanHint": "Bound to 0.0.0.0 — reachable from other devices on your LAN via this machine's IP and port.",
   "desktop.dashboard.nextSteps": "Next steps",
   "desktop.dashboard.nextStepsBody": "Add a provider, create one route, start the server, then use Logs and Usage to inspect traffic.",
   "desktop.dashboard.start": "Start",
@@ -144,6 +145,8 @@ const en = {
   "desktop.settings.key": "Key",
   "desktop.settings.value": "Value",
   "desktop.settings.save": "Save Setting",
+  "desktop.sidebar.collapse": "Collapse sidebar",
+  "desktop.sidebar.expand": "Expand sidebar",
 } as const;
 
 const zh: Record<keyof typeof en, string> = {
@@ -243,6 +246,7 @@ const zh: Record<keyof typeof en, string> = {
   "config.saved": "已保存。请重启 any-converter-server 使配置生效。",
   "desktop.dashboard.subtitle": "控制内置服务器并查看本地代理状态。",
   "desktop.dashboard.server": "服务器",
+  "desktop.dashboard.lanHint": "已绑定 0.0.0.0，局域网内其他设备可用本机 IP + 端口访问。",
   "desktop.dashboard.nextSteps": "下一步",
   "desktop.dashboard.nextStepsBody": "先添加服务商，再创建一条路由，启动服务器后到日志和用量页查看流量。",
   "desktop.dashboard.start": "启动",
@@ -284,6 +288,8 @@ const zh: Record<keyof typeof en, string> = {
   "desktop.settings.key": "键",
   "desktop.settings.value": "值",
   "desktop.settings.save": "保存设置",
+  "desktop.sidebar.collapse": "收起侧栏",
+  "desktop.sidebar.expand": "展开侧栏",
 };
 
 const translations = { en, "zh-CN": zh };

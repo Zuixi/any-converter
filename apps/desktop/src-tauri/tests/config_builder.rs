@@ -6,12 +6,47 @@ use any_converter_desktop::commands::{
     get_usage_summary_from_log_dir, list_request_logs_from_log_dir,
 };
 use any_converter_desktop::db::DesktopDb;
+use any_converter_desktop::state::seed_defaults;
 use any_converter_server::request_log::{RequestLogRecord, ResponseBodyKind};
 use any_converter_server::storage::SqliteStorage;
 use std::path::PathBuf;
 
 fn desktop_tauri_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn defaults_and_migrates_server_host_to_all_interfaces() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = DesktopDb::open(temp.path().join("desktop.sqlite3")).unwrap();
+
+    seed_defaults(&db).unwrap();
+    let config = db.build_server_config(temp.path().join("logs")).unwrap();
+    assert_eq!(config.server.host, "0.0.0.0");
+
+    // Legacy localhost default is migrated once when the marker is absent.
+    let temp2 = tempfile::tempdir().unwrap();
+    let db2 = DesktopDb::open(temp2.path().join("desktop.sqlite3")).unwrap();
+    db2.upsert_setting("server.host", "127.0.0.1").unwrap();
+    seed_defaults(&db2).unwrap();
+    assert_eq!(
+        db2.settings()
+            .unwrap()
+            .get("server.host")
+            .map(String::as_str),
+        Some("0.0.0.0")
+    );
+
+    // An intentional localhost bind after migration is preserved.
+    db2.upsert_setting("server.host", "127.0.0.1").unwrap();
+    seed_defaults(&db2).unwrap();
+    assert_eq!(
+        db2.settings()
+            .unwrap()
+            .get("server.host")
+            .map(String::as_str),
+        Some("127.0.0.1")
+    );
 }
 
 #[test]

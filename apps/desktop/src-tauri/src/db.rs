@@ -238,7 +238,7 @@ impl DesktopDb {
                 host: settings
                     .get("server.host")
                     .cloned()
-                    .unwrap_or_else(|| "127.0.0.1".to_string()),
+                    .unwrap_or_else(|| "0.0.0.0".to_string()),
                 port: parse_u16_setting(&settings, "server.port", 8080)?,
                 api_key: settings.get("server.api_key").cloned(),
             },

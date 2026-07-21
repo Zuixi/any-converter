@@ -23,6 +23,8 @@
 
 ### Changed
 
+- **Desktop embedded server binds `0.0.0.0` by default** so LAN clients can reach it; existing localhost-only defaults are migrated once, and Dashboard shows a LAN access hint.
+- **Desktop sidebar UX**: Sidebar is fixed (main panel scrolls independently), supports collapse/expand with persisted state, and each nav item shows a stroke icon (Providers uses the interlocking-rings mark; Usage uses the bar-chart mark; Playground uses the frame-plus mark).
 - **Desktop frontend routing refactor**: Desktop UI now uses `react-router-dom` `HashRouter` with path-based pages (`#/dashboard`, `#/providers`, …), splits shell/pages into `components/layout` and `pages/*`, and routes all Tauri IPC through typed `src/lib/api.ts` wrappers instead of a single `main.tsx` `useState` page switcher.
 - The Web UI request log detail view now displays structured trace summaries for downstream messages, model tool calls, and tool results when present in request logs.
 - `Cargo.toml` workspace members now include `crates/web-bridge`.

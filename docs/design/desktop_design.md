@@ -179,8 +179,9 @@ any-converter/
 │   ├── App.tsx                  # ApiClientProvider + HashRouter routes
 │   ├── components/
 │   │   └── layout/
-│   │       ├── AppShell.tsx
-│   │       ├── Sidebar.tsx      # NavLink 导航
+│   │       ├── AppShell.tsx     # 固定侧栏 shell；collapse 状态持久化
+│   │       ├── Sidebar.tsx      # NavLink + icon；支持收起只显示图标
+│   │       ├── nav-icons.tsx    # 导航 stroke SVG（Providers/Usage/Playground 等）
 │   │       ├── Header.tsx
 │   │       ├── ErrorBanner.tsx
 │   │       ├── Field.tsx
@@ -348,12 +349,14 @@ Tauri 后端需要管理一个 `tokio::task::JoinHandle`，实现：
 - `start_server()`：从 DB 读取配置 → 构造 `ServerConfig` → `tokio::spawn(any_converter_server::run(config))`
 - `stop_server()`：`handle.abort()` + 等待优雅关闭
 - 通过 Tauri Event 向前端推送状态变更
+- 默认 `server.host=0.0.0.0`（局域网可达）；旧默认 `127.0.0.1` 经一次性标记 `server.host.lan_default_applied` 迁移
 
 ### 2. 配置与 DB 的同步
 
 - Provider/Routes 的增删改全部走 SQLite
 - 启动 Server 时从 DB 动态构建 `ServerConfig`
 - 无需读写 `config.toml` 文件（Desktop 场景下 DB 是单数据源）
+- Settings 里仍可手动改回 `127.0.0.1`（迁移标记写入后不会再次被覆盖）
 
 ### 3. Playground 复用 Core
 
@@ -372,10 +375,10 @@ Playground 的格式转换直接调用 `any_converter_core::convert::convert_req
   - 错误状态: Red 红色
 
 布局:
-  - 左侧固定 Sidebar (w-64)
-  - 顶部 Header (h-16, 显示页面标题 + 全局操作)
-  - 中间 Main Content (p-6)
-  - 右下角 Toast 通知区
+  - 左侧固定 Sidebar（展开 ~230px / 收起 ~72px），不随主内容滚动；可折叠，状态写入 localStorage
+  - 导航项带 stroke icon（Providers 双环、Usage 柱状图、Playground 四角十字等）
+  - 右侧 Main Content 独立滚动
+  - 右下角 Toast 通知区（后续）
 
 交互:
   - 所有表单操作后有 Toast 反馈
