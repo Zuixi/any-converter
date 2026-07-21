@@ -261,6 +261,28 @@ struct RequestContext {
     log_ctx: Option<RequestLogContext>,
 }
 
+/// Extract a best-effort client identifier from request headers.
+///
+/// Preference order: `user-agent` → `x-requested-with` → `x-stainless-*`.
+fn extract_client_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+        .or_else(|| {
+            headers
+                .get("x-requested-with")
+                .and_then(|v| v.to_str().ok())
+                .map(String::from)
+        })
+        .or_else(|| {
+            headers
+                .keys()
+                .find(|k| k.as_str().starts_with("x-stainless-"))
+                .map(|k| k.as_str().to_string())
+        })
+}
+
 fn prepare_request(
     state: &AppState,
     headers: &HeaderMap,
@@ -315,12 +337,14 @@ fn prepare_request(
 
     let ns_map = extract_namespace_map(&stripped_body, route_info.client_format);
     let streaming = is_streaming_request(&stripped_body, route_info);
+    let client_id = extract_client_id(headers);
 
     let log_ctx = if state.request_logger.is_some() {
         Some(RequestLogContext {
             req_id,
             start_time,
             client_format: route_info.client_format,
+            client_id: client_id.clone(),
             client_model: client_model.clone(),
             upstream_model: resolved.upstream_model.clone(),
             streaming,
@@ -368,6 +392,7 @@ fn path_for_route(route_info: RouteInfo, model: &str) -> String {
 
 fn convert_and_build_upstream(
     state: &AppState,
+    headers: &HeaderMap,
     body: &[u8],
     route_info: RouteInfo,
     ctx: &mut RequestContext,
@@ -409,6 +434,21 @@ fn convert_and_build_upstream(
     let url = build_upstream_url_for_provider(provider, &ctx.upstream_model, ctx.streaming);
 
     let auth_headers = auth::build_upstream_auth_headers_for_provider(provider);
+    let upstream_headers = crate::proxy::build_upstream_headers(
+        headers,
+        &auth_headers,
+        &state.config.server.pass_through_headers,
+    );
+
+    if state.config.logging.upstream_headers_log {
+        info!(
+            target: "upstream_headers",
+            "upstream request headers request_id={} provider={} {}",
+            ctx.req_id,
+            provider.name,
+            sanitize_headers_for_log(&upstream_headers)
+        );
+    }
 
     if let Some(ref mut log_ctx) = ctx.log_ctx {
         log_ctx.provider_name = provider.name.clone();
@@ -416,7 +456,7 @@ fn convert_and_build_upstream(
         log_ctx.upstream_request_body = converted_body.clone();
     }
 
-    Ok((converted_body, url, auth_headers))
+    Ok((converted_body, url, upstream_headers))
 }
 
 fn build_non_streaming_response(
@@ -515,8 +555,9 @@ async fn process_request(
             }
         };
 
-        let (converted_body, url, auth_headers) =
-            match convert_and_build_upstream(state, &body, route_info, &mut ctx, provider) {
+        let (converted_body, url, upstream_headers) =
+            match convert_and_build_upstream(state, headers, &body, route_info, &mut ctx, provider)
+            {
                 Ok(v) => v,
                 Err(response) => return *response,
             };
@@ -536,7 +577,9 @@ async fn process_request(
                 &state.client,
                 &url,
                 converted_body,
-                &auth_headers,
+                &upstream_headers,
+                headers,
+                &state.config.server.pass_through_headers,
                 provider.format,
                 route_info.client_format,
                 &ctx.ns_map,
@@ -564,7 +607,9 @@ async fn process_request(
             &state.client,
             &url,
             converted_body,
-            &auth_headers,
+            &upstream_headers,
+            headers,
+            &state.config.server.pass_through_headers,
         )
         .await
         {
@@ -620,6 +665,30 @@ fn truncated_body(body: &[u8], max_len: usize) -> String {
 }
 
 const SENSITIVE_KEYS: &[&str] = &["api_key", "apiKey", "authorization", "x-api-key", "secret"];
+
+/// Header names whose values are redacted when logging upstream requests.
+const SENSITIVE_HEADERS: &[&str] = &[
+    "authorization",
+    "x-api-key",
+    "api-key",
+    "x-goog-api-key",
+    "proxy-authorization",
+];
+
+fn sanitize_headers_for_log(headers: &[(String, String)]) -> String {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            let name_lower = name.to_ascii_lowercase();
+            if SENSITIVE_HEADERS.contains(&name_lower.as_str()) {
+                format!("{name}=[REDACTED]")
+            } else {
+                format!("{name}={value}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 fn sanitize_log_body(text: &str) -> String {
     let mut result = text.to_string();
@@ -733,7 +802,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use crate::config::{LoggingConfig, ProviderConfig, RouteConfig, ServerSettings};
+    use crate::config::{
+        LoggingConfig, PassThroughHeadersConfig, ProviderConfig, RouteConfig, ServerSettings,
+    };
     use std::collections::HashMap;
 
     fn sample_state() -> AppState {
@@ -743,6 +814,7 @@ mod tests {
                     host: "127.0.0.1".into(),
                     port: 8080,
                     api_key: None,
+                    pass_through_headers: PassThroughHeadersConfig::default(),
                 },
                 providers: vec![ProviderConfig {
                     name: "openai".into(),
@@ -805,6 +877,7 @@ mod tests {
                     host: "127.0.0.1".into(),
                     port: 8080,
                     api_key: None,
+                    pass_through_headers: PassThroughHeadersConfig::default(),
                 },
                 providers: vec![],
                 model_routes: vec![],

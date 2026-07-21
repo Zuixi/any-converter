@@ -132,7 +132,9 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::config::{LoggingConfig, ProviderConfig, RouteConfig, ServerSettings};
+    use crate::config::{
+        LoggingConfig, PassThroughHeadersConfig, ProviderConfig, RouteConfig, ServerSettings,
+    };
 
     fn test_config() -> ServerConfig {
         ServerConfig {
@@ -140,6 +142,7 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 8080,
                 api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
             },
             providers: vec![ProviderConfig {
                 name: "openai".into(),

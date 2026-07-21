@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use any_converter_server::config::{ProviderConfig, RouteStrategy, ServerConfig, ServerSettings};
+use any_converter_server::config::{
+    PassThroughHeadersConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
+};
 use any_converter_server::handlers::AppState;
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
@@ -44,6 +46,7 @@ async fn non_streaming_proxy() {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", &base)],
         model_routes: vec![],
@@ -80,6 +83,113 @@ async fn non_streaming_proxy() {
 }
 
 #[tokio::test]
+async fn client_headers_passthrough_to_upstream() {
+    use axum::extract::Request as AxumRequest;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let saw_codex = Arc::new(AtomicBool::new(false));
+    let saw_org = Arc::new(AtomicBool::new(false));
+    let saw_provider_auth = Arc::new(AtomicBool::new(false));
+    let saw_client_auth = Arc::new(AtomicBool::new(false));
+
+    let upstream = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let saw_codex = saw_codex.clone();
+            let saw_org = saw_org.clone();
+            let saw_provider_auth = saw_provider_auth.clone();
+            let saw_client_auth = saw_client_auth.clone();
+            move |req: AxumRequest| async move {
+                let headers = req.headers();
+                saw_codex.store(
+                    headers.get("x-requested-with").and_then(|v| v.to_str().ok())
+                        == Some("codex"),
+                    Ordering::SeqCst,
+                );
+                saw_org.store(
+                    headers.get("openai-organization").and_then(|v| v.to_str().ok())
+                        == Some("org-123"),
+                    Ordering::SeqCst,
+                );
+                saw_provider_auth.store(
+                    headers.get("authorization").and_then(|v| v.to_str().ok())
+                        == Some("Bearer upstream-key"),
+                    Ordering::SeqCst,
+                );
+                saw_client_auth.store(
+                    headers.get("authorization").and_then(|v| v.to_str().ok())
+                        == Some("Bearer client-key"),
+                    Ordering::SeqCst,
+                );
+                axum::Json(json!({"id":"ok","object":"chat.completion","model":"gpt-4",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":"Hello!"},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async { axum::serve(listener, upstream).await.unwrap() });
+
+    let base = format!("http://{addr}");
+    let client = Client::builder().no_proxy().build().unwrap();
+    let config = ServerConfig {
+        server: ServerSettings {
+            host: "127.0.0.1".into(),
+            port: 8080,
+            api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
+        },
+        providers: vec![oai_provider("openai", &base)],
+        model_routes: vec![],
+        routes: vec![any_converter_server::config::RouteConfig {
+            client_format: any_converter_core::convert::Format::OpenAIChat,
+            provider: "openai".into(),
+        }],
+        model_metadata: Default::default(),
+        logging: Default::default(),
+    };
+    let state = Arc::new(AppState {
+        config,
+        client,
+        usage_logger: None,
+        request_logger: None,
+    });
+    let app = create_router_with_state(state);
+
+    let request = Request::builder()
+        .uri("/v1/chat/completions")
+        .method("POST")
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer client-key")
+        .header("x-requested-with", "codex")
+        .header("openai-organization", "org-123")
+        .body(Body::from(
+            r#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}"#,
+        ))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert!(
+        saw_codex.load(Ordering::SeqCst),
+        "upstream did not receive x-requested-with"
+    );
+    assert!(
+        saw_org.load(Ordering::SeqCst),
+        "upstream did not receive openai-organization"
+    );
+    assert!(
+        saw_provider_auth.load(Ordering::SeqCst),
+        "upstream did not receive provider authorization"
+    );
+    assert!(
+        !saw_client_auth.load(Ordering::SeqCst),
+        "upstream received client authorization instead of provider key"
+    );
+}
+
+#[tokio::test]
 async fn streaming_proxy_text() {
     use axum::response::sse::{Event, Sse};
     use futures_util::stream;
@@ -104,6 +214,7 @@ async fn streaming_proxy_text() {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", &base)],
         model_routes: vec![],
@@ -164,6 +275,7 @@ async fn provider_failover_priority() {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers,
         model_routes: vec![any_converter_server::config::ModelRouteConfig {
@@ -210,6 +322,7 @@ async fn auth_missing_returns_401() {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: Some("secret".into()),
+            pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", "http://127.0.0.1:1")],
         model_routes: vec![],
@@ -248,6 +361,7 @@ async fn auth_invalid_returns_401() {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: Some("secret".into()),
+            pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", "http://127.0.0.1:1")],
         model_routes: vec![],
@@ -296,6 +410,7 @@ async fn upstream_error_returns_502() {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", &base)],
         model_routes: vec![],
@@ -334,6 +449,7 @@ async fn health_returns_ok() {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![],
         model_routes: vec![],

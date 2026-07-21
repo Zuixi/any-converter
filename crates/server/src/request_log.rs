@@ -22,6 +22,8 @@ pub struct RequestLogContext {
     pub req_id: uuid::Uuid,
     pub start_time: Instant,
     pub client_format: Format,
+    /// Best-effort client identifier extracted from request headers.
+    pub client_id: Option<String>,
     pub client_model: String,
     pub upstream_model: String,
     pub streaming: bool,
@@ -47,6 +49,9 @@ pub struct RequestLogRecord {
     pub request_id: String,
     pub timestamp: String,
     pub client_format: String,
+    /// Best-effort client identifier extracted from request headers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
     pub provider: String,
     pub client_model: String,
     pub upstream_model: String,
@@ -163,6 +168,7 @@ pub fn log_non_streaming(
         request_id: ctx.req_id.to_string(),
         timestamp: Utc::now().to_rfc3339(),
         client_format: ctx.client_format.to_string(),
+        client_id: ctx.client_id.clone(),
         provider: ctx.provider_name.clone(),
         client_model: ctx.client_model.clone(),
         upstream_model: ctx.upstream_model.clone(),
@@ -233,6 +239,7 @@ pub fn log_streaming(
         request_id: ctx.req_id.to_string(),
         timestamp: Utc::now().to_rfc3339(),
         client_format: ctx.client_format.to_string(),
+        client_id: ctx.client_id.clone(),
         provider: ctx.provider_name.clone(),
         client_model: ctx.client_model.clone(),
         upstream_model: ctx.upstream_model.clone(),
@@ -479,6 +486,7 @@ mod tests {
             request_id: "req-1".to_string(),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
             client_format: "claude".to_string(),
+            client_id: None,
             provider: "openai".to_string(),
             client_model: "claude-3".to_string(),
             upstream_model: "gpt-4".to_string(),

@@ -18,6 +18,33 @@ pub struct ServerConfig {
     pub logging: LoggingConfig,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PassThroughMode {
+    #[default]
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PassThroughHeadersConfig {
+    /// `allow` = forward all non-blacklisted client headers (default).
+    /// `deny`  = only forward headers explicitly allowed by `allow`.
+    #[serde(default)]
+    pub mode: PassThroughMode,
+
+    /// Additional header name glob patterns to allow.
+    /// In `allow` mode this extends the default passthrough set.
+    /// In `deny` mode only headers matching these patterns are forwarded.
+    #[serde(default)]
+    pub allow: Vec<String>,
+
+    /// Header name glob patterns to drop.
+    /// In `allow` mode this blocks headers that would otherwise be forwarded.
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerSettings {
     #[serde(default = "default_host")]
@@ -25,6 +52,8 @@ pub struct ServerSettings {
     #[serde(default = "default_port")]
     pub port: u16,
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub pass_through_headers: PassThroughHeadersConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +171,9 @@ pub struct LoggingConfig {
     pub max_disk_mb: u64,
     #[serde(default = "default_true")]
     pub conversion_log: bool,
+    /// Log the headers sent to the upstream provider (sensitive values redacted).
+    #[serde(default = "default_false")]
+    pub upstream_headers_log: bool,
     #[serde(default)]
     pub console: ConsoleConfig,
     #[serde(default)]
@@ -157,6 +189,7 @@ impl Default for LoggingConfig {
             dir: None,
             max_disk_mb: default_max_disk_mb(),
             conversion_log: true,
+            upstream_headers_log: false,
             console: ConsoleConfig::default(),
             files: Vec::new(),
             request_log: RequestLogConfig::default(),
@@ -416,7 +449,7 @@ impl ServerConfig {
 /// - `"claude-*"` matches any string starting with `"claude-"`
 /// - `"*-turbo"` matches any string ending with `"-turbo"`
 /// - `"gpt-4.1"` matches exactly `"gpt-4.1"`
-fn glob_match(pattern: &str, value: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, value: &str) -> bool {
     if pattern == "*" {
         return true;
     }
@@ -509,6 +542,7 @@ provider = "openai"
                 host: "127.0.0.1".into(),
                 port: 8080,
                 api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
             },
             providers: vec![],
             model_routes: vec![],
@@ -734,6 +768,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 host: "127.0.0.1".into(),
                 port: 8080,
                 api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
             },
             providers: vec![
                 ProviderConfig {
@@ -810,6 +845,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 host: "127.0.0.1".into(),
                 port: 8080,
                 api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
             },
             providers: vec![ProviderConfig {
                 name: "openai".into(),
@@ -843,6 +879,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 host: "127.0.0.1".into(),
                 port: 8080,
                 api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
             },
             providers: vec![
                 ProviderConfig {
@@ -890,6 +927,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 host: "127.0.0.1".into(),
                 port: 8080,
                 api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
             },
             providers: vec![],
             model_routes: vec![ModelRouteConfig {
@@ -920,6 +958,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 host: "127.0.0.1".into(),
                 port: 8080,
                 api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
             },
             providers: vec![ProviderConfig {
                 name: "openai".into(),
@@ -964,6 +1003,33 @@ headers = { "x-ms-client-request-id" = "test-client" }
         // wildcards should not appear
         assert!(!models.contains(&"claude-*".to_string()));
         assert!(!models.contains(&"*".to_string()));
+    }
+
+    #[test]
+    fn test_parse_pass_through_headers_config() {
+        let toml_str = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[server.pass_through_headers]
+mode = "deny"
+allow = ["x-allowed-*", "openai-organization"]
+deny = ["x-internal-*"]
+"#;
+        let config = ServerConfig::from_toml(toml_str).unwrap();
+        assert_eq!(
+            config.server.pass_through_headers.mode,
+            PassThroughMode::Deny
+        );
+        assert_eq!(
+            config.server.pass_through_headers.allow,
+            vec!["x-allowed-*".to_string(), "openai-organization".to_string()]
+        );
+        assert_eq!(
+            config.server.pass_through_headers.deny,
+            vec!["x-internal-*".to_string()]
+        );
     }
 
     #[test]

@@ -83,6 +83,7 @@ src/
 - Request bodies, upstream request bodies, and response bodies are truncated at `max_capture_bytes` and marked with `truncated: true`.
 - Sensitive headers and body keys (`api_key`, `authorization`, etc.) are redacted before writing.
 - The background disk quota manager (`disk_quota.rs`) enforces `logging.max_disk_mb` by deleting oldest files first.
+- `[logging.upstream_headers_log] = true` logs the headers sent to upstream providers (sensitive values redacted) for debugging client header passthrough.
 
 ### 9. Namespace Tool Support (Codex CLI)
 - Responses API supports `{type: "namespace", name: "...", tools: [...]}`.
@@ -92,6 +93,13 @@ src/
 ### 10. Request Preprocessing
 - **Private field filtering**: Before forwarding, `process_request` strips all `_`-prefixed fields from the JSON body. These are internal client markers (e.g. `_stream_tokens`, `_internal_id`) that could cause upstream API rejection.
 - **Empty model defense**: If the request body has no `model` field and no Gemini path model, an empty string is used instead of the old `"default"` hardcode — preventing the literal string `"default"` from reaching upstream.
+
+### 11. Client Header Passthrough
+
+- Client headers are forwarded to upstream providers by default, so tool-specific metadata (e.g. `anthropic-*`, `openai-organization`, `x-stainless-*`, `x-requested-with`, `user-agent`) reaches the upstream.
+- The proxy always removes hop-by-hop headers (`connection`, `keep-alive`, `proxy-authenticate`, `proxy-authorization`, `te`, `trailer`, `transfer-encoding`, `upgrade`) and request-control headers (`host`, `content-length`, `content-type`, `authorization`).
+- Provider authentication headers are always injected and take precedence over any client headers with the same name.
+- Use `[server.pass_through_headers]` in config to switch to deny-list mode (`mode = "deny"`) or to add custom `allow`/`deny` glob patterns.
 
 ## Common Pitfalls
 

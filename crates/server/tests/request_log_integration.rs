@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use any_converter_core::convert::Format;
 use any_converter_server::config::{
-    LoggingConfig, ProviderConfig, RequestLogConfig, RouteConfig, ServerConfig, ServerSettings,
+    LoggingConfig, PassThroughHeadersConfig, ProviderConfig, RequestLogConfig, RouteConfig,
+    ServerConfig, ServerSettings,
 };
 use any_converter_server::handlers::AppState;
 use any_converter_server::router::create_router_with_state;
@@ -37,6 +38,7 @@ fn test_config(base_url: &str, log_path: PathBuf) -> ServerConfig {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", base_url)],
         model_routes: vec![],

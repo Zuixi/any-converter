@@ -52,6 +52,9 @@
 
 ### Added
 
+- **Client header passthrough** (`crates/server/src/proxy.rs`): Client headers such as `anthropic-*`, `openai-organization`, `x-stainless-*`, `x-requested-with`, and `user-agent` are now forwarded to upstream providers by default. Hop-by-hop headers (`connection`, `transfer-encoding`, etc.), request-control headers (`host`, `content-length`, `content-type`, `authorization`), and provider auth headers are always managed by the proxy. Configure forwarding behavior with `[server.pass_through_headers]` (`mode`, `allow`, `deny`).
+- **Upstream headers debug log** (`crates/server/src/handlers.rs`): `[logging] upstream_headers_log = true` logs the headers sent to upstream providers with sensitive values redacted.
+- **Client ID in request logs** (`crates/server/src/request_log.rs`): Each request log record now includes an optional `client_id` extracted from `user-agent`, `x-requested-with`, or `x-stainless-*` headers. The Desktop Settings page displays the most recent client identifier.
 - **Full request/response logging** (`crates/server/src/request_log.rs`): Optional audit logger enabled by `[logging.request_log] enabled = true`. Writes one JSON Lines record per request to `requests.YYYY-MM-DD.jsonl`, including request body, upstream request body, response body or SSE lines, latency, token usage, and truncation status. Sensitive headers and body keys are redacted.
 - **Streaming request logging**: Captures every converted SSE line emitted to the client and records time-to-first-byte (TTFB) latency.
 - **Disk quota manager migration**: `disk_manager.rs` moved from `crates/cli` to `crates/server/src/disk_quota.rs` so the server owns log-directory size enforcement.
