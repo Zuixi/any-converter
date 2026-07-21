@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { RequestLogRecord } from "@any-converter/shared";
 
 import { useApiClient } from "./api-client";
+import { errorMessage } from "./error-message";
 
 export function useLogs() {
   const api = useApiClient();
@@ -18,7 +19,7 @@ export function useLogs() {
       try {
         setRecords(await api.getLogs());
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
+        setError(errorMessage(err));
       } finally {
         setLoading(false);
       }

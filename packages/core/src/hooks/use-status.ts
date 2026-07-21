@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { StatusData } from "@any-converter/shared";
 
 import { useApiClient } from "./api-client";
+import { errorMessage } from "./error-message";
 
 export function useStatus(pollMs = 5000) {
   const api = useApiClient();
@@ -20,7 +21,7 @@ export function useStatus(pollMs = 5000) {
         setStatus(data);
         setError("");
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
+        setError(errorMessage(err));
       } finally {
         setLoading(false);
       }

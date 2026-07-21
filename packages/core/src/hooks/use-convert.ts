@@ -6,19 +6,7 @@ import type { ConvertApiRequest, Format } from "@any-converter/shared";
 import { prettyJson } from "@any-converter/shared";
 
 import { useApiClient } from "./api-client";
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === "string" && err.trim()) {
-    return err;
-  }
-  if (err && typeof err === "object" && "message" in err && typeof err.message === "string") {
-    return err.message;
-  }
-  return String(err || "Unknown error");
-}
+import { errorMessage } from "./error-message";
 
 export function useConvert() {
   const api = useApiClient();

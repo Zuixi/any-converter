@@ -161,7 +161,12 @@ pub fn list_request_logs_from_log_dir(
     log_dir: impl AsRef<Path>,
     limit: u64,
 ) -> Result<Vec<RequestLogRecord>, String> {
-    SqliteStorage::open_in_log_dir(log_dir)
+    let path = log_dir.as_ref().join("any-converter.sqlite3");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    // Readonly: avoids "database is locked" while the embedded server is writing.
+    SqliteStorage::open_readonly_in_log_dir(log_dir)
         .map_err(to_error)?
         .recent_request_logs(limit)
         .map_err(to_error)
@@ -171,7 +176,11 @@ pub fn get_usage_summary_from_log_dir(
     log_dir: impl AsRef<Path>,
     limit: u64,
 ) -> Result<Vec<HourlyUsage>, String> {
-    SqliteStorage::open_in_log_dir(log_dir)
+    let path = log_dir.as_ref().join("any-converter.sqlite3");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    SqliteStorage::open_readonly_in_log_dir(log_dir)
         .map_err(to_error)?
         .hourly_usage_from_request_logs(limit)
         .map_err(to_error)

@@ -188,4 +188,16 @@ fn reads_request_logs_and_usage_from_server_log_sqlite() {
     let usage = get_usage_summary_from_log_dir(&log_dir, 10).unwrap();
     assert_eq!(usage.len(), 1);
     assert_eq!(usage[0].total_tokens, 15);
+
+    let missing = temp.path().join("missing-logs");
+    assert!(
+        list_request_logs_from_log_dir(&missing, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        get_usage_summary_from_log_dir(&missing, 10)
+            .unwrap()
+            .is_empty()
+    );
 }

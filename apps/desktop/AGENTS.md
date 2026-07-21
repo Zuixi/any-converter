@@ -47,3 +47,5 @@ apps/desktop/
 5. If Desktop changes embedded server behavior or config shape, sync with the corresponding Rust crate docs under [`../../crates/AGENTS.md`](../../crates/AGENTS.md).
 6. After pulling dependency changes, install from the **repo root** (`pnpm install`). `tauri build` also runs `pnpm install` via `beforeBuildCommand` / `pretauri` so packaging does not use a stale `node_modules`.
 7. Embedded server defaults to `server.host=0.0.0.0` (LAN-reachable). Keep intentional localhost binds after the one-time `server.host.lan_default_applied` migration marker is set.
+8. Window minimum size is `1024×700` (`tauri.conf.json` + `lib.rs` `set_min_size`). Keep both in sync.
+9. Logs/Usage IPC must open `{app_data}/logs/any-converter.sqlite3` **read-only** while the embedded server may be writing; do not call `SqliteStorage::open_in_log_dir` from those read paths.

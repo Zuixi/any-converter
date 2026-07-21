@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import type { ServerConfig } from "@any-converter/shared";
 
 import { useApiClient } from "./api-client";
+import { errorMessage } from "./error-message";
 
 export function useConfig() {
   const api = useApiClient();
@@ -22,7 +23,7 @@ export function useConfig() {
         setConfig(data.config);
         setRaw(data.raw);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
+        setError(errorMessage(err));
       } finally {
         setLoading(false);
       }
@@ -39,7 +40,7 @@ export function useConfig() {
       setRaw(nextRaw);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }

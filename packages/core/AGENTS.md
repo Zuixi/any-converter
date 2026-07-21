@@ -14,7 +14,7 @@
 
 ```
 src/
-├── hooks/        # use-config, use-convert, use-logs, use-status, use-usage, api-client
+├── hooks/        # use-config, use-convert, use-logs, use-status, use-usage, api-client, error-message
 ├── components/   # reusable higher-level components
 └── index.ts      # public exports
 ```

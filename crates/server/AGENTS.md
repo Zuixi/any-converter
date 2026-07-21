@@ -74,6 +74,7 @@ src/
 ### 8. Request/Response Logging
 - `RequestLogger` writes full request/response audit records to daily `requests.YYYY-MM-DD.jsonl` files via async mpsc channel.
 - Request records are also mirrored into `{logging.dir}/any-converter.sqlite3` through `storage::SqliteStorage`; SQLite write failures must never prevent JSONL fallback writes.
+- Concurrent UI readers (Desktop Logs/Usage) must use `SqliteStorage::open_readonly_in_log_dir` so they do not re-run schema/`journal_mode` setup against a live writer.
 - Enabled by `[logging.request_log] enabled = true` and requires `logging.dir`.
 - Captures both non-streaming (full JSON body) and streaming (SSE lines) responses.
 - Streaming latency is measured as **time-to-first-byte** (TTFB) of the upstream response.

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -50,6 +50,17 @@ impl SqliteStorage {
 
     pub fn open_in_log_dir(log_dir: impl AsRef<Path>) -> Result<Self, StorageError> {
         Self::open(log_dir.as_ref().join("any-converter.sqlite3"))
+    }
+
+    /// Open an existing log database for concurrent reads while the server may be writing.
+    ///
+    /// Skips schema migration/`journal_mode` changes so it does not fight the writer lock.
+    pub fn open_readonly_in_log_dir(log_dir: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let path = log_dir.as_ref().join("any-converter.sqlite3");
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub fn insert_request_log(&self, record: &RequestLogRecord) -> Result<(), StorageError> {

@@ -103,6 +103,12 @@ fn sqlite_storage_reads_request_logs_and_hourly_usage() {
     assert_eq!(records[0].request_id, "req-2");
     assert_eq!(records[1].request_id, "req-1");
 
+    // Concurrent readonly open (Desktop Logs/Usage) while a writer connection is live.
+    let readonly = SqliteStorage::open_readonly_in_log_dir(temp.path()).unwrap();
+    let readonly_records = readonly.recent_request_logs(10).unwrap();
+    assert_eq!(readonly_records.len(), 2);
+    assert_eq!(readonly_records[0].request_id, "req-2");
+
     let usage = storage.hourly_usage_from_request_logs(50).unwrap();
     assert_eq!(usage.len(), 1);
     assert_eq!(usage[0].timestamp, "2026-07-16T12:00:00Z");

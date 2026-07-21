@@ -34,6 +34,9 @@
 
 ### Fixed
 
+- **Desktop Logs/Usage while server is running**: Desktop now opens the request-log SQLite database read-only (no schema/`journal_mode` rewrite), avoiding `database is locked` failures that previously surfaced as a generic `Unknown error` in Logs.
+- **Shared hooks show Tauri string errors**: `useLogs` / `useUsage` / `useStatus` / `useConfig` now normalize string rejects the same way as Playground, so real IPC/SQLite messages are visible.
+- **Desktop window minimum size**: Enforce `1024×700` via `set_min_size` at startup (in addition to `tauri.conf.json`) so the window cannot be resized below a usable layout.
 - **Claude → Responses streaming without `message_delta`**: When Claude-compatible providers (e.g. MiniMax) end a tool_use stream with `message_stop` and omit `message_delta`, the converter now synthesizes a terminal `Done` event so clients receive required `response.completed` / `response.function_call_arguments.done` / `response.output_item.done` instead of failing with "stream ended before a terminal response event".
 - Conversion Playground: swapping formats now reloads the matching input example; response-mode examples include required schema fields so convert no longer fails; conversion errors from Tauri/string throws are shown instead of a generic `Unknown error`; input/output JSON is pretty-printed (with a Beautify JSON action).
 - Desktop `tauri build` now runs `pnpm install` before the frontend build (`beforeBuildCommand` / `pretauri`), preventing stale `node_modules` after pulling new deps such as `react-router-dom` from failing with `TS2307: Cannot find module`.
