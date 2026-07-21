@@ -34,6 +34,7 @@
 
 ### Fixed
 
+- **Claude → Responses streaming without `message_delta`**: When Claude-compatible providers (e.g. MiniMax) end a tool_use stream with `message_stop` and omit `message_delta`, the converter now synthesizes a terminal `Done` event so clients receive required `response.completed` / `response.function_call_arguments.done` / `response.output_item.done` instead of failing with "stream ended before a terminal response event".
 - Conversion Playground: swapping formats now reloads the matching input example; response-mode examples include required schema fields so convert no longer fails; conversion errors from Tauri/string throws are shown instead of a generic `Unknown error`; input/output JSON is pretty-printed (with a Beautify JSON action).
 - Desktop `tauri build` now runs `pnpm install` before the frontend build (`beforeBuildCommand` / `pretauri`), preventing stale `node_modules` after pulling new deps such as `react-router-dom` from failing with `TS2307: Cannot find module`.
 - Desktop Logs and Usage now read request records from the embedded server log database at `{app_data_dir}/logs/any-converter.sqlite3` instead of the separate Desktop app-state database.

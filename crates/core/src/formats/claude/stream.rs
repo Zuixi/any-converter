@@ -168,7 +168,25 @@ fn parse_message_delta(
 
 fn parse_message_stop(state: &mut StreamState) -> Result<Vec<CanonicalStreamEvent>, ConvertError> {
     state.done = true;
-    Ok(vec![])
+    // Anthropic-native streams emit Done from `message_delta` and then `message_stop`.
+    // Some Claude-compatible providers (e.g. MiniMax) omit `message_delta` on tool_use
+    // turns and go straight to `message_stop`. Without synthesizing Done here, Responses
+    // clients never receive `response.completed` and fail with
+    // "stream ended before a terminal response event".
+    if state.phase == StreamPhase::Done {
+        return Ok(vec![]);
+    }
+
+    let stop_reason = if state.phase == StreamPhase::ToolCalls || state.tool_call_index > 0 {
+        StopReason::ToolUse
+    } else {
+        StopReason::EndTurn
+    };
+    state.phase = StreamPhase::Done;
+    Ok(vec![CanonicalStreamEvent::Done {
+        stop_reason,
+        usage: state.accumulated_usage.clone(),
+    }])
 }
 
 fn emit_message_start(
@@ -444,6 +462,46 @@ mod tests {
         let events = ClaudeStreamAdapter::parse_sse_event(&event, &mut state).unwrap();
         assert!(events.is_empty());
         assert!(state.done);
+    }
+
+    #[test]
+    fn test_parse_message_stop_synthesizes_done_for_tool_use_without_message_delta() {
+        // MiniMax-style Claude stream: tool_use blocks then message_stop, no message_delta.
+        let mut state = StreamState::new();
+        state.phase = StreamPhase::ToolCalls;
+        state.tool_call_index = 1;
+        let event = SseEvent {
+            event: Some("message_stop".into()),
+            data: r#"{"type":"message_stop"}"#.into(),
+        };
+        let events = ClaudeStreamAdapter::parse_sse_event(&event, &mut state).unwrap();
+        assert!(matches!(
+            &events[0],
+            CanonicalStreamEvent::Done {
+                stop_reason: StopReason::ToolUse,
+                ..
+            }
+        ));
+        assert!(state.done);
+        assert_eq!(state.phase, StreamPhase::Done);
+    }
+
+    #[test]
+    fn test_parse_message_stop_synthesizes_done_for_text_without_message_delta() {
+        let mut state = StreamState::new();
+        state.phase = StreamPhase::Content;
+        let event = SseEvent {
+            event: Some("message_stop".into()),
+            data: r#"{"type":"message_stop"}"#.into(),
+        };
+        let events = ClaudeStreamAdapter::parse_sse_event(&event, &mut state).unwrap();
+        assert!(matches!(
+            &events[0],
+            CanonicalStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                ..
+            }
+        ));
     }
 
     #[test]

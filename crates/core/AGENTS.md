@@ -77,6 +77,7 @@ src/
 - **ID normalization**: Use `shared::normalize_id_to_*` helpers so response IDs and stream IDs consistently carry the correct prefix for each format (`chatcmpl-`, `msg_`, `resp_`).
 - **System arrays**: Claude system arrays convert to OpenAI Chat/Responses `instructions` joined with `"\n\n"`.
 - **Claude signature deltas**: `signature_delta` stream chunks are valid Claude-compatible thinking signature events. Accept and ignore them unless the canonical stream IR grows a signature field.
+- **Claude `message_stop` without `message_delta`**: Some Claude-compatible providers (MiniMax) omit `message_delta` on tool_use streams. `parse_message_stop` must synthesize `Done` when phase is not already `Done`, or Responses clients never get `response.completed`.
 - **Implicit allowlist**: Typed struct deserialization is the primary parameter filter — unknown fields are silently ignored by serde. No explicit whitelist layer is needed.
 - **Private fields**: The server strips `_`-prefixed fields before conversion to prevent internal client markers from reaching upstream.
 

@@ -339,4 +339,52 @@ mod tests {
             "function_call missing arguments"
         );
     }
+
+    /// MiniMax-style Claude tool_use stream omits `message_delta` and ends on `message_stop`.
+    /// Responses clients require `response.completed` as the terminal event.
+    #[test]
+    fn test_stream_claude_tool_use_without_message_delta_emits_response_completed() {
+        let sse_blocks = vec![
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-20250514\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":0}}}",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_01\",\"name\":\"read_file\",\"input\":{}}}",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\": \\\"src/main.rs\\\"}\"}}",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}",
+            // Intentionally no message_delta — MiniMax / Claude-compatible providers often omit it.
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}",
+        ];
+
+        let mut state_in = StreamState::new();
+        let mut state_out = StreamState::new();
+        let mut all_output = Vec::new();
+
+        for block in &sse_blocks {
+            let event = parse_sse_block(block).unwrap();
+            let lines = convert_stream_event(
+                &event,
+                Format::Claude,
+                Format::OpenAIResponses,
+                &mut state_in,
+                &mut state_out,
+            )
+            .unwrap();
+            all_output.extend(lines);
+        }
+
+        let has_completed_fc = all_output
+            .iter()
+            .any(|line| line.contains("response.completed") && line.contains("function_call"));
+        assert!(
+            has_completed_fc,
+            "response.completed missing function_call.\nAll output:\n{}",
+            all_output.join("\n")
+        );
+
+        let has_args_done = all_output
+            .iter()
+            .any(|line| line.contains("response.function_call_arguments.done"));
+        assert!(
+            has_args_done,
+            "Missing response.function_call_arguments.done"
+        );
+    }
 }
