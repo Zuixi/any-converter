@@ -4,6 +4,7 @@ SUMMARIZE global project status/system environment/user preferences/etc BY USING
 
 ## Memory Lists
 - Project uses Rust 2024 edition with a mixed workspace layout: Rust crates (`core`, `server`, `cli`, `web-bridge`), user-facing apps (`apps/web`, `apps/desktop`), and shared frontend packages (`packages/core`, `views`, `shared`, `ui`, `bridge`, `tsconfig`)
+- Desktop React shell uses `react-router-dom` `HashRouter` with pages under `apps/desktop/src/pages/` and typed Tauri IPC wrappers in `apps/desktop/src/lib/api.ts`
 - Core architecture: typed Canonical IR (CanonicalRequest/Response) with FormatAdapter + StreamAdapter traits per format
 - 4 formats supported: OpenAI Chat, Claude Messages, OpenAI Responses, Gemini — each under crates/core/src/formats/
 - Server uses axum 0.8, path-based format detection, config.toml with provider/route/model_map system

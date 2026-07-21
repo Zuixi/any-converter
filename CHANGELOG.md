@@ -23,6 +23,7 @@
 
 ### Changed
 
+- **Desktop frontend routing refactor**: Desktop UI now uses `react-router-dom` `HashRouter` with path-based pages (`#/dashboard`, `#/providers`, …), splits shell/pages into `components/layout` and `pages/*`, and routes all Tauri IPC through typed `src/lib/api.ts` wrappers instead of a single `main.tsx` `useState` page switcher.
 - The Web UI request log detail view now displays structured trace summaries for downstream messages, model tool calls, and tool results when present in request logs.
 - `Cargo.toml` workspace members now include `crates/web-bridge`.
 - `docs/build.md` updated with web UI prerequisites, build steps, and environment variables.

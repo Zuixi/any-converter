@@ -105,7 +105,7 @@
 │  ├─ UI: shadcn/ui + Tailwind CSS                           │
 │  ├─ State: Zustand (轻量，Tauri 推荐)                        │
 │  ├─ Data Fetching: TanStack Query                          │
-│  ├─ Routing: TanStack Router                               │
+│  ├─ Routing: React Router HashRouter                       │
 │  ├─ Form: react-hook-form + zod                            │
 │  └─ JSON Editor: @monaco-editor/react                      │
 ├─────────────────────────────────────────────────────────────┤
@@ -134,7 +134,7 @@
 | 状态管理 | Zustand | 轻量，无 Provider 嵌套 |
 | 数据获取 | TanStack Query v5 | 缓存、轮询、乐观更新 |
 | 表单 | react-hook-form + zod | 类型安全表单验证 |
-| 路由 | TanStack Router | 类型安全路由 |
+| 路由 | React Router (`HashRouter`) | Tauri 本地资源路径更稳妥；URL 形如 `#/providers` |
 | JSON 编辑 | Monaco Editor | VS Code 同款 |
 | 图标 | Lucide React | shadcn/ui 默认 |
 | Toast | Sonner | shadcn/ui 推荐 |
@@ -174,53 +174,49 @@ any-converter/
 │           │   └── migrations/
 │           └── state.rs           # Tauri AppState
 │
-├── src/                         # 前端代码（React）
-│   ├── main.tsx
-│   ├── App.tsx
-│   ├── routeTree.gen.ts         # TanStack Router
+├── apps/desktop/src/            # Desktop 前端（React + Vite）
+│   ├── main.tsx                 # React mount + I18nProvider
+│   ├── App.tsx                  # ApiClientProvider + HashRouter routes
 │   ├── components/
-│   │   ├── ui/                  # shadcn/ui 组件（cli 自动生成）
-│   │   ├── layout/
-│   │   │   ├── Sidebar.tsx
-│   │   │   ├── Header.tsx
-│   │   │   └── AppShell.tsx
-│   │   └── providers/
-│   │       ├── ProviderCard.tsx
-│   │       ├── ProviderForm.tsx
-│   │       └── ModelMapTable.tsx
+│   │   └── layout/
+│   │       ├── AppShell.tsx
+│   │       ├── Sidebar.tsx      # NavLink 导航
+│   │       ├── Header.tsx
+│   │       ├── ErrorBanner.tsx
+│   │       ├── Field.tsx
+│   │       └── Table.tsx
 │   ├── pages/
-│   │   ├── Dashboard.tsx
-│   │   ├── Providers.tsx
-│   │   ├── Routes.tsx
-│   │   ├── Playground.tsx
-│   │   ├── Logs.tsx
-│   │   └── Settings.tsx
+│   │   ├── DashboardPage.tsx
+│   │   ├── ProvidersPage.tsx
+│   │   ├── RoutesPage.tsx
+│   │   ├── PlaygroundPage.tsx   # 包装 @any-converter/views
+│   │   ├── LogsPage.tsx
+│   │   ├── UsagePage.tsx
+│   │   └── SettingsPage.tsx
 │   ├── hooks/
-│   │   ├── useServerStatus.ts
-│   │   ├── useProviders.ts
-│   │   └── useRoutes.ts
+│   │   └── useAsyncState.ts
 │   ├── lib/
-│   │   ├── api.ts               # Tauri Command 封装
-│   │   ├── utils.ts
+│   │   ├── api.ts               # Tauri Command 封装（页面禁止裸 invoke 字符串）
+│   │   ├── create-desktop-api-client.ts
 │   │   └── constants.ts
-│   ├── stores/
-│   │   └── appStore.ts          # Zustand 全局状态
-│   └── types/
-│       └── index.ts
+│   ├── types/
+│   │   └── index.ts
+│   └── styles.css
 │
-├── src-tauri/                   # Tauri 配置文件（标准目录）
+├── apps/desktop/src-tauri/      # Tauri 后端与打包配置
 │   ├── Cargo.toml
 │   ├── tauri.conf.json
 │   ├── capabilities/
-│   └── icons/
+│   ├── icons/
+│   └── src/                     # commands / db / secrets / server_manager
 │
-├── index.html
-├── package.json
-├── vite.config.ts
-├── tailwind.config.ts
-├── tsconfig.json
-└── components.json              # shadcn/ui 配置
+├── apps/desktop/index.html
+├── apps/desktop/package.json
+├── apps/desktop/vite.config.ts
+├── apps/desktop/tailwind.config.ts
+└── apps/desktop/tsconfig.json
 ```
+
 
 ---
 
