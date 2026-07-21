@@ -156,6 +156,7 @@ fn reads_request_logs_and_usage_from_server_log_sqlite() {
             request_id: "req-from-log-db".to_string(),
             timestamp: "2026-07-16T12:00:00Z".to_string(),
             client_format: "openai_chat".to_string(),
+            client_id: None,
             provider: "openai".to_string(),
             client_model: "gpt-4.1".to_string(),
             upstream_model: "gpt-4.1".to_string(),

@@ -8,6 +8,14 @@ port = 8080
 # Optional client API key — clients must send `Authorization: Bearer <api_key>`
 # api_key = "sk-client-key"
 
+# Control which client headers are forwarded to upstream providers.
+# mode = "allow" forwards all non-sensitive headers except the deny list (default).
+# mode = "deny" only forwards headers matching the allow list.
+# [server.pass_through_headers]
+# mode = "allow"
+# allow = ["x-custom-*"]
+# deny  = ["x-internal-*"]
+
 # ── Provider Definitions ─────────────────────────────────────────────
 # Each provider is an upstream LLM endpoint with its own API key and format.
 
@@ -107,6 +115,8 @@ upstream_model = "gpt-4.1-mini"
 level = "info"
 dir = "./logs"          # Enables JSONL logs and SQLite mirror at logs/any-converter.sqlite3
 max_disk_mb = 500
+# Log headers sent to upstream providers (sensitive values redacted).
+# upstream_headers_log = true
 
 # Optional full request/response audit logging.
 # When enabled, each request is written as one JSON Lines record to

@@ -164,6 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         host,
                         port,
                         api_key,
+                        pass_through_headers: Default::default(),
                     },
                     providers: vec![ProviderConfig {
                         name: provider.clone(),

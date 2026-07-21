@@ -145,6 +145,8 @@ const en = {
   "desktop.settings.key": "Key",
   "desktop.settings.value": "Value",
   "desktop.settings.save": "Save Setting",
+  "desktop.settings.last_client": "Last client:",
+  "desktop.settings.no_client": "No recent client",
   "desktop.sidebar.collapse": "Collapse sidebar",
   "desktop.sidebar.expand": "Expand sidebar",
 } as const;
@@ -288,6 +290,8 @@ const zh: Record<keyof typeof en, string> = {
   "desktop.settings.key": "键",
   "desktop.settings.value": "值",
   "desktop.settings.save": "保存设置",
+  "desktop.settings.last_client": "最近客户端：",
+  "desktop.settings.no_client": "暂无客户端",
   "desktop.sidebar.collapse": "收起侧栏",
   "desktop.sidebar.expand": "展开侧栏",
 };

@@ -5,14 +5,14 @@ use any_converter_core::convert::{Format, convert_stream_event};
 use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{format_sse_event, is_openai_done, parse_sse_block};
 use axum::body::Body;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::config::ProviderConfig;
+use crate::config::{PassThroughHeadersConfig, ProviderConfig, glob_match};
 use crate::observability::utf8_prefix;
 use crate::request_log::{RequestLogContext, RequestLogger, log_streaming};
 
@@ -65,19 +65,91 @@ fn join_base_and_path(base_url: &str, path: &str) -> String {
     }
 }
 
+/// Headers that must never be forwarded to the upstream provider.
+const HOP_BY_HOP_HEADERS: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
+/// Headers that are managed by the proxy or replaced by provider auth.
+const REQUEST_CONTROL_HEADERS: &[&str] =
+    &["host", "content-length", "content-type", "authorization"];
+
+/// Build the complete set of upstream request headers.
+///
+/// Provider auth headers are always included first so they take precedence over
+/// any client-provided headers with the same name. Client headers are then
+/// filtered through the global passthrough allow/deny configuration.
+pub fn build_upstream_headers(
+    client_headers: &HeaderMap,
+    auth_headers: &[(String, String)],
+    config: &PassThroughHeadersConfig,
+) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = auth_headers.to_vec();
+    let auth_names: std::collections::HashSet<String> = auth_headers
+        .iter()
+        .map(|(name, _)| name.to_ascii_lowercase())
+        .collect();
+
+    for (name, value) in client_headers.iter() {
+        let name_lower = name.as_str().to_ascii_lowercase();
+
+        if HOP_BY_HOP_HEADERS.contains(&name_lower.as_str())
+            || REQUEST_CONTROL_HEADERS.contains(&name_lower.as_str())
+            || auth_names.contains(&name_lower)
+        {
+            continue;
+        }
+
+        let should_forward = match config.mode {
+            crate::config::PassThroughMode::Allow => {
+                // Default allow: forward unless explicitly denied.
+                !config.deny.iter().any(|pat| glob_match(pat, &name_lower))
+                    || config.allow.iter().any(|pat| glob_match(pat, &name_lower))
+            }
+            crate::config::PassThroughMode::Deny => {
+                // Deny-by-default: only forward explicitly allowed headers.
+                config.allow.iter().any(|pat| glob_match(pat, &name_lower))
+                    && !config.deny.iter().any(|pat| glob_match(pat, &name_lower))
+            }
+        };
+
+        if !should_forward {
+            continue;
+        }
+
+        if let Ok(value_str) = value.to_str() {
+            result.push((name.as_str().to_string(), value_str.to_string()));
+        }
+    }
+
+    result
+}
+
 /// Forward a non-streaming request to the upstream provider.
 pub async fn forward_non_streaming(
     client: &Client,
     url: &str,
     body: Vec<u8>,
     auth_headers: &[(String, String)],
+    client_headers: &HeaderMap,
+    pass_through_config: &PassThroughHeadersConfig,
 ) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
+    let upstream_headers =
+        build_upstream_headers(client_headers, auth_headers, pass_through_config);
+
     let mut req = client
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body);
 
-    for (key, value) in auth_headers {
+    for (key, value) in upstream_headers {
         req = req.header(key.as_str(), value.as_str());
     }
 
@@ -103,6 +175,8 @@ pub async fn forward_streaming(
     url: &str,
     body: Vec<u8>,
     auth_headers: &[(String, String)],
+    client_headers: &HeaderMap,
+    pass_through_config: &PassThroughHeadersConfig,
     from_format: Format,
     to_format: Format,
     ns_map: &HashMap<String, (String, String)>,
@@ -112,12 +186,15 @@ pub async fn forward_streaming(
     trace_enabled: bool,
     trace_max_preview_bytes: usize,
 ) -> Result<Response, String> {
+    let upstream_headers =
+        build_upstream_headers(client_headers, auth_headers, pass_through_config);
+
     let mut req = client
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body);
 
-    for (key, value) in auth_headers {
+    for (key, value) in upstream_headers {
         req = req.header(key.as_str(), value.as_str());
     }
 
@@ -480,5 +557,98 @@ mod tests {
             url,
             "https://api.minimax.io/v1/text/chatcompletion_v2?stream=true&model=abab6.5s-chat"
         );
+    }
+
+    fn header_map_from_pairs(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                name.parse::<axum::http::HeaderName>().unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn test_build_upstream_headers_passthrough_non_sensitive() {
+        let client_headers = header_map_from_pairs(&[
+            ("x-requested-with", "codex"),
+            ("openai-organization", "org-123"),
+            ("authorization", "Bearer client-key"),
+            ("connection", "keep-alive"),
+            ("host", "localhost:8080"),
+            ("content-length", "1234"),
+        ]);
+        let auth_headers = vec![(
+            "Authorization".to_string(),
+            "Bearer provider-key".to_string(),
+        )];
+        let config = PassThroughHeadersConfig::default();
+
+        let headers = build_upstream_headers(&client_headers, &auth_headers, &config);
+        let names: Vec<&str> = headers.iter().map(|(n, _)| n.as_str()).collect();
+
+        assert!(names.contains(&"Authorization"));
+        assert!(
+            headers
+                .iter()
+                .any(|(n, v)| n == "Authorization" && v == "Bearer provider-key")
+        );
+        assert!(
+            headers
+                .iter()
+                .any(|(n, v)| n == "x-requested-with" && v == "codex")
+        );
+        assert!(
+            headers
+                .iter()
+                .any(|(n, v)| n == "openai-organization" && v == "org-123")
+        );
+        assert!(!names.contains(&"connection"));
+        assert!(!names.contains(&"host"));
+        assert!(!names.contains(&"content-length"));
+        // Client Authorization must be replaced by provider auth.
+        assert!(
+            !headers
+                .iter()
+                .any(|(n, v)| n == "authorization" && v == "Bearer client-key")
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_headers_deny_mode_only_allows_listed() {
+        let client_headers =
+            header_map_from_pairs(&[("x-allowed-foo", "yes"), ("x-dropped-bar", "no")]);
+        let auth_headers = vec![("Authorization".to_string(), "Bearer key".to_string())];
+        let config = PassThroughHeadersConfig {
+            mode: crate::config::PassThroughMode::Deny,
+            allow: vec!["x-allowed-*".to_string()],
+            deny: vec![],
+        };
+
+        let headers = build_upstream_headers(&client_headers, &auth_headers, &config);
+
+        assert!(
+            headers
+                .iter()
+                .any(|(n, v)| n == "x-allowed-foo" && v == "yes")
+        );
+        assert!(!headers.iter().any(|(n, _v)| n == "x-dropped-bar"));
+    }
+
+    #[test]
+    fn test_build_upstream_headers_deny_pattern_blocks_allowed() {
+        let client_headers = header_map_from_pairs(&[("x-internal-foo", "secret")]);
+        let auth_headers = Vec::new();
+        let config = PassThroughHeadersConfig {
+            mode: crate::config::PassThroughMode::Allow,
+            allow: vec![],
+            deny: vec!["x-internal-*".to_string()],
+        };
+
+        let headers = build_upstream_headers(&client_headers, &auth_headers, &config);
+
+        assert!(!headers.iter().any(|(n, _)| n == "x-internal-foo"));
     }
 }
