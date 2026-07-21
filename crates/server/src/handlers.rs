@@ -17,6 +17,7 @@ use crate::auth::{self, AuthError};
 use crate::config::{RouteStrategy, ServerConfig};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
 use crate::namespace::{extract_namespace_map, patch_response_namespaces};
+use crate::observability::utf8_prefix;
 use crate::proxy::build_upstream_url_for_provider;
 use crate::request_log::{RequestLogContext, RequestLogger};
 use crate::route_strategy::order_provider_names;
@@ -612,11 +613,8 @@ fn truncated_body(body: &[u8], max_len: usize) -> String {
     let text = if s.len() <= max_len {
         s.into_owned()
     } else {
-        format!(
-            "{}...<truncated {} bytes>",
-            &s[..max_len],
-            s.len() - max_len
-        )
+        let prefix = utf8_prefix(&s, max_len);
+        format!("{}...<truncated {} bytes>", prefix, s.len() - prefix.len())
     };
     sanitize_log_body(&text)
 }

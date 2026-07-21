@@ -16,7 +16,10 @@ pub struct SanitizedBody {
     /// JSON-serialized body if it was valid JSON, otherwise the raw text.
     pub text: String,
     /// Whether the body was truncated because it exceeded the capture limit.
-    #[serde(skip_serializing_if = "is_not_truncated")]
+    ///
+    /// Omitted from JSON when `false` (`skip_serializing_if`); deserialize with
+    /// `default` so stored log records round-trip.
+    #[serde(default, skip_serializing_if = "is_not_truncated")]
     pub truncated: bool,
 }
 
@@ -130,5 +133,14 @@ mod tests {
         let sanitized = sanitize_body(body, 1024);
         assert_eq!(sanitized.text, "plain text body");
         assert!(!sanitized.truncated);
+    }
+
+    #[test]
+    fn sanitized_body_deserializes_when_truncated_omitted() {
+        // Writer skips `truncated: false`; readers must still accept stored JSON.
+        let json = r#"{"text":"{\"model\":\"gpt-4\"}"}"#;
+        let body: SanitizedBody = serde_json::from_str(json).unwrap();
+        assert_eq!(body.text, r#"{"model":"gpt-4"}"#);
+        assert!(!body.truncated);
     }
 }

@@ -13,6 +13,7 @@ use reqwest::Client;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::config::ProviderConfig;
+use crate::observability::utf8_prefix;
 use crate::request_log::{RequestLogContext, RequestLogger, log_streaming};
 
 /// Build the upstream URL for a provider request.
@@ -173,11 +174,7 @@ pub async fn forward_streaming(
                             &mut state_out,
                         );
                         if event_count <= 5 {
-                            let block_preview = if block.len() > 200 {
-                                &block[..200]
-                            } else {
-                                &block
-                            };
+                            let block_preview = utf8_prefix(&block, 200);
                             info!(
                                 "SSE block converted event_count={event_count} converted_count={} block_preview={block_preview}",
                                 lines.len()
@@ -211,11 +208,7 @@ pub async fn forward_streaming(
         }
 
         if !buffer.trim().is_empty() {
-            let preview = if buffer.len() > 200 {
-                &buffer[..200]
-            } else {
-                &buffer
-            };
+            let preview = utf8_prefix(&buffer, 200);
             info!(
                 "processing remaining buffer remaining_buffer_len={} preview={preview}",
                 buffer.len()

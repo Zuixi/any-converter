@@ -475,15 +475,23 @@ fn preview_value(value: &Value, max_preview_bytes: usize) -> String {
     }
 }
 
+/// Prefix of `text` capped at `max_bytes`, never splitting a UTF-8 code point.
+pub(crate) fn utf8_prefix(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 fn preview_str(text: &str, max_preview_bytes: usize) -> String {
     if text.len() <= max_preview_bytes {
         return text.to_string();
     }
-    let mut end = max_preview_bytes.min(text.len());
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}...<truncated>", &text[..end])
+    format!("{}...<truncated>", utf8_prefix(text, max_preview_bytes))
 }
 
 #[cfg(test)]
@@ -491,6 +499,17 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn utf8_prefix_does_not_split_multibyte_char() {
+        // Each CJK ideograph is 3 UTF-8 bytes; index 200-style cuts must stay on boundaries.
+        let text = "ab配置cd";
+        assert_eq!(utf8_prefix(text, 2), "ab");
+        assert_eq!(utf8_prefix(text, 3), "ab"); // would split '配'
+        assert_eq!(utf8_prefix(text, 4), "ab");
+        assert_eq!(utf8_prefix(text, 5), "ab配");
+        assert_eq!(utf8_prefix(text, 200), text);
+    }
 
     #[test]
     fn summarizes_responses_namespace_tools_and_function_calls() {

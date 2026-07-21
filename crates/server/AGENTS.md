@@ -95,6 +95,8 @@ src/
 
 ## Common Pitfalls
 
+- **UTF-8 log previews**: Never slice `&str` with a raw byte index (e.g. `&block[..200]`). Multibyte CJK text will panic at runtime. Use `observability::utf8_prefix`.
+- **`SanitizedBody.truncated` round-trip**: Writers omit `truncated` when `false`; readers must use `#[serde(default)]` or log replay/SQLite reads fail with `missing field truncated`.
 - **Hanging SSE connections**: If the client disconnects mid-stream, the channel sender fails silently. Check `tx.send(...).is_err()` and return early from the spawned task to avoid leaking tasks.
 - **Double `\n\n` in SSE**: Some providers send `\r\n\r\n`. The current parser uses `\n\n` only — verify upstream behavior before changing.
 - **Config validation**: `ServerConfig::validate()` is called at startup. Invalid provider references cause an immediate exit with actionable error messages.
