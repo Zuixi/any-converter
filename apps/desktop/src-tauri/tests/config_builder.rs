@@ -87,6 +87,17 @@ fn builds_server_config_from_sqlite_provider_routes_and_settings() {
     assert_eq!(config.model_routes[0].providers, vec!["kimi".to_string()]);
     assert_eq!(config.logging.max_disk_mb, 256);
     assert!(config.logging.request_log.enabled);
+    assert_eq!(
+        config.logging.level,
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "warn"
+        }
+    );
+    assert_eq!(config.logging.console.enabled, cfg!(debug_assertions));
+    assert_eq!(config.logging.files.len(), 1);
+    assert_eq!(config.logging.files[0].level.as_deref(), Some("warn"));
 }
 
 #[test]

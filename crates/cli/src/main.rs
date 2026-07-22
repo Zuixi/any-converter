@@ -1,5 +1,3 @@
-mod logging;
-
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -12,7 +10,7 @@ use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
     LoggingConfig, ProviderConfig, RouteConfig, ServerConfig, ServerSettings,
 };
-use any_converter_server::run;
+use any_converter_server::{logging::init_logging, run};
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -99,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             stdin,
             response,
         } => {
-            logging::init_logging(&LoggingConfig::default())?;
+            init_logging(&LoggingConfig::default())?;
 
             let input = read_input(input_file.as_deref(), stdin)?;
             let from_fmt = from.to_format();
@@ -115,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Stream { from, to } => {
-            logging::init_logging(&LoggingConfig::default())?;
+            init_logging(&LoggingConfig::default())?;
 
             let mut input = String::new();
             io::stdin().read_to_string(&mut input)?;
@@ -196,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            let log_dir = logging::init_logging(&server_config.logging)?;
+            let log_dir = init_logging(&server_config.logging)?;
             let _log_dir = log_dir;
 
             run(server_config).await?;

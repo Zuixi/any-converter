@@ -11,6 +11,7 @@ src/
 ├── lib.rs           — Server entry: run(config) -> Result
 ├── router.rs        — Axum route table + path→format detection
 ├── handlers.rs      — Request handlers: model extraction, routing, failover, forward, respond
+├── logging.rs       — Shared CLI/Desktop runtime logger with console and file outputs
 ├── proxy.rs         — Upstream HTTP client logic (reqwest)
 ├── auth.rs          — Client key validation + upstream auth header building
 ├── config.rs        — TOML config: providers, model_routes, legacy routes, logging
@@ -66,13 +67,13 @@ src/
 
 ### 7. Usage Logging
 - `UsageLogger` writes `UsageRecord` to daily `usage.YYYY-MM-DD.jsonl` files via async mpsc channel.
-- When `logging.dir` is configured, `UsageLogger` also mirrors records into `{logging.dir}/any-converter.sqlite3`; JSONL remains the fallback if SQLite initialization or writes fail.
+- When `logging.dir` is configured, `UsageLogger` also mirrors records into `{logging.dir}/any-converter.sqlite3`; request and usage writers share one SQLite connection pool, and JSONL remains the fallback if SQLite initialization or writes fail.
 - Enabled when `logging.dir` is configured; created in `create_router` and stored in `AppState`.
 - Token usage extracted from upstream response bodies (`usage::extract_usage_from_response`).
 - Records include: request_id, timestamp, client/upstream model, provider, tokens, latency, status.
 
 ### 8. Request/Response Logging
-- `RequestLogger` writes full request/response audit records to daily `requests.YYYY-MM-DD.jsonl` files via async mpsc channel.
+- `RequestLogger` writes full request/response audit records to 10 MiB daily segments (`requests.YYYY-MM-DD.000.jsonl`, `.001`, ...) via async mpsc channel.
 - Request records are also mirrored into `{logging.dir}/any-converter.sqlite3` through `storage::SqliteStorage`; SQLite write failures must never prevent JSONL fallback writes.
 - Concurrent UI readers (Desktop Logs/Usage) must use `SqliteStorage::open_readonly_in_log_dir` so they do not re-run schema/`journal_mode` setup against a live writer.
 - Enabled by `[logging.request_log] enabled = true` and requires `logging.dir`.
@@ -82,7 +83,7 @@ src/
 - Structured trace summaries extract message previews, tool definitions, tool calls, and tool results into `trace.client`, `trace.upstream`, and `trace.response`.
 - Request bodies, upstream request bodies, and response bodies are truncated at `max_capture_bytes` and marked with `truncated: true`.
 - Sensitive headers and body keys (`api_key`, `authorization`, etc.) are redacted before writing.
-- The background disk quota manager (`disk_quota.rs`) enforces `logging.max_disk_mb` by deleting oldest files first.
+- The background disk quota manager (`disk_quota.rs`) enforces `logging.max_disk_mb` by deleting oldest log files first while preserving the active SQLite database, WAL, and SHM files.
 - `[logging.upstream_headers_log] = true` logs the headers sent to upstream providers (sensitive values redacted) for debugging client header passthrough.
 
 ### 9. Namespace Tool Support (Codex CLI)

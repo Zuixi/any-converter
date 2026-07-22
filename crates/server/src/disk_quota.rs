@@ -93,6 +93,13 @@ fn collect_log_files(dir: &Path) -> std::io::Result<Vec<LogFileEntry>> {
         if !meta.is_file() {
             continue;
         }
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("any-converter.sqlite3"))
+        {
+            continue;
+        }
         let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
         entries.push(LogFileEntry {
             path: entry.path(),
@@ -157,5 +164,26 @@ mod tests {
         let entries = collect_log_files(Path::new("/tmp/nonexistent_any_conv_dir_12345"));
         assert!(entries.is_ok());
         assert!(entries.ok().is_some_and(|e| e.is_empty()));
+    }
+
+    #[test]
+    fn test_enforce_quota_keeps_sqlite_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("any-converter.sqlite3");
+        let wal = dir.path().join("any-converter.sqlite3-wal");
+        let shm = dir.path().join("any-converter.sqlite3-shm");
+        std::fs::write(&database, "D".repeat(100)).unwrap();
+        std::fs::write(&wal, "W".repeat(100)).unwrap();
+        std::fs::write(&shm, "S".repeat(100)).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let log = dir.path().join("requests.2026-07-22.jsonl");
+        std::fs::write(&log, "L".repeat(100)).unwrap();
+
+        enforce_quota(dir.path(), 50).unwrap();
+
+        assert!(database.exists());
+        assert!(wal.exists());
+        assert!(shm.exists());
+        assert!(!log.exists());
     }
 }

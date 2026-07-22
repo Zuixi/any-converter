@@ -2,6 +2,7 @@ pub mod auth;
 pub mod config;
 pub mod disk_quota;
 pub mod handlers;
+pub mod logging;
 pub(crate) mod model;
 pub(crate) mod namespace;
 pub mod observability;

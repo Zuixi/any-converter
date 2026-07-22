@@ -191,6 +191,7 @@ trace_enabled = true
 
 - `./logs` 下的 JSONL 审计日志
 - `./logs/any-converter.sqlite3` 里的 SQLite 镜像
+- 请求审计日志按 10 MiB 分片，例如 `requests.2026-07-22.000.jsonl`
 - 自动脱敏后的请求和响应捕获
 - 非流式和流式请求的 token usage 提取
 - 消息、工具调用、工具结果的结构化 trace 摘要

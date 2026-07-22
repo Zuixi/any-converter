@@ -2,7 +2,7 @@
 
 use any_converter_core::ir::Usage;
 use any_converter_server::request_log::{
-    RequestLogRecord, ResponseBodyKind, create_request_logger,
+    RequestLogRecord, RequestLogger, ResponseBodyKind, create_request_logger,
 };
 use any_converter_server::storage::SqliteStorage;
 use any_converter_server::usage::UsageRecord;
@@ -163,6 +163,35 @@ async fn request_logger_writes_jsonl_and_sqlite() {
         )
         .unwrap();
     assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn request_logger_rotates_files_before_ten_mebibytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let log_dir = temp.path().to_path_buf();
+    let logger = RequestLogger::with_sqlite(log_dir.clone(), None);
+    let mut first = test_request_record("req-large-1");
+    first.response_body = ResponseBodyKind::Json {
+        text: "x".repeat(6 * 1024 * 1024),
+    };
+    let mut second = first.clone();
+    second.request_id = "req-large-2".to_string();
+
+    logger.log(first);
+    logger.log(second);
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let jsonl_count = std::fs::read_dir(log_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("requests.") && name.ends_with(".jsonl"))
+        })
+        .count();
+    assert_eq!(jsonl_count, 2);
 }
 
 fn test_request_record(request_id: &str) -> RequestLogRecord {

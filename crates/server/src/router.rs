@@ -74,9 +74,23 @@ pub fn extract_gemini_model(path: &str) -> Option<String> {
 
 pub fn create_router(config: ServerConfig) -> Router {
     let log_dir = config.logging.dir.clone();
-    let usage_logger = crate::usage::create_usage_logger(log_dir.as_deref());
-    let request_logger =
-        crate::request_log::create_request_logger(log_dir.as_deref(), &config.logging.request_log);
+    let sqlite = crate::storage::open_sqlite_storage_for_log_dir(log_dir.as_deref());
+    let usage_logger = log_dir.as_ref().map(|dir| {
+        Arc::new(crate::usage::UsageLogger::with_sqlite(
+            PathBuf::from(dir),
+            sqlite.clone(),
+        ))
+    });
+    let request_logger = if config.logging.request_log.enabled {
+        log_dir.as_ref().map(|dir| {
+            Arc::new(crate::request_log::RequestLogger::with_sqlite(
+                PathBuf::from(dir),
+                sqlite.clone(),
+            ))
+        })
+    } else {
+        None
+    };
 
     if let Some(ref dir) = log_dir {
         let max_bytes = config.logging.max_disk_mb * 1024 * 1024;

@@ -1,9 +1,11 @@
+//! Runtime logging shared by CLI and Desktop entrypoints.
+
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use any_converter_server::config::LoggingConfig;
+use crate::config::LoggingConfig;
 use chrono::Local;
 use log::{LevelFilter, Log, Metadata, Record};
 

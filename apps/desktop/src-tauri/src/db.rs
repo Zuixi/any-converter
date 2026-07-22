@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use any_converter_core::convert::Format;
 use any_converter_server::config::{
-    LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
+    ConsoleConfig, LogFileConfig, LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy,
+    ServerConfig, ServerSettings,
 };
 use any_converter_server::request_log::RequestLogRecord;
 use any_converter_server::storage::HourlyUsage;
@@ -224,8 +225,26 @@ impl DesktopDb {
             })
             .collect();
         let logging = LoggingConfig {
+            level: if cfg!(debug_assertions) {
+                "debug".to_string()
+            } else {
+                "warn".to_string()
+            },
             dir: Some(log_dir.as_ref().to_string_lossy().to_string()),
             max_disk_mb: parse_u64_setting(&settings, "logging.max_disk_mb", 500)?,
+            console: ConsoleConfig {
+                enabled: cfg!(debug_assertions),
+                output: "stderr".to_string(),
+                level: None,
+                format: "pretty".to_string(),
+            },
+            files: vec![LogFileConfig {
+                name: "app".to_string(),
+                level: Some("warn".to_string()),
+                target: None,
+                format: "json".to_string(),
+                rotation: "daily".to_string(),
+            }],
             request_log: any_converter_server::config::RequestLogConfig {
                 enabled: true,
                 ..Default::default()

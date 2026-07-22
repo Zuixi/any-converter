@@ -306,7 +306,7 @@ Two responsibilities:
 An optional audit logger captures the full lifecycle of every request:
 
 - **Config:** `[logging.request_log] enabled = true` plus `logging.dir`.
-- **Storage:** one JSON Lines file per UTC day: `{dir}/requests.YYYY-MM-DD.jsonl`, mirrored into `{dir}/any-converter.sqlite3` when SQLite initialization succeeds.
+- **Storage:** 10 MiB JSON Lines segments per UTC day: `{dir}/requests.YYYY-MM-DD.000.jsonl`, `.001`, and so on. Records are mirrored through a shared SQLite connection pool into `{dir}/any-converter.sqlite3` when initialization succeeds.
 - **Capture:**
   - Non-streaming: full JSON request body, upstream request body, and response body.
   - Streaming: request bodies plus every converted SSE line emitted to the client.
@@ -319,7 +319,7 @@ An optional audit logger captures the full lifecycle of every request:
 
 ### 4.7 Disk Quota
 
-The server spawns a background task that enforces `logging.max_disk_mb` on the logging directory. Every five minutes it deletes the oldest files until total usage is below the limit. This prevents log files from unbounded growth.
+The server spawns a background task that enforces `logging.max_disk_mb` on JSONL log files. Every five minutes it deletes the oldest logs until usage is below the limit. The active SQLite database and its WAL/SHM files are never deleted by quota cleanup.
 
 ---
 

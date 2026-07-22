@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -30,22 +31,22 @@ pub enum StorageError {
     Sqlite(#[from] rusqlite::Error),
     #[error("json serialization error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("sqlite storage mutex poisoned")]
-    MutexPoisoned,
+    #[error("sqlite connection pool error: {0}")]
+    Pool(#[from] r2d2::Error),
 }
 
 #[derive(Clone)]
 pub struct SqliteStorage {
-    conn: Arc<Mutex<Connection>>,
+    pool: Pool<SqliteConnectionManager>,
 }
 
 impl SqliteStorage {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let conn = Connection::open(path)?;
+        let pool = build_pool(SqliteConnectionManager::file(path))?;
+        let conn = pool.get()?;
         initialize_schema(&conn)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+        drop(conn);
+        Ok(Self { pool })
     }
 
     pub fn open_in_log_dir(log_dir: impl AsRef<Path>) -> Result<Self, StorageError> {
@@ -57,14 +58,15 @@ impl SqliteStorage {
     /// Skips schema migration/`journal_mode` changes so it does not fight the writer lock.
     pub fn open_readonly_in_log_dir(log_dir: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = log_dir.as_ref().join("any-converter.sqlite3");
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let manager =
+            SqliteConnectionManager::file(path).with_flags(OpenFlags::SQLITE_OPEN_READ_ONLY);
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            pool: build_pool(manager)?,
         })
     }
 
     pub fn insert_request_log(&self, record: &RequestLogRecord) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|_| StorageError::MutexPoisoned)?;
+        let conn = self.pool.get()?;
         let response_body_json = serde_json::to_string(&record.response_body)?;
         let request_body_json = serde_json::to_string(&record.request_body)?;
         let upstream_request_body_json = serde_json::to_string(&record.upstream_request_body)?;
@@ -149,7 +151,7 @@ impl SqliteStorage {
     }
 
     pub fn insert_usage_record(&self, record: &UsageRecord) -> Result<(), StorageError> {
-        let conn = self.conn.lock().map_err(|_| StorageError::MutexPoisoned)?;
+        let conn = self.pool.get()?;
         let record_json = serde_json::to_string(record)?;
         conn.execute(
             r#"
@@ -196,7 +198,7 @@ impl SqliteStorage {
     }
 
     pub fn recent_request_logs(&self, limit: u64) -> Result<Vec<RequestLogRecord>, StorageError> {
-        let conn = self.conn.lock().map_err(|_| StorageError::MutexPoisoned)?;
+        let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             r#"
             select record_json
@@ -217,7 +219,7 @@ impl SqliteStorage {
         &self,
         limit: u64,
     ) -> Result<Vec<HourlyUsage>, StorageError> {
-        let conn = self.conn.lock().map_err(|_| StorageError::MutexPoisoned)?;
+        let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
             r#"
             select
@@ -276,6 +278,12 @@ impl SqliteStorage {
         }
         Ok(records)
     }
+}
+
+fn build_pool(
+    manager: SqliteConnectionManager,
+) -> Result<Pool<SqliteConnectionManager>, r2d2::Error> {
+    Pool::builder().max_size(4).build(manager)
 }
 
 pub fn open_sqlite_storage_for_log_dir(log_dir: Option<&str>) -> Option<SqliteStorage> {

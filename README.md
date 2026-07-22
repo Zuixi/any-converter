@@ -191,6 +191,7 @@ This gives you:
 
 - JSONL audit files in `./logs`
 - SQLite mirror at `./logs/any-converter.sqlite3`
+- Request audit files rotate into 10 MiB daily segments such as `requests.2026-07-22.000.jsonl`
 - Redacted request and response capture
 - Usage extraction for both non-streaming and streaming traffic
 - Structured trace summaries for messages, tools, and tool results

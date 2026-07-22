@@ -16,6 +16,8 @@ use crate::storage::{SqliteStorage, open_sqlite_storage_for_log_dir};
 
 pub mod redactor;
 
+const MAX_REQUEST_LOG_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
 /// Context accumulated throughout a request lifecycle for logging.
 #[derive(Clone)]
 pub struct RequestLogContext {
@@ -129,14 +131,36 @@ pub fn create_request_logger(
 fn write_record(log_dir: &Path, record: &RequestLogRecord) -> std::io::Result<()> {
     std::fs::create_dir_all(log_dir)?;
     let date = &record.timestamp[..10];
-    let path = log_dir.join(format!("requests.{date}.jsonl"));
+    let line = serde_json::to_string(record).unwrap_or_default();
+    let path = request_log_path(log_dir, date, line.len() as u64 + 1)?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
-    let line = serde_json::to_string(record).unwrap_or_default();
     writeln!(file, "{line}")?;
     Ok(())
+}
+
+fn request_log_path(log_dir: &Path, date: &str, next_line_bytes: u64) -> std::io::Result<PathBuf> {
+    // ponytail: linear segment scan is bounded by the directory quota; keep writer state only if profiling requires it.
+    let mut index = 0;
+    let mut latest = None;
+    loop {
+        let path = log_dir.join(format!("requests.{date}.{index:03}.jsonl"));
+        match std::fs::metadata(&path) {
+            Ok(metadata) => latest = Some((path, metadata.len())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return match latest {
+                    Some((path, size)) if size + next_line_bytes <= MAX_REQUEST_LOG_FILE_BYTES => {
+                        Ok(path)
+                    }
+                    _ => Ok(path),
+                };
+            }
+            Err(error) => return Err(error),
+        }
+        index += 1;
+    }
 }
 
 /// Build and log a non-streaming request/response record.

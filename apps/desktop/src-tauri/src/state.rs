@@ -21,6 +21,8 @@ impl AppState {
         std::fs::create_dir_all(&log_dir)?;
         let db = DesktopDb::open(data_dir.join("any-converter.sqlite3"))?;
         seed_defaults(&db)?;
+        let logging = db.build_server_config(&log_dir)?.logging;
+        let _ = any_converter_server::logging::init_logging(&logging)?;
         Ok(Self {
             db,
             data_dir,

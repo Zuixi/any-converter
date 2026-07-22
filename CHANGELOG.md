@@ -34,6 +34,7 @@
 
 ### Fixed
 
+- **Desktop log durability and Windows release startup**: Request audit JSONL files rotate at 10 MiB, request/usage mirrors share an SQLite connection pool, disk quota cleanup preserves SQLite/WAL files, Desktop persists WARN/ERROR runtime logs, and the Windows subsystem attribute now applies to the release executable instead of the library crate.
 - **Logs Assistant Markdown rendering**: JSON content-part arrays are unwrapped before rendering so embedded Markdown is displayed as formatted conversation text instead of raw JSON.
 - **Desktop Logs session grouping and overflow**: Requests without an explicit session ID are conservatively grouped only when their client message history has one uniquely longest strict prefix; request/correlation IDs no longer masquerade as sessions, and the conversation layout now stays within the default/minimum Desktop window width.
 - **Logs `missing field truncated`**: `SanitizedBody.truncated` is omitted when `false` on write; deserialization now defaults it so SQLite/JSONL log reads succeed.
