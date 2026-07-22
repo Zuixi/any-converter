@@ -1,6 +1,6 @@
 import type { RequestLogRecord, TraceMessage } from "@any-converter/shared";
 
-import { buildSessionSummaries } from "./log-conversation";
+import { buildConversationDetail, buildSessionSummaries } from "./log-conversation";
 
 function record(requestId: string, timestamp: string, messages: TraceMessage[]): RequestLogRecord {
   const emptyTrace = { messages: [], tool_definitions: [], tool_calls: [], tool_results: [] };
@@ -55,3 +55,11 @@ const duplicateStart = record("request-3", "2026-07-22T00:02:00Z", first.trace?.
 const ambiguousContinuation = record("request-4", "2026-07-22T00:03:00Z", continuation.trace?.client.messages ?? []);
 const ambiguousSessions = buildSessionSummaries([first, duplicateStart, ambiguousContinuation]);
 assertEqual(ambiguousSessions.length, 3, "ambiguous histories should remain separate sessions");
+
+const markdownResponse = record("request-5", "2026-07-22T00:04:00Z", []);
+markdownResponse.response_body = {
+  text: JSON.stringify([{ annotations: [], text: "## Summary\n\n- First item" }]),
+};
+const markdownEntries = buildConversationDetail(markdownResponse).timelineEntries;
+const assistantMarkdown = markdownEntries.find((entry) => entry.kind === "response")?.content;
+assertEqual(assistantMarkdown, "## Summary\n\n- First item", "content-part arrays should expose their Markdown text");

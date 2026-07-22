@@ -34,6 +34,7 @@
 
 ### Fixed
 
+- **Logs Assistant Markdown rendering**: JSON content-part arrays are unwrapped before rendering so embedded Markdown is displayed as formatted conversation text instead of raw JSON.
 - **Desktop Logs session grouping and overflow**: Requests without an explicit session ID are conservatively grouped only when their client message history has one uniquely longest strict prefix; request/correlation IDs no longer masquerade as sessions, and the conversation layout now stays within the default/minimum Desktop window width.
 - **Logs `missing field truncated`**: `SanitizedBody.truncated` is omitted when `false` on write; deserialization now defaults it so SQLite/JSONL log reads succeed.
 - **Server panic on CJK SSE previews**: Streaming log previews no longer slice `&str` at a raw byte index (`proxy.rs` / handler body truncation); use UTF-8-safe `utf8_prefix` so multibyte characters like `配` cannot panic the tokio worker.

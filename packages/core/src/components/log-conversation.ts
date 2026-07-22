@@ -346,7 +346,7 @@ function buildResponseEntries(record: RequestLogRecord): ConversationEntry[] {
 
 function extractAssistantTextFromResponseBody(body: ResponseBodyKind): string {
   if ("text" in body) {
-    return extractAssistantTextFromJsonText(body.text) || body.text;
+    return extractAssistantTextFromJsonText(body.text) ?? body.text;
   }
 
   const chunks: string[] = [];
@@ -441,30 +441,18 @@ function addOptional(left: number | undefined, right: number | undefined): numbe
   return (left ?? 0) + (right ?? 0);
 }
 
-function extractAssistantTextFromJsonText(text: string): string {
-  const parsed = safeParseObject(text);
-  if (!parsed) {
-    return "";
+function extractAssistantTextFromJsonText(text: string): string | undefined {
+  const parsed = safeParse(text);
+  if (parsed === undefined) {
+    return undefined;
   }
-  const output = Array.isArray(parsed.output) ? parsed.output : [];
-  const chunks: string[] = [];
-  for (const item of output) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-    const content = Array.isArray((item as Record<string, unknown>).content)
-      ? ((item as Record<string, unknown>).content as unknown[])
-      : [];
-    for (const part of content) {
-      if (part && typeof part === "object") {
-        const textPart = (part as Record<string, unknown>).text;
-        if (typeof textPart === "string") {
-          chunks.push(textPart);
-        }
-      }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const output = (parsed as Record<string, unknown>).output;
+    if (Array.isArray(output)) {
+      return extractTextFromContentValue(output);
     }
   }
-  return chunks.join("");
+  return extractTextFromContentValue(parsed);
 }
 
 function normalizeContentPreview(preview: string): string {
