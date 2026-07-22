@@ -44,16 +44,42 @@ export function sortRecordsAscending(records: RequestLogRecord[]): RequestLogRec
 /**
  * Group request records into sessions.
  *
- * A session is identified by `(client_id, session_id)`. Records without a
- * `session_id` are treated as individual single-request sessions.
+ * Explicit `(client_id, session_id)` pairs are authoritative. Without a
+ * `session_id`, records merge only when one uniquely longest prior history is
+ * a strict prefix; uncertain records remain single-request sessions.
  */
 export function buildSessionSummaries(records: RequestLogRecord[]): SessionSummary[] {
   const sorted = sortRecordsAscending(records);
   const sessions = new Map<string, RequestLogRecord[]>();
+  const inferredKeys = new Map<string, string[]>();
 
   for (const record of sorted) {
     const clientId = record.client_id ?? record.client_format;
-    const key = record.session_id ? `${clientId}:${record.session_id}` : `${clientId}:__single_${record.request_id}`;
+    let key = record.session_id ? `${clientId}:${record.session_id}` : `${clientId}:__single_${record.request_id}`;
+
+    if (!record.session_id && record.client_id && conversationHistorySize(record) > 0) {
+      const clientKeys = inferredKeys.get(clientId) ?? [];
+      // ponytail: this scans the small recent-log set; index histories only if log volume makes it measurable.
+      const candidates = clientKeys.flatMap((candidateKey) => {
+        const candidateRecords = sessions.get(candidateKey);
+        const latest = candidateRecords?.[candidateRecords.length - 1];
+        return latest && strictlyExtendsConversation(latest, record)
+          ? [{ key: candidateKey, historySize: conversationHistorySize(latest) }]
+          : [];
+      });
+      const longestHistory = Math.max(0, ...candidates.map((candidate) => candidate.historySize));
+      const longest = candidates.filter((candidate) => candidate.historySize === longestHistory);
+      const match = longest.length === 1 ? longest[0]?.key : undefined;
+
+      if (match) {
+        key = match;
+      } else {
+        key = `${clientId}:__inferred_${record.request_id}`;
+        clientKeys.push(key);
+        inferredKeys.set(clientId, clientKeys);
+      }
+    }
+
     const list = sessions.get(key) ?? [];
     list.push(record);
     sessions.set(key, list);
@@ -102,6 +128,30 @@ export function buildSessionSummaries(records: RequestLogRecord[]): SessionSumma
   // Sort by latest activity descending.
   summaries.sort((a, b) => b.latestTimestamp.localeCompare(a.latestTimestamp));
   return summaries;
+}
+
+function conversationHistorySize(record: RequestLogRecord): number {
+  const trace = record.trace?.client;
+  return trace ? trace.messages.length + trace.tool_calls.length + trace.tool_results.length : 0;
+}
+
+function strictlyExtendsConversation(previous: RequestLogRecord, current: RequestLogRecord): boolean {
+  const left = previous.trace?.client;
+  const right = current.trace?.client;
+  if (!left || !right || conversationHistorySize(current) <= conversationHistorySize(previous)) {
+    return false;
+  }
+
+  return (
+    sharedPrefixLength(left.messages, right.messages, sameTraceMessage) === left.messages.length &&
+    sharedPrefixLength(left.tool_calls.map(stableToolId), right.tool_calls.map(stableToolId), Object.is) ===
+      left.tool_calls.length &&
+    sharedPrefixLength(
+      left.tool_results.map((item) => item.id ?? item.content_preview),
+      right.tool_results.map((item) => item.id ?? item.content_preview),
+      Object.is,
+    ) === left.tool_results.length
+  );
 }
 
 export function buildRequestSummaries(records: RequestLogRecord[]): ConversationRequestSummary[] {

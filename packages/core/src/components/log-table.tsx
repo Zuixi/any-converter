@@ -59,7 +59,7 @@ export function LogTable({ records }: LogTableProps) {
   );
 
   return (
-    <div className="grid gap-4">
+    <div className="grid min-w-0 gap-4">
       <div className="grid gap-3 rounded-md border bg-muted/40 p-3 text-sm md:grid-cols-4">
         <Metric label={t("logs.requests")} value={String(records.length)} />
         <Metric label={t("logs.inputTokens")} value={totals.input_tokens.toLocaleString()} />
@@ -77,8 +77,8 @@ export function LogTable({ records }: LogTableProps) {
         />
       </div>
 
-      <div className="grid min-h-[640px] grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="min-w-0 lg:col-span-1">
+      <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(240px,320px)_minmax(0,1fr)] xl:items-start">
+        <div className="min-w-0">
           <SessionList
             sessions={filtered}
             selectedKey={selected?.key ?? null}
@@ -90,7 +90,7 @@ export function LogTable({ records }: LogTableProps) {
         </div>
 
         {selected && sortedRecords.length > 0 ? (
-          <div className="grid min-w-0 gap-4 rounded-md border bg-background p-4 lg:col-span-2">
+          <div className="grid min-w-0 max-w-full gap-4 overflow-hidden rounded-md border bg-background p-4">
             <SessionHeader session={selected} />
 
             <div className="flex flex-col gap-6">
@@ -111,7 +111,7 @@ export function LogTable({ records }: LogTableProps) {
             </div>
           </div>
         ) : (
-          <div className="flex min-h-[520px] items-center justify-center rounded-md border p-8 text-sm text-muted-foreground lg:col-span-2">
+          <div className="flex min-h-[320px] items-center justify-center rounded-md border p-8 text-sm text-muted-foreground">
             {t("logs.noLogs")}
           </div>
         )}
@@ -132,7 +132,7 @@ function SessionList({
   const { t } = useI18n();
 
   return (
-    <div className="overflow-hidden rounded-md border">
+    <div className="min-w-0 overflow-hidden rounded-md border">
       <div className="border-b bg-muted px-3 py-2 text-sm font-medium">{t("logs.sessions")}</div>
       <div className="max-h-[calc(100vh-280px)] overflow-auto">
         {sessions.map((session) => {
@@ -148,12 +148,14 @@ function SessionList({
               onClick={() => onSelect(session)}
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 font-medium leading-5">{session.title}</div>
+                <div className="min-w-0 font-medium leading-5 [overflow-wrap:anywhere]">{session.title}</div>
                 <Badge variant="secondary">{session.requestCount}</Badge>
               </div>
               <div className="grid gap-1 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground/80">{session.clientId}</span>
-                {session.sessionId && <span className="font-mono text-[10px]">{session.sessionId}</span>}
+                <span className="font-medium text-foreground/80 [overflow-wrap:anywhere]">{session.clientId}</span>
+                {session.sessionId && (
+                  <span className="font-mono text-[10px] [overflow-wrap:anywhere]">{session.sessionId}</span>
+                )}
                 <span>{formatTimestamp(session.latestTimestamp)}</span>
               </div>
             </button>
@@ -176,11 +178,13 @@ function SessionHeader({ session }: { session: SessionSummary }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold leading-tight">{t("logs.session")}</h2>
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">{session.clientId}</Badge>
+          <Badge variant="outline" className="max-w-full [overflow-wrap:anywhere]">
+            {session.clientId}
+          </Badge>
           <Badge variant="secondary">{session.requestCount} requests</Badge>
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground [overflow-wrap:anywhere]">
         {session.sessionId && (
           <>
             <span className="font-mono">{session.sessionId}</span>
@@ -206,8 +210,8 @@ function RequestBlock({ record, previous }: { record: RequestLogRecord; previous
   const usage = effectiveUsage(record);
 
   return (
-    <div className="grid gap-3 rounded-md border bg-muted/20 p-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+    <div className="grid min-w-0 max-w-full gap-3 overflow-hidden rounded-md border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground [overflow-wrap:anywhere]">
         <span className="font-mono">{record.request_id}</span>
         <span>·</span>
         <Badge variant={record.response_status >= 400 ? "destructive" : "default"}>{record.response_status}</Badge>
@@ -221,7 +225,7 @@ function RequestBlock({ record, previous }: { record: RequestLogRecord; previous
         <span>{record.path}</span>
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div className="flex min-w-0 max-w-full flex-col gap-3">
         {detail.timelineEntries.map((entry) => (
           <ConversationBubble key={entry.id} entry={entry} />
         ))}
@@ -239,14 +243,14 @@ function ConversationBubble({ entry }: { entry: ConversationEntry }) {
   return (
     <article
       className={cn(
-        "flex w-full flex-col gap-2",
+        "flex min-w-0 max-w-full flex-col gap-2 overflow-hidden",
         isUser ? "items-end" : "items-start",
         isTool && "pl-3",
       )}
     >
       <div
         className={cn(
-          "max-w-[85%] rounded-lg border p-3",
+          "min-w-0 max-w-full overflow-hidden rounded-lg border p-3 md:max-w-[85%]",
           isUser
             ? "border-[#5a8ae8] bg-[#6f9af9] text-white"
             : "border-border bg-muted",
@@ -267,7 +271,7 @@ function ConversationBubble({ entry }: { entry: ConversationEntry }) {
           )}
         </div>
         {expanded && (
-          <div className="mt-2 min-w-0 overflow-hidden text-sm leading-6">
+          <div className="mt-2 min-w-0 max-w-full overflow-hidden text-sm leading-6 [overflow-wrap:anywhere]">
             <MarkdownContent content={entry.content} dark={isUser} />
           </div>
         )}
@@ -278,14 +282,14 @@ function ConversationBubble({ entry }: { entry: ConversationEntry }) {
 
 function MarkdownContent({ content, dark }: { content: string; dark?: boolean }) {
   return (
-    <div className="min-w-0 overflow-auto">
+    <div className="min-w-0 max-w-full overflow-x-auto [overflow-wrap:anywhere]">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           h1: ({ children }) => <h1 className="mb-3 mt-2 text-xl font-semibold leading-7">{children}</h1>,
           h2: ({ children }) => <h2 className="mb-2 mt-4 text-lg font-semibold leading-7">{children}</h2>,
           h3: ({ children }) => <h3 className="mb-2 mt-3 text-base font-semibold leading-6">{children}</h3>,
-          p: ({ children }) => <p className="my-2 leading-6">{children}</p>,
+          p: ({ children }) => <p className="my-2 max-w-full leading-6 [overflow-wrap:anywhere]">{children}</p>,
           ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
           ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
           li: ({ children }) => <li className="pl-1">{children}</li>,
@@ -319,7 +323,7 @@ function MarkdownContent({ content, dark }: { content: string; dark?: boolean })
             </pre>
           ),
           table: ({ children }) => (
-            <div className="my-3 max-w-full overflow-x-auto rounded-md border bg-background">
+            <div className="my-3 min-w-0 max-w-full overflow-x-auto rounded-md border bg-background">
               <table className="w-full min-w-max border-collapse text-left text-xs">{children}</table>
             </div>
           ),
@@ -340,13 +344,13 @@ function MarkdownContent({ content, dark }: { content: string; dark?: boolean })
 
 function RawPayloads({ records }: { records: RequestLogRecord[] }) {
   return (
-    <div className="grid gap-3">
+    <div className="grid min-w-0 max-w-full gap-3">
       {records.map((record) => {
         const requestText = record.request_body?.text ?? "";
         const upstreamText = record.upstream_request_body?.text ?? "";
         const responseText = responseBodyToText(record.response_body);
         return (
-          <div key={record.request_id} className="grid gap-3 rounded-md border p-3">
+          <div key={record.request_id} className="grid min-w-0 max-w-full gap-3 overflow-hidden rounded-md border p-3">
             <div className="text-xs font-mono text-muted-foreground">{record.request_id}</div>
             {requestText && <RawBlock title="Client request" text={requestText} />}
             {upstreamText && <RawBlock title="Upstream request" text={upstreamText} />}
@@ -360,12 +364,14 @@ function RawPayloads({ records }: { records: RequestLogRecord[] }) {
 
 function RawBlock({ title, text }: { title: string; text: string }) {
   return (
-    <div className="grid gap-2">
+    <div className="grid min-w-0 max-w-full gap-2">
       <div className="flex items-center justify-between gap-2">
         <h4 className="text-sm font-semibold">{title}</h4>
         <span className="text-xs text-muted-foreground">{formatBytes(new Blob([text]).size)}</span>
       </div>
-      <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs leading-5">{text}</pre>
+      <pre className="max-h-64 min-w-0 max-w-full overflow-auto rounded-md bg-muted p-3 text-xs leading-5">
+        {text}
+      </pre>
     </div>
   );
 }

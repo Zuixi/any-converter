@@ -285,14 +285,10 @@ fn extract_client_id(headers: &HeaderMap) -> Option<String> {
 
 /// Extract a session identifier from request headers.
 ///
-/// Looks for common session/conversation/correlation id headers.
+/// Request and correlation ids are intentionally excluded because they usually
+/// change per request and cannot identify a conversation.
 fn extract_session_id(headers: &HeaderMap) -> Option<String> {
-    const SESSION_HEADERS: &[&str] = &[
-        "x-session-id",
-        "x-conversation-id",
-        "x-correlation-id",
-        "x-request-id",
-    ];
+    const SESSION_HEADERS: &[&str] = &["x-session-id", "x-conversation-id"];
     for name in SESSION_HEADERS {
         if let Some(value) = headers.get(*name).and_then(|v| v.to_str().ok()) {
             return Some(value.to_string());
@@ -825,6 +821,7 @@ mod tests {
     use crate::config::{
         LoggingConfig, PassThroughHeadersConfig, ProviderConfig, RouteConfig, ServerSettings,
     };
+    use axum::http::HeaderValue;
     use std::collections::HashMap;
 
     fn sample_state() -> AppState {
@@ -887,6 +884,18 @@ mod tests {
             path_streaming: false,
         };
         assert!(!is_streaming_request(body, route));
+    }
+
+    #[test]
+    fn request_and_correlation_ids_are_not_session_ids() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", HeaderValue::from_static("request-1"));
+        headers.insert(
+            "x-correlation-id",
+            HeaderValue::from_static("correlation-1"),
+        );
+
+        assert_eq!(extract_session_id(&headers), None);
     }
 
     #[tokio::test]
