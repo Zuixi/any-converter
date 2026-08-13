@@ -8,6 +8,9 @@
 
 - `om-any-converter-tunnel.sh`:
   helper for starting the service and wiring SSH port forwarding for remote testing
+- `pr-create.sh`:
+  open a GitHub PR from a feature branch; never force-pushes `main`; pairs with
+  `.githooks/commit-msg` which strips `Co-authored-by: Cursor <cursoragent@cursor.com>`
 
 ## Boundary Rules
 

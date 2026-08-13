@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Strip Cursor agent Co-authored-by trailers that the IDE injects into commits.
+# Prevents accidental attribution noise on main/PRs.
+set -euo pipefail
+
+msg_file=$1
+
+python3 - "$msg_file" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+# Drop any Cursor agent co-author trailer (exact + loose email match).
+cleaned = re.sub(
+    r"(?m)^Co-authored-by:\s*Cursor\s*<cursoragent@cursor\.com>\s*\n?",
+    "",
+    text,
+)
+cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).rstrip() + "\n"
+path.write_text(cleaned, encoding="utf-8")
+PY
