@@ -12,6 +12,10 @@ config.toml
 
 .claude/**
 .cursor/**
+# Track shared safety hooks (block agent rm -rf / git clean -fdx, etc.)
+!.cursor/hooks.json
+!.cursor/hooks/
+!.cursor/hooks/**
 .vscode/**
 
 # Node.js

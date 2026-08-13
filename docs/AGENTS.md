@@ -12,6 +12,7 @@
 | System data flow, runtime topology, storage, and interfaces | [`architecture.md`](./architecture.md) |
 | Living gotchas and project context for agents | [`memory/AGENTS.md`](./memory/AGENTS.md) |
 | Product or implementation design notes | `design/*.md` |
+| Superpowers specs or bite-sized implementation plans | [`superpowers/AGENTS.md`](./superpowers/AGENTS.md) |
 | Reference conventions such as ASCII diagrams or API notes | `references/*.md` |
 | Root entrypoint or workspace routing docs | [`../AGENTS.md`](../AGENTS.md) |
 
@@ -27,6 +28,8 @@
   persistent agent context and pitfalls
 - `design/*`:
   design proposals and planning artifacts
+- `superpowers/specs/*` + `superpowers/plans/*`:
+  Superpowers workflow design specs and executable implementation plans
 - `references/*`:
   reusable conventions and reference material
 
