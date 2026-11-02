@@ -1,7 +1,73 @@
 use std::collections::HashMap;
+use std::path::Path;
+#[cfg(unix)]
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+};
 
 use any_converter_core::convert::Format;
 use serde::{Deserialize, Serialize};
+
+/// Warn (once per path) when a config that carries API keys is readable by
+/// group or others: `api_key` is plaintext in TOML, and 0644 hands it to
+/// every local user. Secrets in `secrets.json` are already 0600.
+#[cfg(unix)]
+pub fn warn_if_world_readable(path: &Path) {
+    let Some(message) = world_readable_warning(path) else {
+        return;
+    };
+
+    static WARNED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let warned = WARNED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut warned = warned.lock().unwrap_or_else(|error| error.into_inner());
+    if !warned.insert(path.to_path_buf()) {
+        return;
+    }
+    drop(warned);
+
+    log::warn!("{message}");
+}
+
+/// No-op on platforms where POSIX permission bits do not apply (Windows ACL
+/// hardening is out of scope here).
+#[cfg(not(unix))]
+pub fn warn_if_world_readable(_path: &Path) {}
+
+/// Build the warning for `path` when it is group/world readable and carries a
+/// plaintext provider key; `None` means there is nothing to warn about.
+#[cfg(unix)]
+fn world_readable_warning(path: &Path) -> Option<String> {
+    if !is_world_readable(path) {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    let config = ServerConfig::from_toml(&content).ok()?;
+    if !config.providers.iter().any(|p| !p.api_key.is_empty()) {
+        return None;
+    }
+    let mode = config_mode(path)?;
+    Some(format!(
+        "config {} is readable by group/others (mode 0{mode:03o}), so plaintext provider api_key values can be read by other local users; run `chmod 600 {}` to fix it, and consider moving credentials to `any-converter accounts add` OAuth credentials",
+        path.display(),
+        path.display(),
+    ))
+}
+
+/// Whether group/other permission bits are set on `path`.
+#[cfg(unix)]
+fn is_world_readable(path: &Path) -> bool {
+    config_mode(path).is_some_and(|mode| mode & 0o077 != 0)
+}
+
+#[cfg(unix)]
+fn config_mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| meta.permissions().mode() & 0o777)
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -1130,5 +1196,67 @@ level = "error"
         assert_eq!(config.logging.console.format, "pretty");
         assert_eq!(config.logging.files[0].format, "json");
         assert_eq!(config.logging.files[0].rotation, "daily");
+    }
+
+    #[cfg(unix)]
+    const CONFIG_WITH_KEY: &str = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[[providers]]
+name = "openai"
+format = "openai_chat"
+base_url = "https://example.com"
+api_key = "sk-plaintext"
+"#;
+
+    #[cfg(unix)]
+    fn write_config(dir: &tempfile::TempDir, mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, CONFIG_WITH_KEY).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn world_readable_config_with_api_key_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(&dir, 0o644);
+
+        assert!(is_world_readable(&path));
+        let message = world_readable_warning(&path).expect("0644 config with api_key must warn");
+        assert!(message.contains("0644"), "message: {message}");
+        assert!(message.contains("chmod 600"), "message: {message}");
+        assert!(message.contains("OAuth"), "message: {message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_config_does_not_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(&dir, 0o600);
+
+        assert!(!is_world_readable(&path));
+        assert!(world_readable_warning(&path).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warn_does_not_change_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(&dir, 0o644);
+
+        warn_if_world_readable(&path);
+        warn_if_world_readable(&path);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "warning must not rewrite permissions");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG_WITH_KEY);
     }
 }

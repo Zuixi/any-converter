@@ -12,6 +12,13 @@
 //!   concurrent waiters reuse the winner's result instead of refreshing again.
 //! - 401 classification: only specific markers mean "revoked"; a plain
 //!   "expired" must not revoke the credential.
+//!
+//! NOTE: [`TokenManager`] is intentionally not wired into `AccountResolver`
+//! (`credentials/account.rs`) yet: the resolver implements its own per-account
+//! single-flight refresh lock, which is the runtime counterpart of this
+//! manager's shared lock. `TokenManager` is kept as reusable pure logic (and
+//! as public library API) until the multi-provider refresh paths converge on
+//! it.
 
 use std::collections::HashMap;
 
@@ -62,18 +69,6 @@ pub struct OAuthTokens {
     /// `None` means the token never expires (or expiry unknown → treated as
     /// valid).
     pub expires_at: Option<Instant>,
-}
-
-/// Outcome of a [`TokenManager::current`] call regarding refresh behavior.
-///
-/// Kept as an explicit enum for T4/T5 callers that need to know whether to
-/// persist new tokens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RefreshOutcome {
-    /// A refresh happened; returned tokens are new and should be persisted.
-    Refreshed,
-    /// Cached tokens were still valid; returned tokens are unchanged.
-    Unchanged,
 }
 
 /// 401 semantics classification (magpie `signin_revoked.go` /

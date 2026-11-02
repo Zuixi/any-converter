@@ -15,9 +15,6 @@ use crate::config::{AuthScheme, ProviderConfig};
 pub enum Credential {
     /// A literal API key from config.
     ApiKey { key: String },
-    /// A reference to a keychain-stored secret (`keychain:<service>:<account>`).
-    #[serde(rename = "keychain_ref")]
-    KeychainRef { reference: String },
     /// An OAuth sign-in result (e.g. Gemini browser flow, Copilot device
     /// flow) persisted by `any-converter accounts add`.
     #[serde(rename = "oauth")]
@@ -101,7 +98,7 @@ pub use copilot::{
 };
 pub use gemini::{GeminiAccount, GeminiEndpoints, GeminiSignIn, SignInError, SignInStarted};
 pub use store::{FileSecretStore, SecretStore, SecretStoreError};
-pub use token::{AuthErr401, OAuthTokens, RefreshOutcome, TokenManager};
+pub use token::{AuthErr401, OAuthTokens, TokenManager};
 
 #[cfg(test)]
 mod tests {

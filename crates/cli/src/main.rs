@@ -10,7 +10,7 @@ use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
     LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
-    secrets_path,
+    secrets_path, warn_if_world_readable,
 };
 use any_converter_server::credentials::{
     CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, GeminiAccount, GeminiEndpoints,
@@ -181,8 +181,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             api_key,
         } => {
             let server_config = if let Some(path) = config {
-                let content = std::fs::read_to_string(path)?;
-                ServerConfig::from_toml(&content)?
+                let content = std::fs::read_to_string(&path)?;
+                let config = ServerConfig::from_toml(&content)?;
+                warn_if_world_readable(&path);
+                config
             } else {
                 let fmt = format.ok_or("--format is required when not using --config")?;
                 let base = base_url.ok_or("--base-url is required when not using --config")?;
@@ -343,7 +345,6 @@ fn accounts_list() -> Result<(), Box<dyn std::error::Error>> {
 fn kind_label(cred: &Credential) -> &'static str {
     match cred {
         Credential::ApiKey { .. } => "api_key",
-        Credential::KeychainRef { .. } => "keychain_ref",
         Credential::OAuth { .. } => "oauth",
     }
 }
