@@ -130,6 +130,19 @@ enum AccountsCommand {
         /// Account id to remove (see `accounts list`)
         account_id: String,
     },
+    /// Validate and preview an account order for a provider (P9)
+    Order {
+        /// Provider name, or an account prefix like `gemini`
+        provider: String,
+        /// Account ids in the desired order; they move to the front, in
+        /// this order (magpie "Make first"). Does not write config.toml.
+        account_ids: Vec<String>,
+        /// Path to config.toml (defaults to ./config.toml)
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Query a running server for every account's quota windows
+    Quotas,
 }
 
 #[derive(Subcommand)]
@@ -230,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         base_url: base,
                         api_key: key,
                         account: None,
+                        accounts: Vec::new(),
                         api: None,
                         wire: None,
                         model_map: HashMap::new(),
@@ -293,6 +307,12 @@ async fn accounts(command: AccountsCommand) -> Result<(), Box<dyn std::error::Er
         } => accounts_add(&provider, plugin.as_deref(), provider_id.as_deref(), method).await,
         AccountsCommand::List => accounts_list(),
         AccountsCommand::Remove { account_id } => accounts_remove(&account_id),
+        AccountsCommand::Order {
+            provider,
+            account_ids,
+            config,
+        } => accounts_order(config.as_deref(), &provider, &account_ids),
+        AccountsCommand::Quotas => accounts_quotas().await,
     }
 }
 
@@ -802,6 +822,158 @@ fn accounts_remove(account_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     store.delete(account_id)?;
     println!("Removed {account_id}");
     Ok(())
+}
+
+/// `accounts order`: validate that the given account ids all belong to the
+/// provider and preview the order they produce (magpie "Make first": the
+/// named ids move to the front in the given order, the rest keep theirs).
+///
+/// This command is read-only on purpose: config.toml is the user's file,
+/// and writing it back belongs to the P10 config editor.
+#[allow(clippy::print_stdout)]
+fn accounts_order(
+    config_path: Option<&Path>,
+    provider: &str,
+    given: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = config_path.unwrap_or(Path::new("config.toml"));
+    let content = std::fs::read_to_string(path).map_err(|err| {
+        format!(
+            "cannot read {}: {err} (pass --config to name your config)",
+            path.display()
+        )
+    })?;
+    let config = ServerConfig::from_toml(&content)?;
+
+    // `provider` is a provider name or an account prefix (`gemini`).
+    let matches: Vec<&ProviderConfig> = config
+        .providers
+        .iter()
+        .filter(|p| {
+            p.name == provider
+                || p.account_ids()
+                    .iter()
+                    .any(|id| id.split(':').next() == Some(provider))
+        })
+        .collect();
+    let matched = match matches.len() {
+        0 => {
+            return Err(format!(
+                "no provider named `{provider}` or serving accounts with the `{provider}:` prefix"
+            )
+            .into());
+        }
+        1 => matches[0],
+        _ => {
+            return Err(format!(
+                "`{provider}` matches {} providers; name one: {}",
+                matches.len(),
+                matches
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .into());
+        }
+    };
+
+    let available = matched.account_ids();
+    if available.is_empty() {
+        return Err(format!("provider `{}` has no accounts in its config", matched.name).into());
+    }
+    if given.is_empty() {
+        return Err("no account ids given".into());
+    }
+
+    // Every given id must belong to the provider; repeats are invalid.
+    let mut seen: Vec<&str> = Vec::new();
+    for id in given {
+        if !available.contains(&id.as_str()) {
+            return Err(format!(
+                "account `{id}` is not in provider `{}`'s accounts: {}",
+                matched.name,
+                available.join(", ")
+            )
+            .into());
+        }
+        if seen.contains(&id.as_str()) {
+            return Err(format!("account `{id}` given more than once").into());
+        }
+        seen.push(id.as_str());
+    }
+
+    // The order the ids would produce: the named ones first (Make first),
+    // the rest after them in their current order.
+    let mut order: Vec<&str> = seen.clone();
+    for id in &available {
+        if !order.contains(id) {
+            order.push(id);
+        }
+    }
+
+    println!(
+        "provider `{}` accounts, current order ({}):",
+        matched.name,
+        available.len()
+    );
+    for (i, id) in available.iter().enumerate() {
+        println!("  {}. {id}", i + 1);
+    }
+    println!();
+    println!(
+        "validated; with `{}` made first the order becomes:",
+        given[0]
+    );
+    for (i, id) in order.iter().enumerate() {
+        println!("  {}. {id}", i + 1);
+    }
+    println!();
+    println!(
+        "This command validates the order only — it does not write {}.",
+        path.display()
+    );
+    println!("Writing config.toml back is reserved for the P10 config editor; to apply");
+    println!("the order now, set the provider's `accounts` list to:");
+    println!(
+        "  accounts = [{}]",
+        order
+            .iter()
+            .map(|id| format!("\"{id}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(())
+}
+
+/// `accounts quotas`: ask a running server for `GET /v1/accounts/quotas`
+/// and print the reply, pretty-printed. A hand-rolled HTTP/1.1 GET keeps
+/// the CLI free of an HTTP dependency (the workspace adds none for P9).
+#[allow(clippy::print_stdout)]
+async fn accounts_quotas() -> Result<(), Box<dyn std::error::Error>> {
+    let addr = std::env::var("ANY_CONVERTER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let mut stream = tokio::net::TcpStream::connect(&addr)
+        .await
+        .map_err(|err| format!("cannot reach the server at {addr}: {err} (is it running?)"))?;
+    let request = format!(
+        "GET /v1/accounts/quotas HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
+    );
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    stream.write_all(request.as_bytes()).await?;
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply).await?;
+    let text = String::from_utf8_lossy(&reply);
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.trim())
+        .unwrap_or_default();
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(quotas) => {
+            println!("{}", serde_json::to_string_pretty(&quotas)?);
+            Ok(())
+        }
+        Err(_) => Err(format!("the server at {addr} answered: {body}").into()),
+    }
 }
 
 fn open_secret_store() -> Result<FileSecretStore, Box<dyn std::error::Error>> {

@@ -198,6 +198,7 @@ fn code_assist_provider(
         base_url: base.into(),
         api_key: String::new(),
         account: account.map(String::from),
+        accounts: Vec::new(),
         api: None,
         wire: None,
         model_map: Default::default(),
@@ -597,16 +598,17 @@ async fn revoked_401_marks_account_and_fails_over() {
     assert!(revoked.contains("gemini:me@example.com"), "{revoked}");
     assert!(revoked.contains("token_revoked"), "{revoked}");
 
-    // A second request never touches the revoked upstream again and gets
-    // the revoked guidance instead.
+    // A second request never touches the revoked upstream again: the
+    // revoked account is skipped (P9 multi-account semantics) and the
+    // healthy provider serves instead of the old revoked guidance.
     let (status, body) = chat_via(&app, chat_body(false)).await;
     assert_eq!(
         revoked_upstream.generate_calls(),
         1,
         "revoked upstream must not be called again"
     );
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(body.contains("revoked"), "{body}");
+    assert_eq!(status, StatusCode::OK, "response body: {body}");
+    assert_eq!(healthy_upstream.generate_calls(), 2);
 }
 
 #[tokio::test]

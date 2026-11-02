@@ -237,6 +237,7 @@ fn gateway(format: Format, base_url: String) -> Router {
             base_url,
             api_key: "contract-fixture-key".into(),
             account: None,
+            accounts: Vec::new(),
             api: None,
             wire: None,
             // empty model_map = passthrough of the client's model name

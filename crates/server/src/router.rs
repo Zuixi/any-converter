@@ -13,8 +13,8 @@ use crate::config::ServerConfig;
 use crate::credentials::AccountResolver;
 use crate::credentials::copilot::CopilotSessions;
 use crate::handlers::{
-    AppState, handle_claude, handle_count_tokens, handle_gemini, handle_health,
-    handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
+    AppState, handle_account_quotas, handle_claude, handle_count_tokens, handle_gemini,
+    handle_health, handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
 };
 use crate::plugins::{ManagedHosts, PluginAuthStore};
 
@@ -139,6 +139,7 @@ pub fn create_router_with_state(state: Arc<AppState>) -> Router {
         .route("/models", get(handle_models))
         .route("/v1/models/{model_id}", get(handle_model_retrieve))
         .route("/models/{model_id}", get(handle_model_retrieve))
+        .route("/v1/accounts/quotas", get(handle_account_quotas))
         // With /v1/ prefix (standard)
         .route("/v1/chat/completions", post(handle_openai_chat))
         .route("/v1/messages", post(handle_claude))
@@ -189,6 +190,7 @@ mod tests {
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-test".into(),
                 account: None,
+                accounts: Vec::new(),
                 api: None,
                 wire: None,
                 model_map: [("claude-sonnet-4".into(), "gpt-4.1".into())].into(),
