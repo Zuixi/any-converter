@@ -54,6 +54,7 @@ impl StreamAdapter for GeminiStreamAdapter {
                     events.push(CanonicalStreamEvent::ToolCallStart {
                         index,
                         id,
+                        signature: None,
                         name: fc.name.clone(),
                     });
                     if !fc.args.is_null() && fc.args != serde_json::json!({}) {
@@ -85,6 +86,8 @@ impl StreamAdapter for GeminiStreamAdapter {
         state: &mut StreamState,
     ) -> Result<Vec<String>, ConvertError> {
         match event {
+            CanonicalStreamEvent::ThinkingSignature { .. }
+            | CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
             CanonicalStreamEvent::Start { id, model } => {
                 state.response_id = Some(id.clone());
                 state.model = Some(model.clone());
@@ -95,7 +98,9 @@ impl StreamAdapter for GeminiStreamAdapter {
                     make_stream_response(state, vec![GeminiPart::text(text.clone())], None, None)?;
                 Ok(vec![format_sse_data(&chunk)])
             }
-            CanonicalStreamEvent::ToolCallStart { index, id, name } => {
+            CanonicalStreamEvent::ToolCallStart {
+                index, id, name, ..
+            } => {
                 state.accumulated_tool_calls.push(AccumulatedToolCall {
                     index: *index,
                     id: id.clone(),

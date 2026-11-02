@@ -80,7 +80,10 @@ fn read_system(content: GeminiContent) -> Vec<IrPart> {
     if text.is_empty() {
         Vec::new()
     } else {
-        vec![IrPart::Text(text)]
+        vec![IrPart::Text {
+            text: text,
+            signature: None,
+        }]
     }
 }
 
@@ -143,14 +146,20 @@ fn read_message(content: GeminiContent) -> Option<IrMessage> {
                 results.push(IrPart::ToolResult {
                     call_id: fr.id.unwrap_or_else(new_uuid),
                     is_error: fr.response.get("error").is_some_and(|e| !e.is_null()),
-                    content: vec![IrPart::Text(extract_function_response_text(&fr.response))],
+                    content: vec![IrPart::Text {
+                        text: extract_function_response_text(&fr.response),
+                        signature: None,
+                    }],
                 });
             }
             continue;
         }
         if let Some(text) = text {
             if !text.is_empty() {
-                parts.push(IrPart::Text(text));
+                parts.push(IrPart::Text {
+                    text: text,
+                    signature: None,
+                });
             }
         }
         if role == Role::Assistant {
@@ -158,6 +167,7 @@ fn read_message(content: GeminiContent) -> Option<IrMessage> {
                 parts.push(IrPart::ToolCall {
                     id: fc.id.unwrap_or_else(new_uuid),
                     name: fc.name,
+                    signature: None,
                     args: fc.args,
                 });
             }
@@ -207,13 +217,17 @@ pub fn read_response(resp: GeminiResponse) -> IrResponse {
             } = part;
             if let Some(text) = text {
                 if !text.is_empty() {
-                    parts.push(IrPart::Text(text));
+                    parts.push(IrPart::Text {
+                        text: text,
+                        signature: None,
+                    });
                 }
             }
             if let Some(fc) = function_call {
                 parts.push(IrPart::ToolCall {
                     id: fc.id.unwrap_or_else(new_uuid),
                     name: fc.name,
+                    signature: None,
                     args: fc.args,
                 });
             }
@@ -268,7 +282,7 @@ mod tests {
             .filter(|m| m.role == Role::User)
             .flat_map(|m| &m.parts)
             .find_map(|p| match p {
-                IrPart::Text(t) => Some(t.as_str()),
+                IrPart::Text { text: t, .. } => Some(t.as_str()),
                 _ => None,
             })
     }
@@ -328,7 +342,10 @@ mod tests {
         assert_eq!(ir1, ir2);
         assert_eq!(
             ir1.parts,
-            vec![IrPart::Text("I'm doing well, thank you for asking!".into())]
+            vec![IrPart::Text {
+                text: "I'm doing well, thank you for asking!".into(),
+                signature: None
+            }]
         );
         assert_eq!(ir1.stop_reason, StopReason::EndTurn);
         assert_eq!(ir1.usage.input_tokens, 10);
@@ -342,7 +359,7 @@ mod tests {
         let ir2 = read_response(build_response(ir1.clone()));
         assert_eq!(ir1, ir2);
         match &ir1.parts[0] {
-            IrPart::ToolCall { id, name, args } => {
+            IrPart::ToolCall { id, name, args, .. } => {
                 assert!(!id.is_empty());
                 assert_eq!(name, "get_weather");
                 assert_eq!(args["location"], "Tokyo");
@@ -371,7 +388,13 @@ mod tests {
         let ir = read(req);
 
         assert_eq!(ir.model, "gemini-2.5-pro");
-        assert_eq!(ir.system, vec![IrPart::Text("be brief".into())]);
+        assert_eq!(
+            ir.system,
+            vec![IrPart::Text {
+                text: "be brief".into(),
+                signature: None
+            }]
+        );
         assert_eq!(ir.sampling.top_k, Some(3));
         assert_eq!(ir.sampling.stop, vec!["END".to_string()]);
         assert_eq!(
@@ -384,6 +407,7 @@ mod tests {
                 id: "call_1".into(),
                 name: "get_weather".into(),
                 args: serde_json::json!({"city": "Tokyo"}),
+                signature: None,
             }
         );
         assert_eq!(
@@ -391,7 +415,10 @@ mod tests {
             IrPart::ToolResult {
                 call_id: "call_1".into(),
                 is_error: false,
-                content: vec![IrPart::Text("\"sunny\"".into())],
+                content: vec![IrPart::Text {
+                    text: "\"sunny\"".into(),
+                    signature: None
+                }],
             }
         );
         assert_eq!(

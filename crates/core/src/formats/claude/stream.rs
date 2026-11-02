@@ -37,11 +37,13 @@ impl StreamAdapter for ClaudeStreamAdapter {
         state: &mut StreamState,
     ) -> Result<Vec<String>, ConvertError> {
         match event {
+            CanonicalStreamEvent::ThinkingSignature { .. }
+            | CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
             CanonicalStreamEvent::Start { id, model } => emit_message_start(id, model, state),
             CanonicalStreamEvent::TextDelta(text) => emit_text_delta(text, state),
-            CanonicalStreamEvent::ToolCallStart { index, id, name } => {
-                emit_tool_call_start(*index, id, name, state)
-            }
+            CanonicalStreamEvent::ToolCallStart {
+                index, id, name, ..
+            } => emit_tool_call_start(*index, id, name, state),
             CanonicalStreamEvent::ToolCallDelta {
                 index: _,
                 arguments_delta,
@@ -102,6 +104,7 @@ fn parse_content_block_start(
                 index,
                 id,
                 name,
+                signature: None,
             }])
         }
         ClaudeStreamContentBlock::Thinking { .. } => Ok(vec![]),

@@ -132,6 +132,7 @@ fn parse_sse_event_impl(
                     index,
                     id,
                     name,
+                    signature: None,
                 }])
             } else {
                 Ok(vec![])
@@ -173,6 +174,8 @@ fn emit_sse_event_impl(
     state: &mut StreamState,
 ) -> Result<Vec<String>, ConvertError> {
     match event {
+        CanonicalStreamEvent::ThinkingSignature { .. }
+        | CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
         CanonicalStreamEvent::Start { id, model } => {
             let normalized_id = crate::converters::shared::normalize_id_to_resp(id);
             state.response_id = Some(normalized_id.clone());
@@ -261,7 +264,9 @@ fn emit_sse_event_impl(
 
             Ok(events)
         }
-        CanonicalStreamEvent::ToolCallStart { index, id, name } => {
+        CanonicalStreamEvent::ToolCallStart {
+            index, id, name, ..
+        } => {
             let item_id = format!("fc_{id}");
             let text_offset: u32 = if state.accumulated_text.is_empty() {
                 0
@@ -669,6 +674,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","status":"complet
                 index: 0,
                 id: "call_123".into(),
                 name: "shell".into(),
+                signature: None,
             },
             &mut state,
         )
@@ -900,6 +906,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","status":"complet
                 index: 1,
                 id: "call_abc".into(),
                 name: "shell".into(),
+                signature: None,
             },
             &mut state,
         )
@@ -1013,6 +1020,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","status":"complet
                 index: 0,
                 id: "call_idx".into(),
                 name: "shell".into(),
+                signature: None,
             },
             &mut state,
         )
@@ -1097,6 +1105,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","status":"complet
                 index: 0,
                 id: "call_only".into(),
                 name: "shell".into(),
+                signature: None,
             },
             &mut state,
         )

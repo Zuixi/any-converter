@@ -168,8 +168,8 @@ fn merge_same_role(messages: Vec<IrMessage>) -> Vec<IrMessage> {
 /// builder did; `empty` is what no blocks at all become.
 fn text_or_blocks(mut parts: Vec<IrPart>, empty: Value) -> Value {
     if parts.len() == 1 {
-        if let IrPart::Text(_) = parts[0] {
-            if let IrPart::Text(text) = parts.remove(0) {
+        if let IrPart::Text { text: _, .. } = parts[0] {
+            if let IrPart::Text { text: text, .. } = parts.remove(0) {
                 return Value::String(text);
             }
         }
@@ -182,7 +182,7 @@ fn text_or_blocks(mut parts: Vec<IrPart>, empty: Value) -> Value {
 
 fn build_part(part: IrPart) -> Option<Value> {
     Some(match part {
-        IrPart::Text(text) => text_block(text),
+        IrPart::Text { text: text, .. } => text_block(text),
         IrPart::Image {
             url,
             media_type,
@@ -199,7 +199,7 @@ fn build_part(part: IrPart) -> Option<Value> {
             };
             serde_json::json!({ "type": "image", "source": source })
         }
-        IrPart::ToolCall { id, name, args } => serde_json::json!({
+        IrPart::ToolCall { id, name, args, .. } => serde_json::json!({
             "type": "tool_use",
             "id": id,
             "name": name,
@@ -236,7 +236,7 @@ fn build_part(part: IrPart) -> Option<Value> {
 fn build_system(parts: Vec<IrPart>) -> Option<Value> {
     let mut texts: Vec<String> = Vec::new();
     for part in parts {
-        if let IrPart::Text(text) = part {
+        if let IrPart::Text { text: text, .. } = part {
             texts.push(text);
         }
     }
@@ -261,14 +261,17 @@ fn build_tool_choice(choice: Option<IrToolChoice>) -> Option<Value> {
 fn build_response_block(part: IrPart) -> Option<ClaudeContentBlock> {
     Some(match part {
         // Every pairwise response builder dropped empty text/thinking.
-        IrPart::Text(text) if !text.is_empty() => ClaudeContentBlock::Text { text },
+        IrPart::Text {
+            text: text,
+            signature: None,
+        } if !text.is_empty() => ClaudeContentBlock::Text { text },
         IrPart::Thinking { text, signature } if !text.is_empty() => ClaudeContentBlock::Thinking {
             thinking: text,
             signature: signature
                 .filter(|s| s.by == Format::Claude)
                 .map(|s| s.value),
         },
-        IrPart::ToolCall { id, name, args } => ClaudeContentBlock::ToolUse {
+        IrPart::ToolCall { id, name, args, .. } => ClaudeContentBlock::ToolUse {
             id,
             name,
             input: args,
@@ -297,15 +300,34 @@ mod merge_tests {
         // Anthropic rejects non-alternating roles; a chat client may send
         // [user, user] or split parallel tool calls over two assistants
         let merged = merge_same_role(vec![
-            msg(Role::User, vec![IrPart::Text("a".into())]),
-            msg(Role::User, vec![IrPart::Text("b".into())]),
-            msg(Role::Assistant, vec![IrPart::Text("r".into())]),
+            msg(
+                Role::User,
+                vec![IrPart::Text {
+                    text: "a".into(),
+                    signature: None,
+                }],
+            ),
+            msg(
+                Role::User,
+                vec![IrPart::Text {
+                    text: "b".into(),
+                    signature: None,
+                }],
+            ),
+            msg(
+                Role::Assistant,
+                vec![IrPart::Text {
+                    text: "r".into(),
+                    signature: None,
+                }],
+            ),
             msg(
                 Role::Assistant,
                 vec![IrPart::ToolCall {
                     id: "t1".into(),
                     name: "get_weather".into(),
                     args: serde_json::json!({}),
+                    signature: None,
                 }],
             ),
         ]);
@@ -319,9 +341,27 @@ mod merge_tests {
     #[test]
     fn alternating_messages_are_untouched() {
         let ms = vec![
-            msg(Role::User, vec![IrPart::Text("hi".into())]),
-            msg(Role::Assistant, vec![IrPart::Text("hello".into())]),
-            msg(Role::User, vec![IrPart::Text("again".into())]),
+            msg(
+                Role::User,
+                vec![IrPart::Text {
+                    text: "hi".into(),
+                    signature: None,
+                }],
+            ),
+            msg(
+                Role::Assistant,
+                vec![IrPart::Text {
+                    text: "hello".into(),
+                    signature: None,
+                }],
+            ),
+            msg(
+                Role::User,
+                vec![IrPart::Text {
+                    text: "again".into(),
+                    signature: None,
+                }],
+            ),
         ];
         let merged = merge_same_role(ms.clone());
         assert_eq!(merged, ms);

@@ -103,13 +103,13 @@ pub fn build_response(ir: IrResponse) -> OpenAIResponsesResponse {
     let mut text_content = Vec::new();
     for part in parts {
         match part {
-            IrPart::Text(text) => {
+            IrPart::Text { text: text, .. } => {
                 text_content.push(serde_json::json!({
                     "type": ITEM_TYPE_OUTPUT_TEXT,
                     "text": text,
                 }));
             }
-            IrPart::ToolCall { id, name, args } => {
+            IrPart::ToolCall { id, name, args, .. } => {
                 flush_text(&mut output, &mut text_content);
                 output.push(serde_json::json!({
                     "type": ITEM_TYPE_FUNCTION_CALL,
@@ -157,7 +157,7 @@ fn system_to_instructions(system: Vec<IrPart>) -> Option<String> {
     let texts: Vec<String> = system
         .into_iter()
         .filter_map(|part| match part {
-            IrPart::Text(text) => Some(text),
+            IrPart::Text { text: text, .. } => Some(text),
             _ => None,
         })
         .collect();
@@ -175,7 +175,7 @@ fn messages_to_input(messages: Vec<IrMessage>) -> Option<Value> {
         let mut content = Vec::new();
         for part in message.parts {
             match part {
-                IrPart::Text(text) => content.push(serde_json::json!({
+                IrPart::Text { text: text, .. } => content.push(serde_json::json!({
                     "type": text_part_type(role),
                     "text": text,
                 })),
@@ -191,7 +191,7 @@ fn messages_to_input(messages: Vec<IrMessage>) -> Option<Value> {
                     }
                     content.push(part);
                 }
-                IrPart::ToolCall { id, name, args } => {
+                IrPart::ToolCall { id, name, args, .. } => {
                     flush_input(&mut items, role, &mut content);
                     items.push(serde_json::json!({
                         "type": ITEM_TYPE_FUNCTION_CALL,
@@ -257,7 +257,7 @@ fn parts_to_text(parts: Vec<IrPart>) -> String {
     parts
         .into_iter()
         .filter_map(|part| match part {
-            IrPart::Text(text) => Some(text),
+            IrPart::Text { text: text, .. } => Some(text),
             _ => None,
         })
         .collect()

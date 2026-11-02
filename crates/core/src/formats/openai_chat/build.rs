@@ -30,7 +30,7 @@ pub fn build(ir: IrRequest) -> OpenAIChatRequest {
     // one `system` message per part: chat carries several system turns, and
     // re-reading them has to give the same parts back
     for part in system {
-        if let IrPart::Text(text) = part {
+        if let IrPart::Text { text: text, .. } = part {
             out.push(message("system", Some(MessageContent::Text(text))));
         }
     }
@@ -131,8 +131,8 @@ fn assistant_message(parts: Vec<IrPart>) -> OpenAIChatMessage {
 
     for part in parts {
         match part {
-            IrPart::Text(_) | IrPart::Image { .. } => content.push(part),
-            IrPart::ToolCall { id, name, args } => tool_calls.push(ToolCall {
+            IrPart::Text { .. } | IrPart::Image { .. } => content.push(part),
+            IrPart::ToolCall { id, name, args, .. } => tool_calls.push(ToolCall {
                 id,
                 r#type: "function".into(),
                 function: FunctionCall {
@@ -161,7 +161,7 @@ fn message_content(parts: Vec<IrPart>) -> Option<MessageContent> {
         let mut items = Vec::with_capacity(parts.len());
         for part in parts {
             match part {
-                IrPart::Text(text) => items.push(ContentPart::Text { text }),
+                IrPart::Text { text: text, .. } => items.push(ContentPart::Text { text }),
                 IrPart::Image { .. } => items.push(ContentPart::ImageUrl {
                     image_url: image_url(part),
                 }),
@@ -201,7 +201,7 @@ fn text_of(parts: Vec<IrPart>) -> String {
     parts
         .into_iter()
         .filter_map(|p| match p {
-            IrPart::Text(text) => Some(text),
+            IrPart::Text { text: text, .. } => Some(text),
             _ => None,
         })
         .collect()
@@ -262,14 +262,14 @@ pub fn build_response(ir: IrResponse) -> OpenAIChatResponse {
 
     for part in parts {
         match part {
-            IrPart::Text(text) => {
+            IrPart::Text { text: text, .. } => {
                 if !text.is_empty() {
                     text_parts.push(text);
                 }
             }
             // the last thinking block wins, as in the pairwise builders
             IrPart::Thinking { text, .. } => reasoning_content = Some(text),
-            IrPart::ToolCall { id, name, args } => tool_calls.push(ToolCall {
+            IrPart::ToolCall { id, name, args, .. } => tool_calls.push(ToolCall {
                 id,
                 r#type: "function".into(),
                 function: FunctionCall {

@@ -77,11 +77,15 @@ pub fn read_response(resp: ClaudeResponse) -> IrResponse {
     let mut parts = Vec::with_capacity(content.len());
     for block in content {
         parts.push(match block {
-            ClaudeContentBlock::Text { text } => IrPart::Text(text),
+            ClaudeContentBlock::Text { text } => IrPart::Text {
+                text: text,
+                signature: None,
+            },
             ClaudeContentBlock::ToolUse { id, name, input } => IrPart::ToolCall {
                 id,
                 name,
                 args: input,
+                signature: None,
             },
             ClaudeContentBlock::Thinking {
                 thinking,
@@ -116,13 +120,19 @@ pub fn read_response(resp: ClaudeResponse) -> IrResponse {
 /// each target keeps its own separator (`"\n\n"`, `""`, ...).
 fn read_system(system: Option<Value>) -> Vec<IrPart> {
     match system {
-        Some(Value::String(text)) => vec![IrPart::Text(text)],
+        Some(Value::String(text)) => vec![IrPart::Text {
+            text: text,
+            signature: None,
+        }],
         Some(Value::Array(items)) => items
             .into_iter()
             .filter_map(|item| match item {
                 // An empty `text` still counts: it keeps its separator slot.
                 Value::Object(mut obj) => match obj.remove("text") {
-                    Some(Value::String(text)) => Some(IrPart::Text(text)),
+                    Some(Value::String(text)) => Some(IrPart::Text {
+                        text,
+                        signature: None,
+                    }),
                     _ => None,
                 },
                 _ => None,
@@ -147,7 +157,10 @@ fn read_message(msg: ClaudeMessage) -> Option<IrMessage> {
 
 fn read_parts(content: Value) -> Vec<IrPart> {
     match content {
-        Value::String(text) => vec![IrPart::Text(text)],
+        Value::String(text) => vec![IrPart::Text {
+            text: text,
+            signature: None,
+        }],
         Value::Array(blocks) => blocks.into_iter().filter_map(read_block).collect(),
         _ => Vec::new(),
     }
@@ -160,11 +173,15 @@ fn read_block(block: Value) -> Option<IrPart> {
     let block_type = obj.get("type").and_then(Value::as_str)?.to_string();
 
     match block_type.as_str() {
-        "text" => Some(IrPart::Text(take_string(&mut obj, "text"))),
+        "text" => Some(IrPart::Text {
+            text: take_string(&mut obj, "text"),
+            signature: None,
+        }),
         "image" => read_image(&obj),
         "tool_use" => Some(IrPart::ToolCall {
             id: take_string(&mut obj, "id"),
             name: take_string(&mut obj, "name"),
+            signature: None,
             args: obj
                 .remove("input")
                 .unwrap_or_else(|| Value::Object(Map::new())),
@@ -291,7 +308,7 @@ mod tests {
             .find(|m| m.role == Role::User)
             .and_then(|m| {
                 m.parts.iter().find_map(|p| match p {
-                    IrPart::Text(text) => Some(text.as_str()),
+                    IrPart::Text { text: text, .. } => Some(text.as_str()),
                     _ => None,
                 })
             })
@@ -317,7 +334,10 @@ mod tests {
         assert_eq!(tool_names(&ir), Vec::<&str>::new());
         assert_eq!(
             ir.system,
-            vec![IrPart::Text("You are a helpful assistant.".into())]
+            vec![IrPart::Text {
+                text: "You are a helpful assistant.".into(),
+                signature: None
+            }]
         );
     }
 
@@ -372,7 +392,10 @@ mod tests {
         assert_eq!(ir.model, "claude-sonnet-4-20250514");
         assert_eq!(
             ir.parts,
-            vec![IrPart::Text("I'm doing well, thank you for asking!".into())]
+            vec![IrPart::Text {
+                text: "I'm doing well, thank you for asking!".into(),
+                signature: None
+            }]
         );
         assert_eq!(ir.stop_reason, StopReason::EndTurn);
     }
@@ -387,6 +410,7 @@ mod tests {
                 id: "toolu_abc123".into(),
                 name: "get_weather".into(),
                 args: serde_json::json!({"location": "Tokyo"}),
+                signature: None,
             }]
         );
         assert_eq!(ir.stop_reason, StopReason::ToolUse);
