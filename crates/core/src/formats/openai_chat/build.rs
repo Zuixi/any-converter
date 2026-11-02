@@ -214,15 +214,15 @@ fn tool_wire(tool: IrTool) -> OpenAIChatTool {
             name: tool.name,
             description: (!tool.description.is_empty()).then_some(tool.description),
             parameters: Some(tool.schema),
-            strict: tool.strict.then_some(true),
+            strict: tool.strict,
         },
     }
 }
 
-fn tool_choice_value(choice: IrToolChoice) -> Option<Value> {
-    match choice {
-        // `auto` is the API default, so naming it adds nothing
-        IrToolChoice::Auto => None,
+fn tool_choice_value(choice: Option<IrToolChoice>) -> Option<Value> {
+    match choice? {
+        // an explicit `auto` stays explicit; absent stays absent
+        IrToolChoice::Auto => Some(Value::String("auto".into())),
         IrToolChoice::None => Some(Value::String("none".into())),
         IrToolChoice::Required => Some(Value::String("required".into())),
         IrToolChoice::Named(name) => Some(serde_json::json!({

@@ -59,7 +59,7 @@ pub fn read(req: GeminiRequest) -> IrRequest {
             .flat_map(|g| g.function_declarations)
             .map(read_tool)
             .collect(),
-        tool_choice: tool_config.map(read_tool_choice).unwrap_or_default(),
+        tool_choice: tool_config.map(read_tool_choice),
         sampling,
         // The wire carries no stream flag; streaming is the SSE path's job.
         stream: false,
@@ -93,7 +93,8 @@ fn read_tool(fd: GeminiFunctionDeclaration) -> IrTool {
         schema: fd
             .parameters
             .unwrap_or_else(|| serde_json::json!({"type": "object"})),
-        strict: false,
+        // Gemini has no per-tool strictness switch.
+        strict: None,
     }
 }
 
@@ -373,7 +374,10 @@ mod tests {
         assert_eq!(ir.system, vec![IrPart::Text("be brief".into())]);
         assert_eq!(ir.sampling.top_k, Some(3));
         assert_eq!(ir.sampling.stop, vec!["END".to_string()]);
-        assert_eq!(ir.tool_choice, IrToolChoice::Named("get_weather".into()));
+        assert_eq!(
+            ir.tool_choice,
+            Some(IrToolChoice::Named("get_weather".into()))
+        );
         assert_eq!(
             ir.messages[0].parts[0],
             IrPart::ToolCall {

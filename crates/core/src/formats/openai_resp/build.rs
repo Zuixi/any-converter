@@ -80,7 +80,7 @@ pub fn build(ir: IrRequest) -> OpenAIResponsesRequest {
         } else {
             Some(tools.into_iter().map(tool_to_value).collect())
         },
-        tool_choice: Some(tool_choice_to_value(tool_choice)),
+        tool_choice: tool_choice.map(tool_choice_to_value),
         text,
         reasoning: reasoning_extra.or_else(|| reasoning_to_value(&reasoning)),
         previous_response_id,
@@ -212,10 +212,9 @@ fn messages_to_input(messages: Vec<IrMessage>) -> Option<Value> {
                         "output": parts_to_text(result),
                     }));
                 }
-                IrPart::Thinking { text, .. } => {
-                    flush_input(&mut items, role, &mut content);
-                    items.push(reasoning_item(text));
-                }
+                // Reasoning history is not sent upstream as a synthesized
+                // reasoning item; the pairwise builders dropped it too.
+                IrPart::Thinking { .. } => {}
                 // Sealed reasoning belongs to whichever format sealed it.
                 IrPart::Sealed { .. } => {}
             }
@@ -269,8 +268,11 @@ fn tool_to_value(tool: IrTool) -> Value {
         "type": "function",
         "name": tool.name,
         "parameters": tool.schema,
-        "strict": tool.strict,
     });
+    // absent stays absent; the wire default is the upstream's call
+    // strict defaults to true on Responses: the old pairwise wrote it
+    // explicitly, so absent-in must come out as true, not omitted
+    value["strict"] = Value::Bool(tool.strict.unwrap_or(true));
     if !tool.description.is_empty() {
         value["description"] = Value::String(tool.description);
     }

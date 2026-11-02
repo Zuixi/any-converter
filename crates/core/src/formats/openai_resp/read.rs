@@ -438,8 +438,9 @@ fn function_tool(mut tool: Map<String, Value>) -> Option<IrTool> {
             .remove("parameters")
             .unwrap_or_else(|| serde_json::json!({"type": "object"})),
         strict: match tool.remove("strict") {
-            Some(Value::Bool(strict)) => strict,
-            _ => true,
+            Some(Value::Bool(strict)) => Some(strict),
+            // absent stays absent: Responses' own default is its dialect rule
+            _ => None,
         },
     })
 }
@@ -447,12 +448,10 @@ fn function_tool(mut tool: Map<String, Value>) -> Option<IrTool> {
 fn read_tool_choice(
     tool_choice: Option<Value>,
     ns_names: &HashMap<String, String>,
-) -> IrToolChoice {
-    let Some(tool_choice) = tool_choice else {
-        return IrToolChoice::Auto;
-    };
+) -> Option<IrToolChoice> {
+    let tool_choice = tool_choice?;
 
-    match tool_choice {
+    Some(match tool_choice {
         Value::String(choice) => match choice.as_str() {
             "none" => IrToolChoice::None,
             "required" => IrToolChoice::Required,
@@ -460,7 +459,7 @@ fn read_tool_choice(
         },
         Value::Object(mut choice) => {
             if choice.get("type").and_then(Value::as_str) != Some("function") {
-                return IrToolChoice::Auto;
+                return Some(IrToolChoice::Auto);
             }
             // `resp_to_chat` also accepts the nested `function.name` shape.
             let name = match choice.remove("name") {
@@ -476,7 +475,7 @@ fn read_tool_choice(
             })
         }
         _ => IrToolChoice::Auto,
-    }
+    })
 }
 
 // ── response output ────────────────────────────────────────────────────
@@ -573,7 +572,15 @@ mod tests {
     fn assert_request_roundtrip(fixture: &str) -> IrRequest {
         let ir1 = read(request(fixture));
         let ir2 = read(build(ir1.clone()));
-        assert_eq!(ir1, ir2);
+        // build materializes Responses' wire default (strict=true), so a
+        // tool that came in without `strict` reads back with it
+        let mut ir1_norm = ir1.clone();
+        for tool in &mut ir1_norm.tools {
+            if tool.strict.is_none() {
+                tool.strict = Some(true);
+            }
+        }
+        assert_eq!(ir1_norm, ir2);
 
         let wire = build(ir1.clone());
         assert_eq!(wire.model, ir1.model, "model lost in {fixture}");
@@ -656,8 +663,8 @@ mod tests {
         ));
         assert_eq!(ir.tools.len(), 1);
         assert_eq!(ir.tools[0].name, "get_weather");
-        assert!(ir.tools[0].strict);
-        assert_eq!(ir.tool_choice, IrToolChoice::Auto);
+        assert!(ir.tools[0].strict.is_none());
+        assert_eq!(ir.tool_choice, Some(IrToolChoice::Auto));
     }
 
     #[test]
@@ -744,7 +751,10 @@ mod tests {
 
         assert_eq!(ir.tools.len(), 1);
         assert_eq!(ir.tools[0].name, "mcp__shell");
-        assert_eq!(ir.tool_choice, IrToolChoice::Named("mcp__shell".into()));
+        assert_eq!(
+            ir.tool_choice,
+            Some(IrToolChoice::Named("mcp__shell".into()))
+        );
     }
 
     #[test]

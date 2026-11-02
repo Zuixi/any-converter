@@ -18,7 +18,7 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
             let stop_reason = if !state.accumulated_tool_calls.is_empty() {
                 StopReason::ToolUse
             } else {
-                state.finish_reason.clone().unwrap_or(StopReason::EndTurn)
+                state.finish_reason.unwrap_or(StopReason::EndTurn)
             };
             return Ok(vec![CanonicalStreamEvent::Done {
                 stop_reason,

@@ -41,19 +41,7 @@ pub fn build(mut ir: IrRequest) -> GeminiRequest {
 
     let generation_config = build_generation_config(ir.sampling, config_extra);
     let tools = build_tools(ir.tools);
-    // IrToolChoice::Auto is Gemini's default, so it stays off the wire.
-    let tool_config = match ir.tool_choice {
-        IrToolChoice::Auto => None,
-        IrToolChoice::None => Some(serde_json::json!({
-            "functionCallingConfig": {"mode": "NONE"}
-        })),
-        IrToolChoice::Required => Some(serde_json::json!({
-            "functionCallingConfig": {"mode": "ANY"}
-        })),
-        IrToolChoice::Named(name) => Some(serde_json::json!({
-            "functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": [name]}
-        })),
-    };
+    let tool_config = build_tool_config(ir.tool_choice, tools.is_some());
 
     GeminiRequest {
         model: Some(ir.model),
@@ -178,6 +166,22 @@ fn build_tools(tools: Vec<IrTool>) -> Option<Vec<GeminiToolDeclaration>> {
             })
             .collect(),
     }])
+}
+
+/// An explicit choice maps to Gemini's `functionCallingConfig` exactly as the
+/// pairwise builders did; an absent one stays off the wire.
+fn build_tool_config(choice: Option<IrToolChoice>, has_tools: bool) -> Option<Value> {
+    let config = match choice? {
+        // Gemini's own default; only written when tools could be called.
+        IrToolChoice::Auto if has_tools => serde_json::json!({"mode": "AUTO"}),
+        IrToolChoice::Auto => return None,
+        IrToolChoice::None => serde_json::json!({"mode": "NONE"}),
+        IrToolChoice::Required => serde_json::json!({"mode": "ANY"}),
+        IrToolChoice::Named(name) => {
+            serde_json::json!({"mode": "ANY", "allowedFunctionNames": [name]})
+        }
+    };
+    Some(serde_json::json!({ "functionCallingConfig": config }))
 }
 
 pub fn build_response(ir: IrResponse) -> GeminiResponse {

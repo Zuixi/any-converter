@@ -54,7 +54,7 @@ pub const CLAUDE_TEMPERATURE_MAX: f32 = 1.0;
 // ── Shared helpers extracted from converter duplicates ─────────────────
 
 use crate::error::ConvertError;
-use crate::formats::openai_chat::{ContentPart, MessageContent, StopValue};
+use crate::formats::openai_chat::{ContentPart, MessageContent};
 
 pub fn message_content_as_text(content: Option<MessageContent>) -> Option<String> {
     match content? {
@@ -81,46 +81,6 @@ pub fn parse_arguments(args: &str) -> serde_json::Value {
         serde_json::json!({})
     } else {
         serde_json::from_str(args).unwrap_or(serde_json::json!({}))
-    }
-}
-
-pub fn stop_to_sequences(stop: &StopValue) -> Vec<String> {
-    match stop {
-        StopValue::Single(s) => vec![s.clone()],
-        StopValue::Multiple(v) => v.clone(),
-    }
-}
-
-pub fn parse_content_value(
-    value: &serde_json::Value,
-) -> Result<Vec<serde_json::Value>, ConvertError> {
-    match value {
-        serde_json::Value::String(text) => {
-            Ok(vec![serde_json::json!({"type": "text", "text": text})])
-        }
-        serde_json::Value::Array(arr) => Ok(arr.clone()),
-        _ => Err(ConvertError::InvalidField {
-            field: "content".into(),
-            reason: "expected string or array".into(),
-        }),
-    }
-}
-
-pub fn tool_result_text(value: Option<&serde_json::Value>) -> Result<String, ConvertError> {
-    match value {
-        None => Ok(String::new()),
-        Some(serde_json::Value::String(text)) => Ok(text.clone()),
-        Some(serde_json::Value::Array(arr)) => {
-            let parts: Vec<String> = arr
-                .iter()
-                .filter_map(|item| item.get("text").and_then(|t| t.as_str()).map(String::from))
-                .collect();
-            Ok(parts.join(""))
-        }
-        _ => Err(ConvertError::InvalidField {
-            field: "tool_result.content".into(),
-            reason: "expected string or array".into(),
-        }),
     }
 }
 
@@ -161,113 +121,12 @@ pub fn image_block_to_url(
     }
 }
 
-pub fn extract_message_text(item: &serde_json::Value) -> String {
-    let content = match item.get("content") {
-        Some(c) => c,
-        None => return String::new(),
-    };
-    if let Some(text) = content.as_str() {
-        return text.to_string();
-    }
-    if let Some(arr) = content.as_array() {
-        return arr
-            .iter()
-            .filter_map(|part| {
-                let t = part.get("type").and_then(|v| v.as_str())?;
-                if t == "output_text" || t == "input_text" || t == "text" {
-                    part.get("text").and_then(|v| v.as_str()).map(String::from)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-    String::new()
-}
-
-pub fn parse_function_call_fields(
-    item: &serde_json::Value,
-) -> Result<(String, String, serde_json::Value), ConvertError> {
-    let call_id = item
-        .get("call_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let name = item
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ConvertError::MissingField("function_call.name".into()))?
-        .to_string();
-    let arguments = item
-        .get("arguments")
-        .and_then(|v| v.as_str())
-        .unwrap_or("{}");
-    let input = serde_json::from_str(arguments).unwrap_or(serde_json::json!({}));
-    Ok((call_id, name, input))
-}
-
 pub fn parse_data_url(url: &str) -> Option<(String, String)> {
     let rest = url.strip_prefix("data:")?;
     let semi = rest.find(';')?;
     let mime = &rest[..semi];
     let data = rest[semi + 1..].strip_prefix("base64,")?;
     Some((mime.to_string(), data.to_string()))
-}
-
-pub fn image_url_to_claude_source(url: &str) -> serde_json::Value {
-    if let Some((media_type, data)) = parse_data_url(url) {
-        serde_json::json!({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": media_type,
-                "data": data,
-            }
-        })
-    } else {
-        serde_json::json!({
-            "type": "image",
-            "source": { "type": "url", "url": url }
-        })
-    }
-}
-
-#[cfg(test)]
-mod image_url_to_claude_source_tests {
-    use super::*;
-
-    #[test]
-    fn test_http_url_emits_url_source() {
-        let source = image_url_to_claude_source("https://example.com/image.png");
-        let obj = source.as_object().unwrap();
-        assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("image"));
-        let source_obj = obj.get("source").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(source_obj.get("type").and_then(|v| v.as_str()), Some("url"));
-        assert_eq!(
-            source_obj.get("url").and_then(|v| v.as_str()),
-            Some("https://example.com/image.png")
-        );
-    }
-
-    #[test]
-    fn test_data_url_emits_base64_source() {
-        let source = image_url_to_claude_source("data:image/png;base64,abc123");
-        let obj = source.as_object().unwrap();
-        let source_obj = obj.get("source").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(
-            source_obj.get("type").and_then(|v| v.as_str()),
-            Some("base64")
-        );
-        assert_eq!(
-            source_obj.get("media_type").and_then(|v| v.as_str()),
-            Some("image/png")
-        );
-        assert_eq!(
-            source_obj.get("data").and_then(|v| v.as_str()),
-            Some("abc123")
-        );
-    }
 }
 
 pub fn normalize_id_to_chat(id: &str) -> String {
@@ -357,81 +216,6 @@ pub fn extract_function_response_text(response: &serde_json::Value) -> String {
 }
 
 // ── Claude message merge helpers ──────────────────────────────────────
-
-use crate::formats::claude::ClaudeMessage;
-
-pub fn assistant_blocks_to_content(blocks: &[serde_json::Value]) -> serde_json::Value {
-    if blocks.len() == 1 {
-        let block_type = blocks[0].get("type").and_then(|v| v.as_str());
-        if block_type == Some("text") {
-            if let Some(text) = blocks[0].get("text").and_then(|v| v.as_str()) {
-                return serde_json::Value::String(text.to_string());
-            }
-        }
-    }
-    serde_json::Value::Array(blocks.to_vec())
-}
-
-pub fn blocks_to_user_content(blocks: &[serde_json::Value]) -> serde_json::Value {
-    if blocks.len() == 1 {
-        if let Some(text) = blocks[0].get("text").and_then(|v| v.as_str()) {
-            if blocks[0].get("type").and_then(|v| v.as_str()) == Some("text") {
-                return serde_json::Value::String(text.to_string());
-            }
-        }
-    }
-    serde_json::Value::Array(blocks.to_vec())
-}
-
-pub fn merge_claude_messages(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage> {
-    let mut merged: Vec<ClaudeMessage> = Vec::with_capacity(messages.len());
-    for msg in messages {
-        if let Some(last) = merged.last_mut() {
-            if last.role == msg.role {
-                let combined = merge_claude_content(&last.content, &msg.content, &last.role);
-                last.content = combined;
-                continue;
-            }
-        }
-        merged.push(msg);
-    }
-    merged
-}
-
-pub fn merge_claude_content(
-    a: &serde_json::Value,
-    b: &serde_json::Value,
-    role: &str,
-) -> serde_json::Value {
-    let mut blocks = content_value_to_blocks(a);
-    blocks.extend(content_value_to_blocks(b));
-    if role == "assistant" {
-        assistant_blocks_to_content(&blocks)
-    } else if blocks.len() == 1 {
-        if let Some(text) = blocks[0].get("text").and_then(|v| v.as_str()) {
-            if blocks[0].get("type").and_then(|v| v.as_str()) == Some("text") {
-                return serde_json::Value::String(text.to_string());
-            }
-        }
-        serde_json::Value::Array(blocks)
-    } else {
-        serde_json::Value::Array(blocks)
-    }
-}
-
-pub fn content_value_to_blocks(value: &serde_json::Value) -> Vec<serde_json::Value> {
-    match value {
-        serde_json::Value::String(text) => {
-            if text.is_empty() {
-                vec![]
-            } else {
-                vec![serde_json::json!({"type": "text", "text": text})]
-            }
-        }
-        serde_json::Value::Array(arr) => arr.clone(),
-        _ => vec![],
-    }
-}
 
 #[cfg(test)]
 mod tests {

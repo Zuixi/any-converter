@@ -81,8 +81,10 @@ pub struct IrTool {
     pub description: String,
     /// JSON schema of the arguments
     pub schema: Value,
-    /// the client asked for its arguments held to the schema
-    pub strict: bool,
+    /// the client asked for its arguments held to the schema:
+    /// `None` = it did not say (wire field absent), and an absent field
+    /// must stay absent — not become `false` or `true` on the way out
+    pub strict: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -122,7 +124,10 @@ pub struct IrRequest {
     pub system: Vec<IrPart>,
     pub messages: Vec<IrMessage>,
     pub tools: Vec<IrTool>,
-    pub tool_choice: IrToolChoice,
+    /// `None` = the client sent no `tool_choice` at all; an absent field
+    /// must stay absent on the way out, so `Some(Auto)` and `None` differ
+    /// ("auto" is a wire value, not a default)
+    pub tool_choice: Option<IrToolChoice>,
     pub sampling: Sampling,
     pub stream: bool,
     pub reasoning: Reasoning,

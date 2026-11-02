@@ -28,6 +28,7 @@
         ],
         "type": "object"
       },
+      "strict": true,
       "type": "function"
     }
   ]

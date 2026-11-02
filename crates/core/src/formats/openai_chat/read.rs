@@ -212,20 +212,21 @@ fn read_tool(tool: OpenAIChatTool) -> IrTool {
             .function
             .parameters
             .unwrap_or_else(|| serde_json::json!({"type": "object"})),
-        // absent means "not enforced" for chat clients; the Responses
-        // builder's own default is its dialect rule, not the reader's
-        strict: tool.function.strict.unwrap_or(false),
+        // absent stays absent: the Responses builder's own default is its
+        // dialect rule, not the reader's
+        strict: tool.function.strict,
     }
 }
 
-fn read_tool_choice(choice: Option<Value>) -> IrToolChoice {
-    match choice {
-        Some(Value::String(s)) => match s.as_str() {
+fn read_tool_choice(choice: Option<Value>) -> Option<IrToolChoice> {
+    let choice = choice?;
+    Some(match choice {
+        Value::String(s) => match s.as_str() {
             "none" => IrToolChoice::None,
             "required" => IrToolChoice::Required,
             _ => IrToolChoice::Auto,
         },
-        Some(Value::Object(obj)) => {
+        Value::Object(obj) => {
             let name = (obj.get("type").and_then(Value::as_str) == Some("function"))
                 .then(|| obj.get("function")?.get("name")?.as_str())
                 .flatten();
@@ -235,7 +236,7 @@ fn read_tool_choice(choice: Option<Value>) -> IrToolChoice {
             }
         }
         _ => IrToolChoice::Auto,
-    }
+    })
 }
 
 fn stop_values(stop: StopValue) -> Vec<String> {
@@ -425,7 +426,7 @@ mod tests {
             "What is the weather in Tokyo?",
             &["get_weather"],
         );
-        assert_eq!(ir.tool_choice, IrToolChoice::Auto);
+        assert_eq!(ir.tool_choice, Some(IrToolChoice::Auto));
         assert_eq!(
             ir.tools[0].description,
             "Get current weather for a location"

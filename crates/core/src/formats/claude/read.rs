@@ -223,16 +223,14 @@ fn read_tools(tools: Option<Vec<ClaudeTool>>) -> Vec<IrTool> {
             description: tool.description.unwrap_or_default(),
             schema: tool.input_schema,
             // Claude states no strictness switch for tool arguments.
-            strict: false,
+            strict: None,
         })
         .collect()
 }
 
-fn read_tool_choice(value: Option<&Value>) -> IrToolChoice {
-    let Some(value) = value else {
-        return IrToolChoice::Auto;
-    };
-    match value.get("type").and_then(Value::as_str) {
+fn read_tool_choice(value: Option<&Value>) -> Option<IrToolChoice> {
+    let value = value?;
+    Some(match value.get("type").and_then(Value::as_str) {
         Some("none") => IrToolChoice::None,
         Some("any") => IrToolChoice::Required,
         Some("tool") => match value.get("name").and_then(Value::as_str) {
@@ -241,7 +239,7 @@ fn read_tool_choice(value: Option<&Value>) -> IrToolChoice {
         },
         // `auto`, plus unnamed/unknown types the pairwise converters rejected.
         _ => IrToolChoice::Auto,
-    }
+    })
 }
 
 fn take_string(obj: &mut Map<String, Value>, key: &str) -> String {
@@ -355,7 +353,7 @@ mod tests {
         assert_eq!(ir.model, "claude-sonnet-4-20250514");
         assert_eq!(first_user_text(&ir), Some("What is the weather in Tokyo?"));
         assert_eq!(tool_names(&ir), vec!["get_weather"]);
-        assert_eq!(ir.tool_choice, IrToolChoice::Auto);
+        assert_eq!(ir.tool_choice, Some(IrToolChoice::Auto));
     }
 
     #[test]

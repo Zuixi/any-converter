@@ -1,1 +1,19 @@
-ERROR: unsupported content type: image source: url
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "What is in this image?"
+        },
+        {
+          "text": "https://example.com/image.png"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 1024
+  },
+  "model": "claude-sonnet-4-20250514"
+}

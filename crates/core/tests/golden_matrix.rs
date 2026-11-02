@@ -5,6 +5,7 @@
 //!
 //! Generated ids (uuids) and timestamps are normalized away; streams are
 //! covered by stream_matrix and pinned there, not here.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use any_converter_core::convert::{Format, convert_request, convert_response};
 use serde_json::Value;
 use std::fs;

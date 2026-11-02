@@ -225,11 +225,11 @@ fn build_system(parts: Vec<IrPart>) -> Option<Value> {
     }
 }
 
-fn build_tool_choice(choice: IrToolChoice) -> Option<Value> {
-    match choice {
-        // An absent `tool_choice` is Claude's `auto`; omitting it keeps
-        // requests that never mentioned it unchanged.
-        IrToolChoice::Auto => None,
+fn build_tool_choice(choice: Option<IrToolChoice>) -> Option<Value> {
+    match choice? {
+        // An explicit `auto` stays explicit; an absent `tool_choice` stays
+        // absent.
+        IrToolChoice::Auto => Some(serde_json::json!({ "type": "auto" })),
         IrToolChoice::None => Some(serde_json::json!({ "type": "none" })),
         IrToolChoice::Required => Some(serde_json::json!({ "type": "any" })),
         IrToolChoice::Named(name) => Some(serde_json::json!({ "type": "tool", "name": name })),
