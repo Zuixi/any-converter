@@ -18,6 +18,16 @@ pub enum Credential {
     /// A reference to a keychain-stored secret (`keychain:<service>:<account>`).
     #[serde(rename = "keychain_ref")]
     KeychainRef { reference: String },
+    /// An OAuth sign-in result (e.g. Gemini browser flow, Copilot device
+    /// flow) persisted by `any-converter accounts add`.
+    #[serde(rename = "oauth")]
+    OAuth {
+        provider: String,
+        account: String,
+        access_token: String,
+        refresh_token: Option<String>,
+        expires_at_unix: Option<i64>,
+    },
 }
 
 /// A [`TokenSource`] that renders a static API key (plus optional extra
@@ -79,10 +89,14 @@ impl TokenSource for ApiKeySource {
     }
 }
 
+pub mod copilot;
 pub mod gemini;
 pub mod store;
 pub mod token;
 
+pub use copilot::{
+    CopilotAccount, CopilotEndpoints, CopilotSignIn, DeviceCodeStarted, ReqwestDeviceHttp,
+};
 pub use gemini::{GeminiAccount, GeminiEndpoints, GeminiSignIn, SignInError, SignInStarted};
 pub use store::{FileSecretStore, SecretStore, SecretStoreError};
 pub use token::{AuthErr401, OAuthTokens, RefreshOutcome, TokenManager};
