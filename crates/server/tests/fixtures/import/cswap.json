@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "accounts": [
+    {
+      "credentials": {
+        "claudeAiOauth": {
+          "accessToken": "test-token-3-claude-access",
+          "refreshToken": "test-token-3-claude-refresh",
+          "expiresAt": 1880000000000,
+          "scopes": ["user:inference", "user:profile", "user:sessions:claude_code"]
+        }
+      },
+      "config": {
+        "oauthAccount": {
+          "emailAddress": "cswap@example.com",
+          "organizationName": "Work Org"
+        }
+      },
+      "alias": "work"
+    }
+  ]
+}
