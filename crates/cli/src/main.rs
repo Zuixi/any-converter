@@ -211,6 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         model_map: HashMap::new(),
                         endpoints: Default::default(),
                         auth: Default::default(),
+                        plugin: None,
                     }],
                     model_routes: vec![ModelRouteConfig {
                         pattern: "*".into(),

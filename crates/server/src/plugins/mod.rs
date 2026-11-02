@@ -11,6 +11,7 @@
 
 pub mod authstore;
 pub mod host;
+pub mod managed;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -25,6 +26,7 @@ pub use host::{
     HostedPlugin, PluginFetchParams, PluginFetchRequest, PluginFetchResponse, PluginLaunch,
     PluginSpec, PluginTransport, default_launch,
 };
+pub use managed::ManagedHosts;
 
 /// Host → plugin RPC method names (magpie host.js `handlers`).
 pub mod methods {

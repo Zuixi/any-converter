@@ -27,6 +27,7 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         model_map: [("*".into(), "gpt-4".into())].into(),
         endpoints: Default::default(),
         auth: Default::default(),
+        plugin: None,
     }
 }
 
@@ -70,6 +71,11 @@ async fn non_streaming_proxy() {
         client,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
@@ -166,6 +172,11 @@ async fn client_headers_passthrough_to_upstream() {
         client,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
@@ -246,6 +257,11 @@ async fn streaming_proxy_text() {
         client,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
@@ -311,6 +327,11 @@ async fn provider_failover_priority() {
         client,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
@@ -359,6 +380,11 @@ async fn auth_missing_returns_401() {
         client,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
@@ -402,6 +428,11 @@ async fn auth_invalid_returns_401() {
         client,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
@@ -455,6 +486,11 @@ async fn upstream_error_returns_502() {
         client,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
@@ -492,6 +528,11 @@ async fn health_returns_ok() {
         client,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 

@@ -210,6 +210,7 @@ impl DesktopDb {
                     model_map: model_maps.remove(&provider.id).unwrap_or_default(),
                     endpoints: Default::default(),
                     auth: Default::default(),
+                    plugin: None,
                 })
             })
             .collect::<Result<Vec<_>, DbError>>()?;

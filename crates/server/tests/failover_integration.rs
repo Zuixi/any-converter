@@ -28,6 +28,7 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         model_map: [("*".into(), "gpt-4".into())].into(),
         endpoints: Default::default(),
         auth: Default::default(),
+        plugin: None,
     }
 }
 
@@ -63,6 +64,11 @@ fn make_app(config: ServerConfig) -> axum::Router {
         ),
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     create_router_with_state(state)
 }

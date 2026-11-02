@@ -97,6 +97,7 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
             model_map: [("guard-model".into(), "upstream-model".into())].into(),
             endpoints: Default::default(),
             auth: Default::default(),
+            plugin: None,
         }],
         model_routes: vec![ModelRouteConfig {
             pattern: "*".into(),
@@ -115,6 +116,11 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
         accounts: AccountResolver::with_default_store(Client::new()),
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     }))
 }
 

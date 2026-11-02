@@ -15,6 +15,7 @@ use crate::handlers::{
     AppState, handle_claude, handle_count_tokens, handle_gemini, handle_health,
     handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
 };
+use crate::plugins::{ManagedHosts, PluginAuthStore};
 
 /// Route metadata detected from the request path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +74,16 @@ pub fn extract_gemini_model(path: &str) -> Option<String> {
     }
 }
 
+/// Where plugin credentials live.
+///
+/// Plugin sign-ins are persisted by the JS plugin host at whatever path the
+/// `init` handshake hands it (through `client.auth.set`); [`ManagedHosts`]
+/// passes this very path. It sits next to the OAuth account store but in
+/// its own file: the two ledgers have different shapes and writers.
+fn plugin_auth_path() -> PathBuf {
+    crate::config::secrets_path().with_file_name("plugin-auth.json")
+}
+
 pub fn create_router(config: ServerConfig) -> Router {
     let log_dir = config.logging.dir.clone();
     let sqlite = crate::storage::open_sqlite_storage_for_log_dir(log_dir.as_deref());
@@ -101,12 +112,16 @@ pub fn create_router(config: ServerConfig) -> Router {
 
     let client = Client::new();
     let accounts = AccountResolver::with_default_store(client.clone());
+    let hosts = Arc::new(ManagedHosts::with_store(Arc::new(PluginAuthStore::new(
+        plugin_auth_path(),
+    ))));
     let state = Arc::new(AppState {
         config,
         client,
         accounts,
         usage_logger,
         request_logger,
+        hosts,
     });
     create_router_with_state(state)
 }
@@ -176,6 +191,7 @@ mod tests {
                 model_map: [("claude-sonnet-4".into(), "gpt-4.1".into())].into(),
                 endpoints: Default::default(),
                 auth: Default::default(),
+                plugin: None,
             }],
             model_routes: vec![],
             routes: vec![

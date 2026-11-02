@@ -14,6 +14,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::config::{PassThroughHeadersConfig, ProviderConfig, UpstreamApi, glob_match};
 use crate::observability::utf8_prefix;
+use crate::plugins::{PluginFetchParams, ProviderPlugin};
 use crate::request_log::{RequestLogContext, RequestLogger, log_streaming};
 
 /// Build the upstream URL for a provider request.
@@ -62,6 +63,25 @@ fn join_base_and_path(base_url: &str, path: &str) -> String {
         format!("{base}{path}")
     } else {
         format!("{base}/{path}")
+    }
+}
+
+/// Whether `url` stays on the same host (and port) as `base`.
+///
+/// The plugin transport signs requests with the account's credentials, so
+/// the final URL must never drift to another host (magpie `pluginFetch`
+/// `HostOf(rest) != HostOf(base)` check). A relative/hostless `base` is
+/// rejected too: credentialed requests need an absolute URL whose host the
+/// gateway can verify.
+pub fn assert_same_host(base: &str, url: &str) -> bool {
+    let (Ok(base), Ok(url)) = (reqwest::Url::parse(base), reqwest::Url::parse(url)) else {
+        return false;
+    };
+    match (base.host_str(), url.host_str()) {
+        (Some(base_host), Some(url_host)) => {
+            base_host == url_host && base.port_or_known_default() == url.port_or_known_default()
+        }
+        _ => false,
     }
 }
 
@@ -179,6 +199,138 @@ pub async fn forward_non_streaming(
         bytes
     };
     Ok((status, bytes))
+}
+
+/// Convert a response body with the panic isolation the server domain
+/// requires (`core` conversion may panic on unimplemented paths; the error
+/// must become a gateway error, never a crash).
+fn convert_response_guarded(input: &[u8], from: Format, to: Format) -> Result<Vec<u8>, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        any_converter_core::convert::convert_response(input, from, to)
+    })) {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(err)) => Err(format!("response conversion failed: {err}")),
+        Err(_) => Err("response conversion panicked".to_string()),
+    }
+}
+
+/// Forward a non-streaming request whose transport is a plugin and convert
+/// the plugin's answer to the client format.
+///
+/// The plugin returns the complete body (see [`ProviderPlugin::fetch`]), so
+/// this is a plain request/response round trip: status, headers and body all
+/// arrive at once and the converted body is returned whole.
+pub async fn forward_plugin_non_streaming(
+    plugin: &dyn ProviderPlugin,
+    params: PluginFetchParams,
+    from_format: Format,
+    to_format: Format,
+    api: UpstreamApi,
+    ns_map: &HashMap<String, (String, String)>,
+) -> Result<(Response, StatusCode), String> {
+    let upstream = plugin
+        .fetch(params)
+        .await
+        .map_err(|e| format!("plugin fetch failed: {e}"))?;
+    let status = StatusCode::from_u16(upstream.status)
+        .map_err(|e| format!("plugin returned invalid status {}: {e}", upstream.status))?;
+
+    let mut bytes = upstream.body.into_bytes();
+    // Code Assist wraps every payload in a `{"response": ...}` envelope;
+    // unwrap before conversion, exactly like the http transport does.
+    if api == UpstreamApi::CodeAssist {
+        bytes = crate::wire::unwrap_code_assist(&bytes).unwrap_or(bytes);
+    }
+    let mut converted = convert_response_guarded(&bytes, from_format, to_format)?;
+    crate::namespace::patch_response_namespaces(&mut converted, ns_map);
+
+    let response = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(converted))
+        .map_err(|e| format!("failed to build response: {e}"))?;
+    Ok((response, status))
+}
+
+/// Forward a request whose transport is a plugin and replay the plugin's
+/// complete answer as SSE blocks.
+///
+/// The plugin returns the WHOLE body — the plugin transport has no
+/// incremental streaming — so this function buffers everything, converts
+/// each SSE block, and returns one fully-assembled SSE payload in a single
+/// [`Body::from`]. This is NOT incremental streaming (documented
+/// limitation): the client sees valid SSE, but nothing is emitted before
+/// the plugin finishes.
+pub async fn forward_plugin_streaming(
+    plugin: &dyn ProviderPlugin,
+    params: PluginFetchParams,
+    from_format: Format,
+    to_format: Format,
+    api: UpstreamApi,
+    ns_map: &HashMap<String, (String, String)>,
+) -> Result<(Response, StatusCode), String> {
+    let upstream = plugin
+        .fetch(params)
+        .await
+        .map_err(|e| format!("plugin fetch failed: {e}"))?;
+    let status = StatusCode::from_u16(upstream.status)
+        .map_err(|e| format!("plugin returned invalid status {}: {e}", upstream.status))?;
+
+    // A non-success answer is returned whole (like `forward_streaming`) so
+    // the caller's failover loop can retry the next provider.
+    if !status.is_success() {
+        let content_type = upstream
+            .headers
+            .get("content-type")
+            .cloned()
+            .unwrap_or_else(|| "application/json".to_string());
+        let response = Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from(upstream.body))
+            .map_err(|e| format!("failed to build response: {e}"))?;
+        return Ok((response, status));
+    }
+
+    // Split the buffered body into SSE blocks (the same parser the
+    // incremental path uses), convert each one, and reassemble one SSE
+    // payload.
+    let mut buffer = upstream.body;
+    let mut state_in = StreamState::default();
+    let mut state_out = StreamState::default();
+    let mut out = String::new();
+    for block in take_complete_sse_blocks(&mut buffer) {
+        for line in convert_sse_block(
+            &block,
+            from_format,
+            to_format,
+            &mut state_in,
+            &mut state_out,
+            api,
+        ) {
+            out.push_str(&patch_sse_namespaces(&line, ns_map));
+        }
+    }
+    if !buffer.trim().is_empty() {
+        for line in convert_sse_block(
+            buffer.trim(),
+            from_format,
+            to_format,
+            &mut state_in,
+            &mut state_out,
+            api,
+        ) {
+            out.push_str(&patch_sse_namespaces(&line, ns_map));
+        }
+    }
+
+    let response = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(out))
+        .map_err(|e| format!("failed to build response: {e}"))?;
+    Ok((response, status))
 }
 
 /// Forward a streaming request and convert SSE events to the client format.
@@ -604,6 +756,7 @@ mod tests {
                 stream_path: Some("/v1/text/chatcompletion_v2?stream=true&model={model}".into()),
             },
             auth: crate::config::ProviderAuthConfig::default(),
+            plugin: None,
         };
 
         let url = build_upstream_url_for_provider(&provider, "abab6.5s-chat", true);
@@ -705,5 +858,43 @@ mod tests {
         let headers = build_upstream_headers(&client_headers, &auth_headers, &config);
 
         assert!(!headers.iter().any(|(n, _)| n == "x-internal-foo"));
+    }
+
+    #[test]
+    fn assert_same_host_accepts_the_same_host() {
+        assert!(assert_same_host(
+            "https://gw.example.test",
+            "https://gw.example.test/v1/messages"
+        ));
+        // Trailing slash and explicit default port do not change the host.
+        assert!(assert_same_host(
+            "https://gw.example.test/",
+            "https://gw.example.test:443/v1/chat/completions"
+        ));
+    }
+
+    #[test]
+    fn assert_same_host_rejects_cross_host_urls() {
+        assert!(!assert_same_host(
+            "https://gw.example.test",
+            "https://evil.example.test/v1/messages"
+        ));
+        // Non-default ports are part of the host identity.
+        assert!(!assert_same_host(
+            "https://gw.example.test",
+            "https://gw.example.test:8443/v1/messages"
+        ));
+    }
+
+    #[test]
+    fn assert_same_host_rejects_relative_or_unparsable_bases() {
+        // Hostless bases cannot be verified to keep credentialed requests
+        // on one host: rejected outright.
+        assert!(!assert_same_host(
+            "/relative-only",
+            "/relative-only/v1/messages"
+        ));
+        assert!(!assert_same_host("v1/messages", "v1/messages/v1/messages"));
+        assert!(!assert_same_host("not a url at all", "not a url at all/x"));
     }
 }
