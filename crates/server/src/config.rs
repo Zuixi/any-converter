@@ -183,6 +183,20 @@ impl UpstreamApi {
             Format::Gemini => UpstreamApi::Gemini,
         }
     }
+
+    /// The wire a plugin model is spoken to with, by its AI SDK package
+    /// (magpie pluginProtocol, internal/provider/plugins.go:200).
+    pub fn from_npm(npm: &str) -> UpstreamApi {
+        match npm {
+            "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" => UpstreamApi::Claude,
+            "@ai-sdk/openai" | "@ai-sdk/azure" => UpstreamApi::Responses,
+            "@ai-sdk/google" => UpstreamApi::CodeAssist,
+            // Copilot dispatches per model (P7); until then it — and every
+            // unknown package, including @ai-sdk/openai-compatible — speaks
+            // OpenAI Chat.
+            _ => UpstreamApi::Chat,
+        }
+    }
 }
 
 /// Legacy `wire` key values from pre-`UpstreamApi` configs.
@@ -885,6 +899,24 @@ rotation = "never"
         }
         // CodeAssist is not a Format; its wire format is Gemini.
         assert_eq!(UpstreamApi::CodeAssist.to_format(), Format::Gemini);
+    }
+
+    #[test]
+    fn test_from_npm_maps_ai_sdk_packages() {
+        for (npm, expected) in [
+            ("@ai-sdk/anthropic", UpstreamApi::Claude),
+            ("@ai-sdk/google-vertex/anthropic", UpstreamApi::Claude),
+            ("@ai-sdk/openai", UpstreamApi::Responses),
+            ("@ai-sdk/azure", UpstreamApi::Responses),
+            ("@ai-sdk/google", UpstreamApi::CodeAssist),
+            // Copilot's per-model dispatch lands in P7.
+            ("@ai-sdk/github-copilot", UpstreamApi::Chat),
+            ("@ai-sdk/openai-compatible", UpstreamApi::Chat),
+            ("@ai-sdk/unknown", UpstreamApi::Chat),
+            ("", UpstreamApi::Chat),
+        ] {
+            assert_eq!(UpstreamApi::from_npm(npm), expected, "npm = {npm:?}");
+        }
     }
 
     #[test]
