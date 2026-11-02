@@ -1,7 +1,42 @@
+use crate::convert::Format;
 use crate::error::ConvertError;
 use crate::formats::StreamAdapter;
+use crate::formats::openai_resp::build::{seal_block, seal_thinking};
 use crate::ir::*;
 use crate::sse::{SseEvent, format_sse_event};
+
+const ITEM_TYPE_REASONING: &str = "reasoning";
+const ITEM_TYPE_SUMMARY_TEXT: &str = "summary_text";
+
+// StreamState has one reasoning accumulator, `thinking_signature`: the open
+// thinking block's text rides ahead of its signature in it, split by a NUL no
+// base64 signature carries (magpie keeps the two in `e.text`/`e.sig`).
+// shortcut: a StreamState without a thinking-text field; upgrade when the IR gains one.
+const THINKING_TEXT_END: char = '\0';
+
+/// The open thinking block's text and signature, as they accumulated.
+fn thinking_parts(state: &StreamState) -> (String, String) {
+    match state.thinking_signature.rsplit_once(THINKING_TEXT_END) {
+        Some((text, signature)) => (text.to_owned(), signature.to_owned()),
+        None => (state.thinking_signature.clone(), String::new()),
+    }
+}
+
+/// Claude signed the open thinking block, whose text its signature follows.
+fn signed_by_claude(state: &StreamState) -> bool {
+    state.thinking_signature_by == Some(Format::Claude)
+        && state
+            .thinking_signature
+            .rsplit_once(THINKING_TEXT_END)
+            .is_some_and(|(_, signature)| !signature.is_empty())
+}
+
+/// Items before the answer: Claude's signed thinking, once its signature has
+/// arrived, comes back first as a reasoning item of its own, the way the
+/// thinking it reasons with does.
+fn reasoning_prefix(state: &StreamState) -> u32 {
+    u32::from(signed_by_claude(state))
+}
 
 fn status_to_stop_reason(status: &str) -> StopReason {
     match status {
@@ -174,8 +209,52 @@ fn emit_sse_event_impl(
     state: &mut StreamState,
 ) -> Result<Vec<String>, ConvertError> {
     match event {
-        CanonicalStreamEvent::ThinkingSignature { .. }
-        | CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
+        // Claude's signature, or its redacted_thinking block, which only this
+        // emitter may write back (claudeseal). Any other vendor's is no part of
+        // a response, and Gemini's goes back on its own path.
+        CanonicalStreamEvent::ThinkingSignature { by, delta } => {
+            if *by != Format::Claude || delta.is_empty() {
+                return Ok(vec![]);
+            }
+            // The first delta ends the text it signs.
+            if state.thinking_signature_by != Some(*by) {
+                state.thinking_signature_by = Some(*by);
+                state.thinking_signature.push(THINKING_TEXT_END);
+            }
+            state.thinking_signature.push_str(delta);
+            Ok(vec![])
+        }
+        CanonicalStreamEvent::SealedThinking {
+            by: Format::Claude,
+            raw,
+        } => {
+            // The next free output index: what already streamed, then the
+            // blocks sealed whole. `response.completed` can't repeat it (no
+            // StreamState field to keep it in), so the client reads the pair.
+            let index = u32::from(!state.accumulated_text.is_empty())
+                + state.accumulated_tool_calls.len() as u32
+                + state.next_block_index();
+            let id = format!("rs_{}", uuid::Uuid::new_v4());
+            let added = serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": {"id": &id, "type": ITEM_TYPE_REASONING, "status": "in_progress", "summary": []},
+            });
+            let mut item = serde_json::json!({
+                "id": &id, "type": ITEM_TYPE_REASONING, "status": "completed", "summary": [],
+            });
+            item["encrypted_content"] = seal_block(raw).into();
+            let done = serde_json::json!({
+                "type": "response.output_item.done",
+                "output_index": index,
+                "item": &item,
+            });
+            Ok(vec![
+                format_sse_event("response.output_item.added", &added.to_string()),
+                format_sse_event("response.output_item.done", &done.to_string()),
+            ])
+        }
+        CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
         CanonicalStreamEvent::Start { id, model } => {
             let normalized_id = crate::converters::shared::normalize_id_to_resp(id);
             state.response_id = Some(normalized_id.clone());
@@ -212,13 +291,14 @@ fn emit_sse_event_impl(
                 .as_deref()
                 .map(|id| format!("{id}_msg_0"))
                 .unwrap_or_else(|| format!("resp_{}", uuid::Uuid::new_v4()));
+            let output_index = reasoning_prefix(state);
 
             let mut events = Vec::new();
 
             if state.accumulated_text.is_empty() {
                 let add_item = serde_json::json!({
                     "type": "response.output_item.added",
-                    "output_index": 0,
+                    "output_index": output_index,
                     "item": {
                         "type": "message",
                         "id": &item_id,
@@ -235,7 +315,7 @@ fn emit_sse_event_impl(
                 let add_part = serde_json::json!({
                     "type": "response.content_part.added",
                     "item_id": &item_id,
-                    "output_index": 0,
+                    "output_index": output_index,
                     "content_index": 0,
                     "part": {
                         "type": "output_text",
@@ -253,7 +333,7 @@ fn emit_sse_event_impl(
             let data = serde_json::json!({
                 "type": "response.output_text.delta",
                 "item_id": &item_id,
-                "output_index": 0,
+                "output_index": output_index,
                 "content_index": 0,
                 "delta": text,
             });
@@ -273,7 +353,7 @@ fn emit_sse_event_impl(
             } else {
                 1
             };
-            let output_index = index + text_offset;
+            let output_index = index + text_offset + reasoning_prefix(state);
             state.accumulated_tool_calls.push(AccumulatedToolCall {
                 index: *index,
                 id: id.clone(),
@@ -323,7 +403,7 @@ fn emit_sse_event_impl(
             let data = serde_json::json!({
                 "type": "response.function_call_arguments.delta",
                 "item_id": &item_id,
-                "output_index": index + text_offset,
+                "output_index": index + text_offset + reasoning_prefix(state),
                 "delta": arguments_delta,
             });
             Ok(vec![format_sse_event(
@@ -345,12 +425,56 @@ fn emit_sse_event_impl(
 
             let mut events = Vec::new();
             let mut output_items: Vec<serde_json::Value> = Vec::new();
+            let prefix = reasoning_prefix(state);
+
+            // Claude's signed thinking closes here: the reply's first reasoning
+            // item carries the block, signature and all, in encrypted_content,
+            // which is all a Responses client with store off keeps of it — the
+            // next turn gives it back to Anthropic as it wrote it (claudeseal).
+            let (thinking_text, thinking_signature) = thinking_parts(state);
+            if signed_by_claude(state) {
+                let id = format!("rs_{}", uuid::Uuid::new_v4());
+                let mut reasoning_item = serde_json::json!({
+                    "id": &id,
+                    "type": ITEM_TYPE_REASONING,
+                    "status": "completed",
+                    "summary": [],
+                });
+                if !thinking_text.is_empty() {
+                    reasoning_item["summary"] = serde_json::json!([{
+                        "type": ITEM_TYPE_SUMMARY_TEXT,
+                        "text": thinking_text,
+                    }]);
+                }
+                reasoning_item["encrypted_content"] =
+                    seal_thinking(&thinking_text, &thinking_signature).into();
+
+                let added = serde_json::json!({
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": {"id": &id, "type": ITEM_TYPE_REASONING, "status": "in_progress", "summary": []},
+                });
+                let done = serde_json::json!({
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": &reasoning_item,
+                });
+                events.push(format_sse_event(
+                    "response.output_item.added",
+                    &added.to_string(),
+                ));
+                events.push(format_sse_event(
+                    "response.output_item.done",
+                    &done.to_string(),
+                ));
+                output_items.push(reasoning_item);
+            }
 
             if !state.accumulated_text.is_empty() {
                 let text_done = serde_json::json!({
                     "type": "response.output_text.done",
                     "item_id": &item_id,
-                    "output_index": 0,
+                    "output_index": prefix,
                     "content_index": 0,
                     "text": &state.accumulated_text,
                 });
@@ -362,7 +486,7 @@ fn emit_sse_event_impl(
                 let part_done = serde_json::json!({
                     "type": "response.content_part.done",
                     "item_id": &item_id,
-                    "output_index": 0,
+                    "output_index": prefix,
                     "content_index": 0,
                     "part": {
                         "type": "output_text",
@@ -386,7 +510,7 @@ fn emit_sse_event_impl(
                 });
                 let item_done = serde_json::json!({
                     "type": "response.output_item.done",
-                    "output_index": 0,
+                    "output_index": prefix,
                     "item": &msg_item,
                 });
                 events.push(format_sse_event(
@@ -403,7 +527,7 @@ fn emit_sse_event_impl(
             };
             for tc in &state.accumulated_tool_calls {
                 let item_id = format!("fc_{}", tc.id);
-                let output_index = tc.index + text_offset;
+                let output_index = tc.index + text_offset + prefix;
                 let args_done = serde_json::json!({
                     "type": "response.function_call_arguments.done",
                     "item_id": &item_id,
@@ -480,9 +604,15 @@ fn emit_sse_event_impl(
             state.phase = StreamPhase::Done;
             Ok(events)
         }
-        // Thinking blocks are intentionally dropped: the Responses API does not
-        // support reasoning/thinking content in its streaming format.
-        CanonicalStreamEvent::ThinkingDelta(_) => Ok(vec![]),
+        CanonicalStreamEvent::ThinkingDelta(delta) => {
+            // No summary deltas: the block comes back whole, sealed, when the
+            // item closes (claudeseal).
+            match state.thinking_signature.rsplit_once(THINKING_TEXT_END) {
+                Some((text, _)) => state.thinking_signature.insert_str(text.len(), delta),
+                None => state.thinking_signature.push_str(delta),
+            }
+            Ok(vec![])
+        }
     }
 }
 
@@ -1115,5 +1245,134 @@ data: {"type":"response.completed","response":{"id":"resp_123","status":"complet
             "ToolCallStart output_index should be 0 without text, got: {}",
             tc_chunks[0]
         );
+    }
+
+    // ── claudeseal ─────────────────────────────────────────────────────
+
+    fn emit(event: CanonicalStreamEvent, state: &mut StreamState) -> Vec<String> {
+        OpenAIResponsesStreamAdapter::emit_sse_event(&event, state).unwrap()
+    }
+
+    fn event_data(chunk: &str) -> serde_json::Value {
+        let start = chunk.find("data: ").map(|i| i + 6).unwrap_or(0);
+        serde_json::from_str(chunk[start..].trim()).unwrap()
+    }
+
+    fn sealed_item(chunks: &[String]) -> serde_json::Value {
+        let done = chunks
+            .iter()
+            .find(|c| c.contains("response.output_item.done") && c.contains("reasoning"))
+            .expect("a reasoning item done");
+        event_data(done)["item"].clone()
+    }
+
+    #[test]
+    fn test_emit_done_seals_claude_thinking_into_encrypted_content() {
+        let mut state = StreamState::new();
+        state.response_id = Some("resp_abc".into());
+        state.model = Some("claude-sonnet-4".into());
+
+        for delta in ["Let me ", "think."] {
+            assert!(
+                emit(
+                    CanonicalStreamEvent::ThinkingDelta(delta.into()),
+                    &mut state
+                )
+                .is_empty()
+            );
+        }
+        for delta in ["sig_", "abc"] {
+            assert!(
+                emit(
+                    CanonicalStreamEvent::ThinkingSignature {
+                        by: Format::Claude,
+                        delta: delta.into(),
+                    },
+                    &mut state,
+                )
+                .is_empty()
+            );
+        }
+        assert_eq!(state.thinking_signature_by, Some(Format::Claude));
+
+        let chunks = emit(
+            CanonicalStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: None,
+            },
+            &mut state,
+        );
+
+        let item = sealed_item(&chunks);
+        assert_eq!(
+            item["summary"],
+            serde_json::json!([{"type": "summary_text", "text": "Let me think."}])
+        );
+        assert_eq!(
+            crate::formats::openai_resp::build::open_seal(
+                item["encrypted_content"].as_str().unwrap_or_default()
+            ),
+            Some(serde_json::json!({
+                "type": "thinking",
+                "thinking": "Let me think.",
+                "signature": "sig_abc",
+            }))
+        );
+        let completed = chunks
+            .iter()
+            .find(|c| c.contains("response.completed"))
+            .expect("response.completed");
+        assert!(completed.contains("magpie-claude1:"));
+    }
+
+    #[test]
+    fn test_emit_sealed_thinking_emits_the_block_whole() {
+        let mut state = StreamState::new();
+        state.response_id = Some("resp_abc".into());
+        let block = serde_json::json!({"type": "redacted_thinking", "data": "xyz"});
+
+        let chunks = emit(
+            CanonicalStreamEvent::SealedThinking {
+                by: Format::Claude,
+                raw: block.clone(),
+            },
+            &mut state,
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].contains("response.output_item.added"));
+        assert!(chunks[0].contains("in_progress"));
+        let item = sealed_item(&chunks);
+        assert_eq!(item["summary"], serde_json::json!([]));
+        assert_eq!(
+            crate::formats::openai_resp::build::open_seal(
+                item["encrypted_content"].as_str().unwrap_or_default()
+            ),
+            Some(block)
+        );
+    }
+
+    #[test]
+    fn test_emit_thinking_of_another_vendor_is_left_alone() {
+        let mut state = StreamState::new();
+        state.response_id = Some("resp_abc".into());
+        let chunks = emit(
+            CanonicalStreamEvent::ThinkingSignature {
+                by: Format::Gemini,
+                delta: "gemini_sig".into(),
+            },
+            &mut state,
+        );
+        assert!(chunks.is_empty());
+        assert!(state.thinking_signature.is_empty());
+
+        let chunks = emit(
+            CanonicalStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+                usage: None,
+            },
+            &mut state,
+        );
+        assert!(!chunks.join("\n").contains("encrypted_content"));
     }
 }

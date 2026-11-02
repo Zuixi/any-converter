@@ -20,12 +20,13 @@ use crate::converters::shared::{
     ITEM_TYPE_INPUT_TEXT, ITEM_TYPE_MESSAGE, ITEM_TYPE_OUTPUT_TEXT, new_resp_id, parse_arguments,
     parse_data_url,
 };
+use crate::formats::openai_resp::build::{is_sealed, open_seal};
 use crate::formats::openai_resp::types::{
     OpenAIResponsesRequest, OpenAIResponsesResponse, ResponsesUsage,
 };
 use crate::ir::{
     IrMessage, IrPart, IrRequest, IrResponse, IrTool, IrToolChoice, NamespacedExtra, Reasoning,
-    Role, Sampling, StopReason, Usage,
+    Role, Sampling, Signature, StopReason, Usage,
 };
 
 const ITEM_TYPE_REASONING: &str = "reasoning";
@@ -193,7 +194,7 @@ fn read_input(input: Option<Value>) -> (Vec<String>, Vec<IrMessage>) {
             &mut messages,
             Role::User,
             vec![IrPart::Text {
-                text: text,
+                text,
                 signature: None,
             }],
         ),
@@ -272,15 +273,8 @@ fn read_input_item(item: Value, system_texts: &mut Vec<String>, messages: &mut V
             );
         }
         ItemKind::Reasoning => {
-            let text = take_reasoning_text(&mut item);
-            push_message(
-                messages,
-                Role::Assistant,
-                vec![IrPart::Thinking {
-                    text,
-                    signature: None,
-                }],
-            );
+            let part = read_reasoning_item(&mut item);
+            push_message(messages, Role::Assistant, vec![part]);
         }
         ItemKind::Other => {}
     }
@@ -304,7 +298,7 @@ fn push_message(messages: &mut Vec<IrMessage>, role: Role, mut parts: Vec<IrPart
 fn content_to_parts(content: Value) -> Vec<IrPart> {
     match content {
         Value::String(text) => vec![IrPart::Text {
-            text: text,
+            text,
             signature: None,
         }],
         Value::Array(items) => items.into_iter().filter_map(part_from_value).collect(),
@@ -364,6 +358,64 @@ fn take_message_text(item: &mut Map<String, Value>) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+/// A reasoning item: Claude's block, which the reply sealed into
+/// `encrypted_content` (claudeseal), else a Responses `encrypted_content`
+/// carried whole, else its summary text as unsigned thinking.
+fn read_reasoning_item(item: &mut Map<String, Value>) -> IrPart {
+    let encrypted = item
+        .get("encrypted_content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !encrypted.is_empty() {
+        if let Some(part) = claude_sealed_part(encrypted) {
+            return part;
+        }
+        // One of ours that can't be read keeps its summary, as it did before
+        // a block rode in encrypted_content; a real Responses one is no other
+        // API's to read, so it is carried byte-for-byte and only this format's
+        // builder writes it back (magpie `Part.Sealed`, `sealResponses`).
+        if !is_sealed(encrypted) {
+            return IrPart::Sealed {
+                by: Format::OpenAIResponses,
+                raw: Value::Object(item.clone()),
+            };
+        }
+    }
+    IrPart::Thinking {
+        text: take_reasoning_text(item),
+        signature: None,
+    }
+}
+
+/// The reasoning a block magpie sealed stands for: Claude's thinking, signed
+/// (to come back signed on the next turn of a tool loop), or its
+/// redacted_thinking whole; `None` for one we can't read, which leaves the
+/// item's own summary as its reasoning (magpie `claudePart`).
+fn claude_sealed_part(encrypted: &str) -> Option<IrPart> {
+    let block = open_seal(encrypted)?;
+    let text = |key: &str| {
+        block
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    match block.get("type").and_then(Value::as_str) {
+        Some("thinking") if !text("signature").is_empty() => Some(IrPart::Thinking {
+            text: text("thinking"),
+            signature: Some(Signature {
+                by: Format::Claude,
+                value: text("signature"),
+            }),
+        }),
+        Some("redacted_thinking") if !text("data").is_empty() => Some(IrPart::Sealed {
+            by: Format::Claude,
+            raw: block,
+        }),
+        _ => None,
     }
 }
 
@@ -526,7 +578,7 @@ fn read_output_item(item: Value, parts: &mut Vec<IrPart>) {
                 // The reference readers drop empty text blocks.
                 if !text.is_empty() {
                     parts.push(IrPart::Text {
-                        text: text,
+                        text,
                         signature: None,
                     });
                 }
@@ -585,7 +637,9 @@ fn take_image_url(part: &mut Map<String, Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::openai_resp::build::{build, build_response};
+    use crate::formats::openai_resp::build::{
+        build, build_response, open_seal, seal_block, seal_thinking,
+    };
 
     fn request(fixture: &str) -> OpenAIResponsesRequest {
         serde_json::from_str(fixture).expect("valid Responses request fixture")
@@ -630,7 +684,7 @@ mod tests {
             .filter(|m| m.role == Role::User)
             .flat_map(|m| m.parts.iter())
             .find_map(|part| match part {
-                IrPart::Text { text: text, .. } => Some(text.as_str()),
+                IrPart::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
     }
@@ -654,7 +708,7 @@ mod tests {
         ir.parts
             .iter()
             .map(|part| match part {
-                IrPart::Text { text: text, .. } => format!("text:{text}"),
+                IrPart::Text { text, .. } => format!("text:{text}"),
                 IrPart::ToolCall { name, .. } => format!("tool:{name}"),
                 IrPart::Thinking { text, .. } => format!("thinking:{text}"),
                 other => format!("{other:?}"),
@@ -894,5 +948,167 @@ mod tests {
         ));
         assert_eq!(ir.usage.cache_read_tokens, Some(4));
         assert_eq!(read_response(build_response(ir.clone())), ir);
+    }
+
+    // ── claudeseal ─────────────────────────────────────────────────────
+
+    fn claude_signed(text: &str, signature: &str) -> IrPart {
+        IrPart::Thinking {
+            text: text.into(),
+            signature: Some(Signature {
+                by: Format::Claude,
+                value: signature.into(),
+            }),
+        }
+    }
+
+    fn reply(parts: Vec<IrPart>) -> IrResponse {
+        IrResponse {
+            id: Some("resp_x".into()),
+            model: "claude-sonnet-4".into(),
+            parts,
+            stop_reason: StopReason::EndTurn,
+            stop_sequence: None,
+            usage: Usage::default(),
+        }
+    }
+
+    #[test]
+    fn seal_opens_back_to_the_same_thinking() {
+        let sealed = seal_thinking("deep thought \"quoted\"", "sig_abc");
+        assert!(sealed.starts_with("magpie-claude1:"));
+        assert_eq!(
+            open_seal(&sealed),
+            Some(serde_json::json!({
+                "type": "thinking",
+                "thinking": "deep thought \"quoted\"",
+                "signature": "sig_abc",
+            }))
+        );
+    }
+
+    #[test]
+    fn claude_signed_thinking_seals_into_the_reply_and_reads_back() {
+        let ir = reply(vec![claude_signed("let me think", "sig_abc")]);
+        let wire = build_response(ir);
+        let item = &wire.output[0];
+        assert_eq!(item["type"], "reasoning");
+        assert_eq!(
+            item["summary"],
+            serde_json::json!([{"type": "summary_text", "text": "let me think"}])
+        );
+        assert_eq!(
+            item["encrypted_content"],
+            serde_json::json!(seal_thinking("let me think", "sig_abc"))
+        );
+
+        // the item a reply left is the input item the next request sends back
+        let next = serde_json::json!({"model": "claude-sonnet-4", "input": [item]}).to_string();
+        assert_eq!(
+            read(request(&next)).messages[0].parts,
+            vec![claude_signed("let me think", "sig_abc")]
+        );
+    }
+
+    #[test]
+    fn claude_redacted_thinking_goes_back_whole() {
+        let block = serde_json::json!({"type": "redacted_thinking", "data": "xyz"});
+        let wire = build_response(reply(vec![IrPart::Sealed {
+            by: Format::Claude,
+            raw: block.clone(),
+        }]));
+        let item = &wire.output[0];
+        assert_eq!(item["summary"], serde_json::json!([]));
+        assert_eq!(
+            item["encrypted_content"],
+            serde_json::json!(seal_block(&block))
+        );
+
+        let next = serde_json::json!({"model": "claude-sonnet-4", "input": [item]}).to_string();
+        assert_eq!(
+            read(request(&next)).messages[0].parts,
+            vec![IrPart::Sealed {
+                by: Format::Claude,
+                raw: block,
+            }]
+        );
+    }
+
+    #[test]
+    fn claude_upstream_gets_the_reasoning_back_as_claude_wrote_it() {
+        let ir = read(request(
+            &serde_json::json!({"model": "claude-sonnet-4", "input": [
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "let me think"}],
+                 "encrypted_content": seal_thinking("let me think", "sig_abc")},
+                {"type": "reasoning", "summary": [],
+                 "encrypted_content": seal_block(&serde_json::json!({"type": "redacted_thinking", "data": "xyz"}))},
+            ]})
+            .to_string(),
+        ));
+        let wire = serde_json::to_value(crate::formats::claude::build::build(ir));
+        let wire = wire.expect("claude request serializes");
+        assert_eq!(
+            wire["messages"][0]["content"],
+            serde_json::json!([
+                {"type": "thinking", "thinking": "let me think", "signature": "sig_abc"},
+                {"type": "redacted_thinking", "data": "xyz"},
+            ])
+        );
+    }
+
+    #[test]
+    fn thinking_without_a_claude_signature_stays_a_summary() {
+        let ir = reply(vec![IrPart::Thinking {
+            text: "plain".into(),
+            signature: Some(Signature {
+                by: Format::Gemini,
+                value: "gemini_sig".into(),
+            }),
+        }]);
+        let wire = serde_json::to_string(&build_response(ir)).expect("serializes");
+        assert!(!wire.contains("encrypted_content"), "{wire}");
+    }
+
+    #[test]
+    fn foreign_encrypted_content_is_carried_whole_and_never_sealed_back() {
+        let item = serde_json::json!({
+            "type": "reasoning",
+            "summary": [],
+            "encrypted_content": "gAAAA-openai",
+        });
+        let ir = read(request(
+            &serde_json::json!({"model": "o3", "input": [item]}).to_string(),
+        ));
+        assert_eq!(
+            ir.messages[0].parts,
+            vec![IrPart::Sealed {
+                by: Format::OpenAIResponses,
+                raw: item.clone(),
+            }]
+        );
+
+        let wire = serde_json::to_string(&build_response(reply(vec![IrPart::Sealed {
+            by: Format::OpenAIResponses,
+            raw: item,
+        }])))
+        .expect("serializes");
+        assert!(!wire.contains("magpie-claude1:"), "{wire}");
+        assert!(!wire.contains("encrypted_content"), "{wire}");
+    }
+
+    #[test]
+    fn unreadable_seal_falls_back_to_the_summary() {
+        let ir = read(request(
+            r#"{"model":"claude-sonnet-4","input":[{"type":"reasoning",
+                "summary":[{"type":"summary_text","text":"deep"}],
+                "encrypted_content":"magpie-claude1:not base64!"}]}"#,
+        ));
+        assert_eq!(
+            ir.messages[0].parts,
+            vec![IrPart::Thinking {
+                text: "deep".into(),
+                signature: None,
+            }]
+        );
     }
 }

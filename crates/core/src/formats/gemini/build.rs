@@ -15,7 +15,7 @@ pub fn build(mut ir: IrRequest) -> GeminiRequest {
     let system_instruction = {
         let mut parts = Vec::new();
         for part in ir.system {
-            if let IrPart::Text { text: text, .. } = part {
+            if let IrPart::Text { text, .. } = part {
                 if !text.is_empty() {
                     parts.push(GeminiPart::text(text));
                 }
@@ -63,9 +63,11 @@ fn build_parts(parts: Vec<IrPart>) -> Vec<GeminiPart> {
 
 fn push_part(out: &mut Vec<GeminiPart>, part: IrPart) {
     match part {
-        IrPart::Text { text: text, .. } => {
+        IrPart::Text { text, signature } => {
             if !text.is_empty() {
-                out.push(GeminiPart::text(text));
+                out.push(
+                    GeminiPart::text(text).with_thought_signature(gemini_signature(signature)),
+                );
             }
         }
         // Gemini has no image URL field, so a non-inline image degrades to
@@ -74,8 +76,16 @@ fn push_part(out: &mut Vec<GeminiPart>, part: IrPart) {
             Some((mime_type, data)) => GeminiPart::inline_data(mime_type, data),
             None => GeminiPart::text(url),
         }),
-        IrPart::ToolCall { id, name, args, .. } => {
-            out.push(GeminiPart::function_call_with_id(name, args, id));
+        IrPart::ToolCall {
+            id,
+            name,
+            args,
+            signature,
+        } => {
+            out.push(
+                GeminiPart::function_call_with_id(name, args, id)
+                    .with_thought_signature(gemini_signature(signature)),
+            );
         }
         IrPart::ToolResult {
             call_id, content, ..
@@ -83,7 +93,7 @@ fn push_part(out: &mut Vec<GeminiPart>, part: IrPart) {
             let text = content
                 .into_iter()
                 .filter_map(|p| match p {
-                    IrPart::Text { text: text, .. } => Some(text),
+                    IrPart::Text { text, .. } => Some(text),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -94,14 +104,33 @@ fn push_part(out: &mut Vec<GeminiPart>, part: IrPart) {
                 call_id,
             ));
         }
-        // Reasoning reaches Gemini as plain text in every existing writer.
-        IrPart::Thinking { text, .. } => {
+        // Bare reasoning reaches Gemini as plain text, as in every existing
+        // writer. A signed thought keeps its `thought` flag so Gemini's reader
+        // returns it to `Thinking` and the signature stays on its own part.
+        IrPart::Thinking { text, signature } => {
             if !text.is_empty() {
-                out.push(GeminiPart::text(text));
+                match gemini_signature(signature) {
+                    Some(sig) => {
+                        out.push(GeminiPart::thinking(text).with_thought_signature(Some(sig)))
+                    }
+                    None => out.push(GeminiPart::text(text)),
+                }
             }
         }
         // Only the format that sealed it may replay it; Gemini never does.
         IrPart::Sealed { .. } => {}
+    }
+}
+
+/// Only the API that signed a part may replay it: another vendor's signature
+/// on the same part must not leak into a Gemini request.
+fn gemini_signature(signature: Option<Signature>) -> Option<String> {
+    match signature {
+        Some(Signature {
+            by: Format::Gemini,
+            value,
+        }) => Some(value),
+        _ => None,
     }
 }
 

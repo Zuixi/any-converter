@@ -79,6 +79,10 @@ pub enum ClaudeContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+    /// Anthropic's sealed reasoning, carried whole (ir.go Part.Sealed): only
+    /// a Claude builder may write it back
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -129,6 +129,7 @@ dependencies = [
 name = "any-converter-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "criterion",
  "pretty_assertions",
  "proptest",
