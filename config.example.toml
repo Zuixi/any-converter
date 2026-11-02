@@ -129,3 +129,24 @@ format = "pretty"
 # level = "info"
 # format = "json"
 # rotation = "daily"
+
+# ── Subscription accounts (OAuth) ──────────────────────────────────────
+#
+# Sign in once with `any-converter accounts add gemini`, then point a
+# provider at the stored account. An account signs requests with its own
+# OAuth token (refreshed automatically, cross-process safe) and rides its
+# vendor's wire instead of the plain API:
+#
+#   gemini  → Google Code Assist  POST {base}/v1internal:generateContent
+#             body wrapped as {"model": ..., "request": <gemini body>}
+#             base_url = "https://cloudcode-pa.googleapis.com"
+#
+# `wire` may be set explicitly (gemini_api | code_assist); it is otherwise
+# derived from the account id's provider prefix.
+#
+# [[providers]]
+# name = "gemini"
+# format = "gemini"
+# base_url = "https://cloudcode-pa.googleapis.com"
+# api_key = ""                                  # unused: the account signs
+# account = "gemini:you@example.com"

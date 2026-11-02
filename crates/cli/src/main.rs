@@ -282,6 +282,15 @@ async fn accounts_add(provider: AccountsProvider) -> Result<(), Box<dyn std::err
                 log::warn!("failed to clear revoked marker for {account_id}: {err}");
             }
             println!("Signed in as {} (stored as {account_id})", account.email);
+            println!();
+            println!("Add this to config.toml to serve it:");
+            println!();
+            println!("  [[providers]]");
+            println!("  name = \"gemini\"");
+            println!("  format = \"gemini\"");
+            println!("  base_url = \"https://cloudcode-pa.googleapis.com\"");
+            println!("  api_key = \"\"            # unused: the account signs the requests");
+            println!("  account = \"{account_id}\"");
         }
         AccountsProvider::Copilot => {
             let sign_in = CopilotSignIn::new(CopilotEndpoints::default());
@@ -306,6 +315,10 @@ async fn accounts_add(provider: AccountsProvider) -> Result<(), Box<dyn std::err
                 log::warn!("failed to clear revoked marker for {account_id}: {err}");
             }
             println!("Signed in (stored as {account_id})");
+            println!();
+            println!("Copilot accounts are served by their plugin host; bind one to an");
+            println!("any-converter provider with `account = \"{account_id}\"` in config.toml");
+            println!("once a Copilot wire is available.");
         }
     }
     Ok(())
