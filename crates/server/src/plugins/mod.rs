@@ -9,6 +9,7 @@
 //! implements [`ProviderPlugin`] for its transport.
 
 pub mod authstore;
+pub mod host;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub use authstore::{AuthStoreError, PluginAuth, PluginAuthStore};
+pub use host::{PluginLaunch, PluginTransport};
 
 /// Host → plugin RPC method names (magpie host.js `handlers`).
 pub mod methods {
