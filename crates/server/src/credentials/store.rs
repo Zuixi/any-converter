@@ -218,23 +218,54 @@ mod tests {
         }
     }
 
-    fn keychain_ref() -> Credential {
-        Credential::KeychainRef {
-            reference: "keychain:any-converter:acct-1".into(),
+    fn oauth() -> Credential {
+        Credential::OAuth {
+            provider: "gemini".into(),
+            account: "me@example.com".into(),
+            access_token: "ya29.test-access".into(),
+            refresh_token: Some("1//test-refresh".into()),
+            expires_at_unix: Some(1_900_000_000),
         }
     }
 
     #[test]
-    fn round_trip_both_variants() {
+    fn round_trip_api_key_and_oauth() {
         let dir = TempDir::new();
         let store = FileSecretStore::new(dir.path("secrets.json"));
 
         store.put("api", &api_key()).unwrap();
-        store.put("kc", &keychain_ref()).unwrap();
+        store.put("oauth", &oauth()).unwrap();
 
         assert_eq!(store.get("api").unwrap(), Some(api_key()));
-        assert_eq!(store.get("kc").unwrap(), Some(keychain_ref()));
+        assert_eq!(store.get("oauth").unwrap(), Some(oauth()));
         assert_eq!(store.get("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn oauth_round_trip_preserves_refresh_fields() {
+        let dir = TempDir::new();
+        let store = FileSecretStore::new(dir.path("secrets.json"));
+
+        store.put("gemini:me@example.com", &oauth()).unwrap();
+
+        let loaded = store.get("gemini:me@example.com").unwrap().unwrap();
+        assert_eq!(loaded, oauth());
+        match loaded {
+            Credential::OAuth {
+                provider,
+                account,
+                access_token,
+                refresh_token,
+                expires_at_unix,
+            } => {
+                assert_eq!(provider, "gemini");
+                assert_eq!(account, "me@example.com");
+                assert_eq!(access_token, "ya29.test-access");
+                assert_eq!(refresh_token.as_deref(), Some("1//test-refresh"));
+                assert_eq!(expires_at_unix, Some(1_900_000_000));
+            }
+            other => panic!("expected OAuth credential, got {other:?}"),
+        }
     }
 
     #[test]
@@ -243,9 +274,9 @@ mod tests {
         let store = FileSecretStore::new(dir.path("secrets.json"));
 
         store.put("a", &api_key()).unwrap();
-        store.put("a", &keychain_ref()).unwrap();
+        store.put("a", &oauth()).unwrap();
 
-        assert_eq!(store.get("a").unwrap(), Some(keychain_ref()));
+        assert_eq!(store.get("a").unwrap(), Some(oauth()));
     }
 
     #[test]
@@ -267,7 +298,7 @@ mod tests {
         let store = FileSecretStore::new(dir.path("secrets.json"));
 
         store.put("b", &api_key()).unwrap();
-        store.put("a", &keychain_ref()).unwrap();
+        store.put("a", &oauth()).unwrap();
         store.put("c", &api_key()).unwrap();
 
         let mut ids = store.list().unwrap();
@@ -308,7 +339,7 @@ mod tests {
         let store = FileSecretStore::new(path);
 
         store.put("a", &api_key()).unwrap();
-        store.put("a", &keychain_ref()).unwrap();
+        store.put("a", &oauth()).unwrap();
         store.delete("a").unwrap();
 
         let residue: Vec<_> = glob_children(&dir.0)
@@ -328,11 +359,11 @@ mod tests {
         let store = FileSecretStore::new(path.clone());
 
         store.put("a", &api_key()).unwrap();
-        store.put("a", &keychain_ref()).unwrap();
+        store.put("a", &oauth()).unwrap();
 
         // Corrupt the primary file; `.bak` holds the last-good state.
         fs::write(&path, "{ not json").unwrap();
-        assert_eq!(store.get("a").unwrap(), Some(keychain_ref()));
+        assert_eq!(store.get("a").unwrap(), Some(oauth()));
     }
 
     #[test]

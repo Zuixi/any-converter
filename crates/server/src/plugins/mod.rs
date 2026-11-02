@@ -5,8 +5,9 @@
 //! defines the shapes that cross the host↔plugin boundary (auth storage in
 //! [`authstore`], RPC method parameters/results mirroring magpie host.js
 //! `handlers`) and the trait a concrete plugin runtime implements. The
-//! subprocess runtime (node/bun spawn + stdio JSON-RPC) lands in T7 and
-//! implements [`ProviderPlugin`] for its transport.
+//! subprocess runtime ([`host`]) spawns `plugin-host.js` — the Node side that
+//! loads real OpenCode plugin modules — and implements [`ProviderPlugin`] over
+//! the child's stdio JSON-RPC.
 
 pub mod authstore;
 pub mod host;
@@ -21,7 +22,8 @@ use thiserror::Error;
 
 pub use authstore::{AuthStoreError, PluginAuth, PluginAuthStore};
 pub use host::{
-    HostedPlugin, PluginFetchRequest, PluginFetchResponse, PluginLaunch, PluginTransport,
+    HostedPlugin, PluginFetchRequest, PluginFetchResponse, PluginLaunch, PluginSpec,
+    PluginTransport, default_launch,
 };
 
 /// Host → plugin RPC method names (magpie host.js `handlers`).

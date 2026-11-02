@@ -15,15 +15,24 @@
 //! [`PluginTransport`]. Response lines without an `id`
 //! (notifications/events) are read and ignored for now.
 //!
+//! What runs behind the pipe is `plugin-host.js` (embedded via
+//! `include_str!` and materialized by [`default_launch`]): a Node ESM host
+//! that `import()`s real OpenCode plugin modules, injects the SDK-shaped
+//! `client`, and answers these RPCs. Auth credentials are written by that
+//! host into the very auth file [`PluginAuthStore`] reads, so host and plugin
+//! share one ledger instead of keeping parallel records.
+//!
 //! Runtime constraint: the workspace tokio is built without the `process`
 //! and `io` features, so the child is driven with `std::process` plus a
 //! dedicated reader thread; the only tokio surface is `tokio::sync`.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -35,12 +44,21 @@ use tokio::time::timeout;
 use super::methods;
 use super::{
     ApiKeyParams, ApiKeyResult, AuthResult, Authorization, AuthorizeParams, CallbackParams,
-    CallbackResult, PluginAuth, PluginAuthStore, PluginError, PluginFuture, PluginProviderInfo,
-    ProviderPlugin, SignOutParams, UsageParams,
+    CallbackResult, PluginAuthStore, PluginError, PluginFuture, PluginProviderInfo, ProviderPlugin,
+    SignOutParams, UsageParams,
 };
 
 /// Error message used whenever the plugin process is gone.
 const GONE_MSG: &str = "plugin process is gone";
+
+/// JS host source, embedded so packaged builds need no data files.
+const PLUGIN_HOST_JS: &str = include_str!("plugin-host.js");
+
+/// argv flag carrying the serialized [`PluginSpec`] list to `plugin-host.js`.
+const PLUGIN_ARG: &str = "--plugins";
+
+/// Environment override for the node executable used by [`default_launch`].
+const NODE_ENV: &str = "ANY_CONVERTER_NODE";
 
 /// Waiters for in-flight requests, keyed by request id.
 type PendingReplies = HashMap<u64, oneshot::Sender<Result<Value, String>>>;
@@ -54,6 +72,104 @@ pub struct PluginLaunch {
     pub args: Vec<String>,
     /// Extra environment variables set for the child.
     pub env: Vec<(String, String)>,
+}
+
+/// One plugin the JS host should load: magpie's `{spec, target}` pair.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSpec {
+    /// Package name, absolute path, or path relative to `target`.
+    pub spec: String,
+    /// Directory the spec resolves from; empty means the host's cwd.
+    #[serde(default)]
+    pub target: String,
+}
+
+impl PluginSpec {
+    /// A plugin resolved from `target` (empty string = the host's cwd).
+    pub fn new(spec: impl Into<String>, target: impl Into<String>) -> Self {
+        Self {
+            spec: spec.into(),
+            target: target.into(),
+        }
+    }
+}
+
+/// Launch [`PLUGIN_HOST_JS`] on node, loading `plugins` at `init` time.
+///
+/// The host script is materialized once per process as a `0600` `.mjs` file
+/// under the temp dir (`.mjs` because the temp dir has no `package.json`
+/// marking it as ESM). The plugin list rides along in argv as
+/// `--plugins <json>` so [`HostedPlugin::start`] can forward it verbatim in
+/// the `init` handshake. `ANY_CONVERTER_NODE` overrides the `node` binary.
+pub fn default_launch(plugins: Vec<PluginSpec>) -> PluginLaunch {
+    let mut args = vec![plugin_host_path().to_string_lossy().into_owned()];
+    if !plugins.is_empty() {
+        match serde_json::to_string(&plugins) {
+            Ok(json) => {
+                args.push(PLUGIN_ARG.to_string());
+                args.push(json);
+            }
+            Err(e) => log::warn!("failed to encode plugin specs for the host argv: {e}"),
+        }
+    }
+    PluginLaunch {
+        program: std::env::var(NODE_ENV).unwrap_or_else(|_| "node".to_string()),
+        args,
+        env: vec![],
+    }
+}
+
+/// Plugins baked into `args` by [`default_launch`] (empty for other launches).
+fn plugins_from_args(args: &[String]) -> Vec<PluginSpec> {
+    args.iter()
+        .position(|arg| arg == PLUGIN_ARG)
+        .and_then(|at| args.get(at + 1))
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default()
+}
+
+/// On-disk path of the embedded JS host (written once per process).
+fn plugin_host_path() -> PathBuf {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| match write_plugin_host() {
+        Ok(path) => path,
+        Err(e) => {
+            // Dev fallback: the source tree copy. Node may parse it as CJS
+            // if an enclosing package.json says so, hence the warning.
+            log::warn!("failed to materialize plugin-host.js ({e}); using the source tree");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/plugin-host.js")
+        }
+    })
+    .clone()
+}
+
+/// Write [`PLUGIN_HOST_JS`] to `<temp>/any-converter-plugin-host-<pid>/`.
+fn write_plugin_host() -> std::io::Result<PathBuf> {
+    let dir =
+        std::env::temp_dir().join(format!("any-converter-plugin-host-{}", std::process::id()));
+    fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    }
+    let path = dir.join("plugin-host.mjs");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    file.write_all(PLUGIN_HOST_JS.as_bytes())?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(path)
 }
 
 /// Live ndjson JSON-RPC connection to a plugin subprocess.
@@ -311,19 +427,21 @@ impl HostedPlugin {
     /// Spawn the plugin subprocess and perform the `init` handshake.
     ///
     /// `init` carries the host auth store path (the plugin persists real
-    /// credentials there itself) and must answer within 60 seconds with a
-    /// `plugins` array. The array must be non-empty; its entries are not
-    /// parsed here.
+    /// credentials there itself, so both sides share one auth file) plus the
+    /// plugin list taken from a [`default_launch`] argv. It must answer within
+    /// 60 seconds with a `plugins` array; the array must be non-empty (the JS
+    /// host reports failed loads as `{spec, error}` entries).
     pub async fn start(
         launch: PluginLaunch,
         info: PluginProviderInfo,
         auth: Arc<PluginAuthStore>,
     ) -> Result<Self, PluginError> {
+        let plugins = plugins_from_args(&launch.args);
         let transport = Arc::new(PluginTransport::spawn(launch)?);
         let auth_path = auth.path().to_string_lossy().into_owned();
         let handshake = timeout(
             Duration::from_secs(60),
-            transport.call("init", json!({ "authPath": auth_path })),
+            transport.call("init", json!({ "authPath": auth_path, "plugins": plugins })),
         )
         .await;
         match handshake {
@@ -436,7 +554,6 @@ impl ProviderPlugin for HostedPlugin {
 
     fn callback(&self, params: CallbackParams) -> PluginFuture<AuthResult> {
         let transport = Arc::clone(&self.transport);
-        let auth = Arc::clone(&self.auth);
         let sessions = Arc::clone(&self.sessions);
         Box::pin(async move {
             let ctx = {
@@ -446,7 +563,7 @@ impl ProviderPlugin for HostedPlugin {
             .ok_or_else(|| {
                 PluginError::Protocol(format!("unknown session `{}`", params.session))
             })?;
-            let result = Self::rpc::<CallbackResult>(
+            let mut result = Self::rpc::<CallbackResult>(
                 &transport,
                 methods::CALLBACK,
                 json!({ "session": ctx.plugin_session, "code": params.code }),
@@ -459,37 +576,22 @@ impl ProviderPlugin for HostedPlugin {
                         .unwrap_or_else(|| "callback failed".to_string()),
                 ));
             }
-            // Placeholder entry: the plugin process writes the real
-            // credentials to the auth file itself (it knows the path from
-            // `init`); the host's store only records that the account
-            // exists. T8 fills in the refresh token.
-            let provider = if result.provider.is_empty() {
-                ctx.provider.clone()
-            } else {
-                result.provider.clone()
-            };
-            let account = if result.account.is_empty() {
-                ctx.account.clone()
-            } else {
-                result.account.clone()
-            };
-            auth.set(
-                &format!("{provider}:{account}"),
-                PluginAuth::OAuth {
-                    refresh: None,
-                    access: None,
-                    expires: None,
-                    extra: BTreeMap::new(),
-                },
-            )
-            .map_err(|e| PluginError::Storage(e.to_string()))?;
+            // One shared auth file: the plugin already persisted the real
+            // credentials through the JS host's `client.auth.set` (it knows
+            // the path from `init`). Writing anything here would clobber
+            // them, so the host only reports the identity the flow ran for.
+            if result.provider.is_empty() {
+                result.provider = ctx.provider;
+            }
+            if result.account.is_empty() {
+                result.account = ctx.account;
+            }
             Ok(result)
         })
     }
 
     fn api_key(&self, params: ApiKeyParams) -> PluginFuture<AuthResult> {
         let transport = Arc::clone(&self.transport);
-        let auth = Arc::clone(&self.auth);
         Box::pin(async move {
             let request = serde_json::to_value(&params)
                 .map_err(|e| PluginError::Rpc(format!("failed to encode apiKey params: {e}")))?;
@@ -499,14 +601,9 @@ impl ProviderPlugin for HostedPlugin {
                     result.error.unwrap_or_else(|| "apiKey failed".to_string()),
                 ));
             }
-            auth.set(
-                &format!("{}:{}", result.provider, result.account),
-                PluginAuth::ApiKey {
-                    key: params.key,
-                    extra: BTreeMap::new(),
-                },
-            )
-            .map_err(|e| PluginError::Storage(e.to_string()))?;
+            // Same contract as `callback`: the plugin already persisted
+            // `{type: "api", key, metadata}` through `client.auth.set`, so a
+            // write here would drop the metadata.
             Ok(result)
         })
     }
@@ -542,7 +639,9 @@ impl ProviderPlugin for HostedPlugin {
             let request = serde_json::to_value(&params)
                 .map_err(|e| PluginError::Rpc(format!("failed to encode usage params: {e}")))?;
             let value = transport.call(methods::USAGE, request).await?;
-            Ok(Some(value))
+            // `null` means the plugin has no usage hook: report "unavailable"
+            // instead of leaking a JSON null to the caller.
+            Ok((!value.is_null()).then_some(value))
         })
     }
 }
@@ -614,6 +713,8 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+    // Only the tests build/read concrete credential entries.
+    use super::super::PluginAuth;
 
     /// Echoes every request back: `result` = params, or `error` for "fail".
     const ECHO_SCRIPT: &str = r#"
@@ -898,7 +999,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn hosted_authorize_replaces_session_and_callback_stores_placeholder() {
+    async fn hosted_callback_reports_identity_without_writing_credentials() {
         if !python3_available() {
             eprintln!("skipping: python3 not available");
             return;
@@ -930,17 +1031,10 @@ for line in sys.stdin:
         assert_eq!(result.provider, "github");
         assert_eq!(result.account, "me");
 
-        // Placeholder entry: real tokens are written by the plugin process
-        // itself; the host store only records that the account exists.
-        assert_eq!(
-            store.load().unwrap().get("github:me"),
-            Some(&PluginAuth::OAuth {
-                refresh: None,
-                access: None,
-                expires: None,
-                extra: BTreeMap::new(),
-            })
-        );
+        // Shared-ledger contract: the plugin process writes the real tokens
+        // itself (through the JS host's `client.auth.set`), so the host must
+        // not invent a placeholder entry here.
+        assert!(store.load().unwrap().is_empty());
         plugin.transport.try_shutdown().unwrap();
     }
 
@@ -970,7 +1064,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn hosted_api_key_stores_entry() {
+    async fn hosted_api_key_reports_result_without_writing_credentials() {
         if !python3_available() {
             eprintln!("skipping: python3 not available");
             return;
@@ -992,13 +1086,9 @@ for line in sys.stdin:
         assert!(result.ok);
         assert_eq!(result.provider, "openai");
         assert_eq!(result.account, "bot");
-        assert_eq!(
-            store.load().unwrap().get("openai:bot"),
-            Some(&PluginAuth::ApiKey {
-                key: "sk-x".into(),
-                extra: BTreeMap::new(),
-            })
-        );
+        // The plugin persisted `{type: "api", key, metadata}` itself; a host
+        // write would drop the metadata, so the store stays untouched.
+        assert!(store.load().unwrap().is_empty());
         plugin.transport.try_shutdown().unwrap();
     }
 
@@ -1157,6 +1247,359 @@ for line in sys.stdin:
         // counter shows both attempts went through the plugin.
         let authorization = plugin.authorize(authorize_params(None)).await.unwrap();
         assert_eq!(authorization.session, "s-2");
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    // ------------------------------------------------------------------
+    // Real plugin host: `plugin-host.js` driven by node + the fixture plugin
+    // (`tests/fixtures/plugin-hello`). Skipped when node is missing.
+    // ------------------------------------------------------------------
+
+    /// Node binary used by [`default_launch`] (env override included).
+    fn node_program() -> String {
+        std::env::var(NODE_ENV).unwrap_or_else(|_| "node".to_string())
+    }
+
+    fn node_available() -> bool {
+        static AVAILABLE: OnceLock<bool> = OnceLock::new();
+        *AVAILABLE.get_or_init(|| {
+            Command::new(node_program())
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        })
+    }
+
+    /// An OpenCode-shaped fixture plugin: `auth.provider = "hello"` with one
+    /// oauth method whose callback yields `refresh: "r1" / access: "a1"`.
+    fn hello_spec() -> PluginSpec {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugin-hello");
+        PluginSpec::new(dir.to_string_lossy().into_owned(), "")
+    }
+
+    fn hello_info() -> PluginProviderInfo {
+        PluginProviderInfo {
+            id: "hello".into(),
+            name: "Hello fixture".into(),
+            methods: vec![],
+        }
+    }
+
+    fn hello_authorize(inputs: Option<BTreeMap<String, Value>>) -> AuthorizeParams {
+        AuthorizeParams {
+            provider: "hello".into(),
+            method: 0,
+            inputs,
+            account: "new".into(),
+            proxy: None,
+        }
+    }
+
+    async fn start_node_plugin(
+        root: &Path,
+        plugins: Vec<PluginSpec>,
+    ) -> (HostedPlugin, Arc<PluginAuthStore>) {
+        let store = Arc::new(PluginAuthStore::new(root.join("auth.json")));
+        let plugin = HostedPlugin::start(default_launch(plugins), hello_info(), Arc::clone(&store))
+            .await
+            .unwrap();
+        (plugin, store)
+    }
+
+    /// Drive a full oauth flow and return the plugin's result.
+    async fn hello_sign_in(plugin: &HostedPlugin, account: &str) -> AuthResult {
+        let authorization = plugin
+            .authorize(AuthorizeParams {
+                account: account.into(),
+                ..hello_authorize(None)
+            })
+            .await
+            .unwrap();
+        plugin
+            .callback(CallbackParams {
+                session: authorization.session,
+                code: "the-code".into(),
+            })
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn node_default_launch_materializes_the_embedded_host() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let launch = default_launch(vec![hello_spec()]);
+        assert_eq!(launch.program, node_program());
+
+        // The script is written from `include_str!` as an ESM module.
+        let host = Path::new(&launch.args[0]);
+        assert!(host.is_file(), "missing host script: {}", host.display());
+        assert_eq!(host.extension().and_then(|e| e.to_str()), Some("mjs"));
+        assert_eq!(fs::read_to_string(host).unwrap(), PLUGIN_HOST_JS);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(host).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        // Plugins ride along in argv so `start` can forward them in `init`.
+        assert_eq!(launch.args[1], PLUGIN_ARG);
+        let specs: Vec<PluginSpec> = serde_json::from_str(&launch.args[2]).unwrap();
+        assert_eq!(specs, vec![hello_spec()]);
+        assert_eq!(plugins_from_args(&launch.args), vec![hello_spec()]);
+    }
+
+    #[tokio::test]
+    async fn node_host_init_loads_the_fixture_plugin() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let auth_path = root.path().join("auth.json");
+
+        // Raw handshake: one loaded plugin, no `error` entry.
+        let transport = PluginTransport::spawn(default_launch(vec![hello_spec()])).unwrap();
+        let reply = timeout(
+            Duration::from_secs(60),
+            transport.call(
+                "init",
+                json!({
+                    "authPath": auth_path.to_string_lossy(),
+                    "plugins": [hello_spec()],
+                }),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let plugins = reply["plugins"].as_array().unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0]["spec"], hello_spec().spec);
+        assert!(
+            plugins[0].get("error").is_none(),
+            "fixture plugin failed to load: {reply}"
+        );
+
+        // Unknown methods answer with an error and leave the host alive.
+        let err = timeout(
+            Duration::from_secs(10),
+            transport.call("definitely-not-a-method", json!({})),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(matches!(err, PluginError::Rpc(ref m) if m == "no method definitely-not-a-method"));
+        transport.try_shutdown().unwrap();
+
+        // `start` accepts the same launch: the non-empty `plugins` array is
+        // what the handshake validation checks.
+        let (plugin, _store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_authorize_returns_flow_details() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, _store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        let authorization = plugin.authorize(hello_authorize(None)).await.unwrap();
+        assert_eq!(authorization.session, "s-1");
+        assert_eq!(
+            authorization.url.as_deref(),
+            Some("https://example.test/auth")
+        );
+        assert_eq!(
+            authorization.instructions.as_deref(),
+            Some("paste the code")
+        );
+        assert_eq!(authorization.method, "code");
+        assert!(!authorization.opened);
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_callback_persists_real_credentials() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        let result = hello_sign_in(&plugin, "new").await;
+        assert!(result.ok);
+        assert_eq!(result.provider, "hello");
+        assert_eq!(result.account, "new");
+
+        // The JS host wrote the real tokens through `client.auth.set`; the
+        // Rust store reads the very same file (one ledger, no placeholder).
+        let map = store.load().unwrap();
+        match map
+            .get("hello:new")
+            .expect("credentials were not persisted")
+        {
+            PluginAuth::OAuth {
+                refresh,
+                access,
+                expires,
+                extra,
+            } => {
+                assert_eq!(refresh.as_deref(), Some("r1"));
+                assert_eq!(access.as_deref(), Some("a1"));
+                // `Date.now() + 1h`, i.e. milliseconds since the epoch.
+                assert!(expires.is_some_and(|e| e > 1_000_000_000_000));
+                assert!(extra.is_empty());
+            }
+            other => panic!("expected an oauth entry, got {other:?}"),
+        }
+
+        // On-disk shape is OpenCode's: `{type, refresh, access, expires}`.
+        let raw: Value = serde_json::from_str(&fs::read_to_string(store.path()).unwrap()).unwrap();
+        assert_eq!(raw["hello:new"]["type"], "oauth");
+        assert_eq!(raw["hello:new"]["refresh"], "r1");
+        assert_eq!(raw["hello:new"]["access"], "a1");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(store.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_sign_out_removes_credentials() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        let result = hello_sign_in(&plugin, "new").await;
+        assert!(result.ok);
+        assert!(store.load().unwrap().contains_key("hello:new"));
+
+        plugin
+            .sign_out(SignOutParams {
+                provider: "hello".into(),
+                account: "new".into(),
+            })
+            .await
+            .unwrap();
+        assert!(!store.load().unwrap().contains_key("hello:new"));
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_plugin_error_is_rpc_and_transport_recovers() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        // The fixture's `authorize` throws for `inputs.fail`.
+        let err = plugin
+            .authorize(hello_authorize(Some(BTreeMap::from([(
+                "fail".to_string(),
+                json!(true),
+            )]))))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PluginError::Rpc(ref m) if m.contains("boom from plugin")));
+        assert!(store.load().unwrap().is_empty());
+
+        // The host process survived and still serves the next call.
+        let authorization = plugin.authorize(hello_authorize(None)).await.unwrap();
+        assert_eq!(authorization.session, "s-2");
+        let result = plugin
+            .callback(CallbackParams {
+                session: authorization.session,
+                code: "the-code".into(),
+            })
+            .await
+            .unwrap();
+        assert!(result.ok);
+        assert!(store.load().unwrap().contains_key("hello:new"));
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_api_key_writes_metadata_and_clears_provider() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        let result = plugin
+            .api_key(ApiKeyParams {
+                provider: "hello".into(),
+                method: 0,
+                inputs: Some(BTreeMap::from([("org".to_string(), json!("acme"))])),
+                key: "sk-1".into(),
+                account: "bot".into(),
+                proxy: None,
+            })
+            .await
+            .unwrap();
+        assert!(result.ok);
+        // The JS host wrote `{type: "api", key, metadata}` itself.
+        match store.load().unwrap().get("hello:bot") {
+            Some(PluginAuth::ApiKey { key, extra }) => {
+                assert_eq!(key, "sk-1");
+                assert_eq!(extra.get("metadata"), Some(&json!({"org": "acme"})));
+            }
+            other => panic!("expected an api entry, got {other:?}"),
+        }
+
+        // An empty account signs the whole provider out.
+        plugin
+            .sign_out(SignOutParams {
+                provider: "hello".into(),
+                account: String::new(),
+            })
+            .await
+            .unwrap();
+        assert!(store.load().unwrap().is_empty());
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_usage_without_plugin_hook_is_none() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, _store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        // The fixture exposes no `auth.usage` hook: `null` → `None`, not
+        // `Some(Value::Null)`.
+        let usage = plugin
+            .usage(UsageParams {
+                provider: "hello".into(),
+                account: "new".into(),
+                proxy: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(usage, None);
         plugin.transport.try_shutdown().unwrap();
     }
 }
