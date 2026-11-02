@@ -230,6 +230,7 @@ fn gateway(format: Format, base_url: String) -> Router {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![ProviderConfig {
             name: "upstream".into(),
@@ -245,6 +246,7 @@ fn gateway(format: Format, base_url: String) -> Router {
             endpoints: Default::default(),
             auth: Default::default(),
             plugin: None,
+            proxy: None,
         }],
         model_routes: vec![ModelRouteConfig {
             pattern: "*".into(),

@@ -2,6 +2,7 @@ export type AppPath =
   | "/dashboard"
   | "/providers"
   | "/routes"
+  | "/accounts"
   | "/playground"
   | "/logs"
   | "/usage"

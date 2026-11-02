@@ -120,6 +120,28 @@ pub struct ServerSettings {
     pub api_key: Option<String>,
     #[serde(default)]
     pub pass_through_headers: PassThroughHeadersConfig,
+    /// Global egress proxy (e.g. `http://127.0.0.1:7890`): sign-in, token
+    /// refresh and revocation clients leave through it (magpie
+    /// `ProxyOfLogin` — a sign-in must use the same exit as the account's
+    /// own requests). Provider-level `proxy` wins over this one.
+    #[serde(default)]
+    pub proxy: Option<String>,
+}
+
+/// Build a reqwest client routed through `proxy` when one is configured.
+///
+/// Shared by the sign-in clients, the account-refresh client and the
+/// revocation client so login/refresh/revoke always leave through the same
+/// proxy the account's own requests use. An explicit proxy disables the
+/// ambient environment proxies so the two never stack.
+pub fn build_proxied_client(proxy: Option<&str>) -> Result<reqwest::Client, reqwest::Error> {
+    match proxy {
+        Some(url) => reqwest::Client::builder()
+            .no_proxy()
+            .proxy(reqwest::Proxy::all(url)?)
+            .build(),
+        None => Ok(reqwest::Client::new()),
+    }
 }
 
 /// The API an upstream speaks. Mirrors magpie's `Protocol` minus Copilot
@@ -307,6 +329,11 @@ pub struct ProviderConfig {
     /// must stay unset and `base_url`/`api_key` may be empty.
     #[serde(default)]
     pub plugin: Option<PluginRef>,
+    /// Egress proxy for this provider's account traffic (sign-in, refresh,
+    /// revocation). Wins over [`ServerSettings::proxy`]; `None` falls back
+    /// to the server-level proxy (P10, magpie `ProxyOfLogin`).
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -607,6 +634,12 @@ impl ProviderConfig {
             == Some("copilot")
     }
 
+    /// The egress proxy in force for this provider: the provider-level
+    /// `proxy`, else the server-level one, else none (P10).
+    pub fn proxy_for<'a>(&'a self, server_proxy: Option<&'a str>) -> Option<&'a str> {
+        self.proxy.as_deref().or(server_proxy)
+    }
+
     /// Resolve a client model name to the upstream model using model_map.
     ///
     /// Priority: exact match → longest prefix wildcard → `"*"` → passthrough.
@@ -827,6 +860,7 @@ mod tests {
             endpoints: Default::default(),
             auth: Default::default(),
             plugin: None,
+            proxy: None,
         }
     }
 
@@ -1138,6 +1172,7 @@ accounts = ["gemini:a@x", "gemini:b@x"]
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers: vec![provider],
             model_routes: vec![],
@@ -1316,6 +1351,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers: vec![
                 ProviderConfig {
@@ -1331,6 +1367,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     endpoints: Default::default(),
                     auth: Default::default(),
                     plugin: None,
+                    proxy: None,
                 },
                 ProviderConfig {
                     name: "openai".into(),
@@ -1345,6 +1382,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     endpoints: Default::default(),
                     auth: Default::default(),
                     plugin: None,
+                    proxy: None,
                 },
             ],
             model_routes: vec![
@@ -1404,12 +1442,14 @@ headers = { "x-ms-client-request-id" = "test-client" }
             endpoints: Default::default(),
             auth: Default::default(),
             plugin: None,
+            proxy: None,
         };
         let server = ServerSettings {
             host: "127.0.0.1".into(),
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         };
 
         // Both present: model_routes wins.
@@ -1450,6 +1490,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers: vec![
                 ProviderConfig {
@@ -1465,6 +1506,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     endpoints: Default::default(),
                     auth: Default::default(),
                     plugin: None,
+                    proxy: None,
                 },
                 ProviderConfig {
                     name: "backup".into(),
@@ -1479,6 +1521,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     endpoints: Default::default(),
                     auth: Default::default(),
                     plugin: None,
+                    proxy: None,
                 },
             ],
             model_routes: vec![ModelRouteConfig {
@@ -1506,6 +1549,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers: vec![],
             model_routes: vec![ModelRouteConfig {
@@ -1537,6 +1581,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers: vec![ProviderConfig {
                 name: "openai".into(),
@@ -1551,6 +1596,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 endpoints: Default::default(),
                 auth: Default::default(),
                 plugin: None,
+                proxy: None,
             }],
             model_routes: vec![
                 ModelRouteConfig {
@@ -1698,5 +1744,51 @@ api_key = "sk-plaintext"
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o644, "warning must not rewrite permissions");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG_WITH_KEY);
+    }
+
+    // ------------------------------------------------------------------
+    // Egress proxy (P10): the sign-in/refresh/revocation clients leave
+    // through the configured proxy, which receives the absolute URI.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn build_proxied_client_accepts_valid_and_rejects_invalid_proxies() {
+        assert!(build_proxied_client(Some("http://127.0.0.1:1")).is_ok());
+        assert!(build_proxied_client(Some("https://proxy.example.test:8080")).is_ok());
+        assert!(build_proxied_client(Some("not a url")).is_err());
+        assert!(build_proxied_client(None).is_ok());
+    }
+
+    #[tokio::test]
+    async fn proxied_client_sends_absolute_uri_to_the_proxy() {
+        // A fake HTTP proxy: it records the request target. HTTP proxies
+        // receive the absolute URI (`http://host/path`), which proves the
+        // client really routed through the proxy.
+        let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app =
+            axum::Router::new().fallback(move |req: axum::http::Request<axum::body::Body>| {
+                let seen_tx = seen_tx.clone();
+                async move {
+                    let _ = seen_tx.send(req.uri().to_string());
+                    axum::http::StatusCode::OK
+                }
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = build_proxied_client(Some(&format!("http://{addr}"))).unwrap();
+        let response = client
+            .get("http://example.test/v1/accounts")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let seen = seen_rx.recv().await.unwrap();
+        assert_eq!(
+            seen, "http://example.test/v1/accounts",
+            "the proxy must see the absolute URI, not the origin-form path"
+        );
     }
 }

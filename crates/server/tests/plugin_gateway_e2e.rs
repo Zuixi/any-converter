@@ -83,6 +83,7 @@ fn plugin_provider(name: &str, account: &str) -> ProviderConfig {
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: Some(gateway_spec()),
+        proxy: None,
     }
 }
 
@@ -101,6 +102,7 @@ fn http_provider(name: &str, base_url: &str) -> ProviderConfig {
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: None,
+        proxy: None,
     }
 }
 
@@ -125,6 +127,7 @@ impl Harness {
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers,
             model_routes: vec![ModelRouteConfig {

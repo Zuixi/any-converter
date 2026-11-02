@@ -210,6 +210,7 @@ fn gemini_provider(name: &str, base: &str, accounts: Vec<String>) -> ProviderCon
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: None,
+        proxy: None,
     }
 }
 
@@ -227,6 +228,7 @@ fn openai_provider(name: &str, base: &str) -> ProviderConfig {
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: None,
+        proxy: None,
     }
 }
 
@@ -241,6 +243,7 @@ fn make_app(providers: Vec<ProviderConfig>, store: FileSecretStore) -> Router {
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers,
             model_routes: vec![ModelRouteConfig {

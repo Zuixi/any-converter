@@ -5,7 +5,7 @@ use any_converter_core::convert::{Format, convert_request, convert_response};
 use axum::{
     Json,
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -21,8 +21,11 @@ use crate::credentials::allowance::copilot_allowance;
 use crate::credentials::copilot::{
     COPILOT_DEFAULT_API_BASE, CopilotError, CopilotSessions, copilot_api_headers,
 };
+use crate::credentials::signout::{self, RevokeOutcome};
 use crate::credentials::token::{AuthErr401, classify_401};
-use crate::credentials::{AccountResolver, Allowance, ApiKeySource, Limit, TokenSource};
+use crate::credentials::{
+    AccountResolver, Allowance, ApiKeySource, Credential, Limit, TokenSource,
+};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
 use crate::namespace::{extract_namespace_map, patch_response_namespaces};
 use crate::observability::utf8_prefix;
@@ -32,6 +35,7 @@ use crate::proxy::build_upstream_url_for_provider;
 use crate::request_log::{RequestLogContext, RequestLogger};
 use crate::route_strategy::order_provider_names;
 use crate::router::RouteInfo;
+use crate::signin_task::SignInTasks;
 use crate::usage::{self, UsageLogger, UsageRecord};
 
 #[derive(Clone)]
@@ -178,6 +182,206 @@ fn quota_window_json(window: &Limit) -> serde_json::Value {
                 .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
         }),
     })
+}
+
+/// `GET /v1/accounts` (P10): the locally stored account secrets, one entry
+/// per id with `{id, kind, provider, account}` — **never** the tokens.
+///
+/// Kept public like [`handle_account_quotas`]: the entries carry no
+/// secret material.
+pub async fn handle_accounts(State(state): State<Arc<AppState>>) -> Response {
+    let credentials = match state.accounts.list_credentials() {
+        Ok(credentials) => credentials,
+        Err(err) => {
+            return api_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_error",
+                format!("reading the account store failed: {err}"),
+            );
+        }
+    };
+
+    let accounts: Vec<serde_json::Value> = credentials
+        .into_iter()
+        .map(|(id, credential)| {
+            let (kind, provider, account) = match &credential {
+                Credential::OAuth {
+                    provider, account, ..
+                } => ("oauth", provider.clone(), account.clone()),
+                Credential::ApiKey { .. } => (
+                    "api_key",
+                    id.split(':').next().unwrap_or("").to_string(),
+                    String::new(),
+                ),
+            };
+            serde_json::json!({ "id": id, "kind": kind, "provider": provider, "account": account })
+        })
+        .collect();
+    Json(serde_json::json!({ "accounts": accounts })).into_response()
+}
+
+/// The egress proxy for one provider's account traffic: the provider's own
+/// `proxy` field, else the server-level one, else none (P10).
+fn account_proxy(state: &AppState, provider: &str) -> Option<String> {
+    let by_account = state.config.providers.iter().find(|p| {
+        p.account_ids()
+            .iter()
+            .any(|id| id.split(':').next() == Some(provider))
+    });
+    let provider_config = by_account.or_else(|| state.config.find_provider(provider));
+    provider_config
+        .and_then(|p| p.proxy_for(state.config.server.proxy.as_deref()))
+        .map(String::from)
+        .or_else(|| state.config.server.proxy.clone())
+}
+
+/// `POST /v1/accounts/signin` (P10): start a gemini/copilot sign-in task
+/// and return its snapshot at once.
+pub async fn handle_account_signin(
+    State(state): State<Arc<AppState>>,
+    Extension(sign_ins): Extension<Arc<SignInTasks>>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+
+    let provider = body.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+    if provider.is_empty() {
+        return api_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "missing provider (gemini or copilot)",
+        );
+    }
+    // `account` is accepted for magpie parity but unused: the account id
+    // is discovered from the flow result (gemini email / copilot hint).
+
+    let proxy = account_proxy(&state, provider);
+    match sign_ins
+        .start_with_proxy(provider, proxy, state.accounts.clone())
+        .await
+    {
+        Ok(task) => Json(task).into_response(),
+        Err(err) => api_error_response(StatusCode::BAD_REQUEST, "invalid_request_error", err),
+    }
+}
+
+/// `GET /v1/accounts/signin/{id}` (P10): poll one sign-in task.
+pub async fn handle_account_signin_status(
+    State(state): State<Arc<AppState>>,
+    Extension(sign_ins): Extension<Arc<SignInTasks>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+
+    match sign_ins.status(&id) {
+        Some(task) => Json(task).into_response(),
+        None => api_error_response(
+            StatusCode::NOT_FOUND,
+            "signin_task_not_found",
+            format!("sign-in task {id} not found"),
+        ),
+    }
+}
+
+/// `POST /v1/accounts/signin/{id}/submit` (P10): finish a flow with a
+/// pasted callback URL (gemini).
+pub async fn handle_account_signin_submit(
+    State(state): State<Arc<AppState>>,
+    Extension(sign_ins): Extension<Arc<SignInTasks>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+
+    let input = body.get("input").and_then(|v| v.as_str()).unwrap_or("");
+    match sign_ins.submit(&id, input).await {
+        Ok(task) => Json(task).into_response(),
+        Err(err) => api_error_response(StatusCode::BAD_REQUEST, "invalid_request_error", err),
+    }
+}
+
+/// `POST /v1/accounts/signin/{id}/cancel` (P10): cancel one sign-in task
+/// (closing its listener / poller); 204 when it existed.
+pub async fn handle_account_signin_cancel(
+    State(state): State<Arc<AppState>>,
+    Extension(sign_ins): Extension<Arc<SignInTasks>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+
+    if sign_ins.cancel(&id).await {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        api_error_response(
+            StatusCode::NOT_FOUND,
+            "signin_task_not_found",
+            format!("sign-in task {id} not found"),
+        )
+    }
+}
+
+/// `POST /v1/accounts/{id}/remove` (P10): revoke the vendor token when the
+/// vendor offers a revocation endpoint, then remove the account locally.
+/// The response reports the revocation outcome (`Revoked` | `NotOffered`
+/// | `Failed`); a failed revocation never blocks the removal.
+pub async fn handle_account_remove(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+
+    let provider = id.split(':').next().unwrap_or("");
+    let proxy = account_proxy(&state, provider);
+    match signout::remove(&state.accounts, &id, proxy.as_deref()).await {
+        Ok(outcome) => {
+            let (name, error) = match &outcome {
+                RevokeOutcome::Revoked => ("Revoked", None),
+                RevokeOutcome::NotOffered => ("NotOffered", None),
+                RevokeOutcome::Failed(err) => ("Failed", Some(err.clone())),
+            };
+            Json(serde_json::json!({ "id": id, "outcome": name, "error": error })).into_response()
+        }
+        Err(err) => api_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "store_error",
+            format!("removing account {id} failed: {err}"),
+        ),
+    }
 }
 
 /// The allowance windows of one account of `provider` (P9). Gemini and
@@ -1868,6 +2072,7 @@ mod tests {
                     port: 8080,
                     api_key: None,
                     pass_through_headers: PassThroughHeadersConfig::default(),
+                    proxy: None,
                 },
                 providers: vec![ProviderConfig {
                     name: "openai".into(),
@@ -1882,6 +2087,7 @@ mod tests {
                     endpoints: Default::default(),
                     auth: Default::default(),
                     plugin: None,
+                    proxy: None,
                 }],
                 model_routes: vec![],
                 routes: vec![RouteConfig {
@@ -1986,6 +2192,7 @@ mod tests {
                     port: 8080,
                     api_key: None,
                     pass_through_headers: PassThroughHeadersConfig::default(),
+                    proxy: None,
                 },
                 providers: vec![],
                 model_routes: vec![],

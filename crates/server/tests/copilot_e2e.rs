@@ -281,6 +281,7 @@ fn server_config() -> ServerConfig {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![ProviderConfig {
             name: "copilot".into(),
@@ -295,6 +296,7 @@ fn server_config() -> ServerConfig {
             endpoints: Default::default(),
             auth: Default::default(),
             plugin: None,
+            proxy: None,
         }],
         model_routes: vec![ModelRouteConfig {
             pattern: "*".into(),

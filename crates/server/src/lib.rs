@@ -15,6 +15,7 @@ pub mod proxy;
 pub mod request_log;
 pub(crate) mod route_strategy;
 pub mod router;
+pub mod signin_task;
 pub mod storage;
 pub mod usage;
 pub mod wire;
@@ -42,6 +43,10 @@ pub async fn run_with_shutdown(
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await?;
+
+    // No in-flight sign-in (listener or temp state) may outlive the
+    // process: cancel every outstanding task (P10).
+    signin_task::SignInTasks::global().shutdown().await;
 
     Ok(())
 }

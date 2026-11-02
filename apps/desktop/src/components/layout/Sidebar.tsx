@@ -58,7 +58,7 @@ export function Sidebar({
       <nav className="sidebar-nav">
         {navItems.map((item) => {
           const { Icon } = item;
-          const label = t(item.label);
+          const label = t(item.label) || item.fallback || item.label;
           return (
             <NavLink
               key={item.path}

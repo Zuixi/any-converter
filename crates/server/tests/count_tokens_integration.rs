@@ -36,6 +36,7 @@ fn provider(name: &str, format: Format, base_url: &str) -> ProviderConfig {
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: None,
+        proxy: None,
     }
 }
 
@@ -46,6 +47,7 @@ fn make_app(providers: Vec<ProviderConfig>, route_provider: &str, api_key: Optio
             port: 8080,
             api_key: api_key.map(String::from),
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers,
         model_routes: vec![ModelRouteConfig {

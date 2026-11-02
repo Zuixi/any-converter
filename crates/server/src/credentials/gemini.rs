@@ -100,6 +100,9 @@ pub enum SignInError {
     /// `wait`/`finish_pasted` was called before `start`.
     #[error("sign-in not started")]
     NotStarted,
+    /// The configured egress proxy could not be applied.
+    #[error("proxy error: {0}")]
+    Proxy(String),
 }
 
 /// The authorize URL plus everything the caller needs to complete the flow.
@@ -183,6 +186,15 @@ impl ReqwestHttpExchange {
         Self {
             client: reqwest::Client::new(),
         }
+    }
+
+    /// Create the production HTTP layer leaving through `proxy` when set
+    /// (P10: the sign-in must exit through the same proxy the account's own
+    /// requests will use — magpie `ProxyOfLogin`).
+    fn with_proxy(proxy: Option<&str>) -> Result<Self, SignInError> {
+        let client = crate::config::build_proxied_client(proxy)
+            .map_err(|error| SignInError::Proxy(error.to_string()))?;
+        Ok(Self { client })
     }
 }
 
@@ -270,7 +282,10 @@ impl HttpExchange for ReqwestHttpExchange {
 struct PkceSession {
     verifier: String,
     state: String,
-    listener: tokio::net::TcpListener,
+    /// The loopback listener: taken out by `wait` (its server owns it once
+    /// serving); the verifier stays behind so a pasted callback can still
+    /// complete after an aborted `wait` (P10 task flow).
+    listener: Option<tokio::net::TcpListener>,
     redirect_uri: String,
 }
 
@@ -283,8 +298,10 @@ struct PkceSession {
 pub struct GeminiSignIn {
     endpoints: GeminiEndpoints,
     http: Arc<dyn HttpExchange>,
-    /// Created by `start`, consumed by `wait`/`finish_pasted`.
-    session: tokio::sync::Mutex<Option<PkceSession>>,
+    /// Created by `start`, consumed by the first exchange (`wait` or
+    /// `finish_pasted`). Shared so an aborted `wait` (task cancel) can be
+    /// followed by a pasted-callback exchange.
+    session: Arc<tokio::sync::Mutex<Option<PkceSession>>>,
 }
 
 impl GeminiSignIn {
@@ -294,12 +311,24 @@ impl GeminiSignIn {
         Self::with_http(endpoints, Arc::new(ReqwestHttpExchange::new()))
     }
 
+    /// Create a sign-in whose HTTP exchange leaves through `proxy` when set
+    /// (P10).
+    pub fn with_proxy(
+        endpoints: GeminiEndpoints,
+        proxy: Option<&str>,
+    ) -> Result<Self, SignInError> {
+        Ok(Self::with_http(
+            endpoints,
+            Arc::new(ReqwestHttpExchange::with_proxy(proxy)?),
+        ))
+    }
+
     /// Create a sign-in with an injected [`HttpExchange`] layer (tests).
     pub fn with_http(endpoints: GeminiEndpoints, http: Arc<dyn HttpExchange>) -> Self {
         Self {
             endpoints,
             http,
-            session: tokio::sync::Mutex::new(None),
+            session: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -320,7 +349,7 @@ impl GeminiSignIn {
         *self.session.lock().await = Some(PkceSession {
             verifier,
             state: state.clone(),
-            listener,
+            listener: Some(listener),
             redirect_uri,
         });
 
@@ -339,19 +368,17 @@ impl GeminiSignIn {
     /// continues; a callback carrying an `error` param fails the wait with
     /// [`SignInError::Vendor`]. No callback before `timeout` →
     /// [`SignInError::Timeout`].
-    pub async fn wait(self, timeout: Duration) -> Result<GeminiAccount, SignInError> {
-        let session = self
-            .session
-            .lock()
-            .await
-            .take()
-            .ok_or(SignInError::NotStarted)?;
-        let PkceSession {
-            verifier,
-            state: expected_state,
-            listener,
-            redirect_uri,
-        } = session;
+    ///
+    /// Only the listener is taken out of the session up front: the code
+    /// verifier is consumed when the exchange runs, so a pasted-callback
+    /// flow can still complete after this `wait` is aborted (P10).
+    pub async fn wait(&self, timeout: Duration) -> Result<GeminiAccount, SignInError> {
+        let (expected_state, listener) = {
+            let mut session = self.session.lock().await;
+            let session = session.as_mut().ok_or(SignInError::NotStarted)?;
+            let listener = session.listener.take().ok_or(SignInError::NotStarted)?;
+            (session.state.clone(), listener)
+        };
 
         let (done_tx, mut done_rx) =
             tokio::sync::mpsc::unbounded_channel::<Result<String, SignInError>>();
@@ -401,7 +428,16 @@ impl GeminiSignIn {
             }
         };
 
-        self.complete(code, verifier, redirect_uri).await
+        // Consume the session for the exchange: the code verifier is
+        // single-use (the listener was already taken out above).
+        let session = self
+            .session
+            .lock()
+            .await
+            .take()
+            .ok_or(SignInError::NotStarted)?;
+        self.complete(code, session.verifier, session.redirect_uri)
+            .await
     }
 
     /// Paste fallback for when the browser cannot reach the loopback
@@ -1237,6 +1273,17 @@ mod tests {
             serde_json::from_str(r#"{"access_token":"a"}"#).unwrap();
         assert_eq!(minimal.refresh_token, None);
         assert_eq!(minimal.expires_in, None);
+    }
+
+    #[test]
+    fn with_proxy_builds_or_rejects() {
+        // A valid proxy URL constructs the exchange layer; an unparsable
+        // one surfaces as `SignInError::Proxy` instead of panicking (P10).
+        assert!(GeminiSignIn::with_proxy(test_endpoints(), Some("http://127.0.0.1:1")).is_ok());
+        assert!(matches!(
+            GeminiSignIn::with_proxy(test_endpoints(), Some("not a url")),
+            Err(SignInError::Proxy(_))
+        ));
     }
 
     #[tokio::test]

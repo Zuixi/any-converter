@@ -190,6 +190,15 @@ impl ReqwestDeviceHttp {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Create the production HTTP layer leaving through `proxy` when set
+    /// (P10: the sign-in must exit through the same proxy the account's
+    /// own requests will use — magpie `ProxyOfLogin`).
+    pub fn with_proxy(proxy: Option<&str>) -> Result<Self, SignInError> {
+        let client = crate::config::build_proxied_client(proxy)
+            .map_err(|error| SignInError::Proxy(error.to_string()))?;
+        Ok(Self { client })
+    }
 }
 
 impl DeviceHttp for ReqwestDeviceHttp {
@@ -292,6 +301,18 @@ impl CopilotSignIn {
         Self::with_http(endpoints, Arc::new(ReqwestDeviceHttp::new()))
     }
 
+    /// Create a sign-in whose device flow leaves through `proxy` when set
+    /// (P10).
+    pub fn with_proxy(
+        endpoints: CopilotEndpoints,
+        proxy: Option<&str>,
+    ) -> Result<Self, SignInError> {
+        Ok(Self::with_http(
+            endpoints,
+            Arc::new(ReqwestDeviceHttp::with_proxy(proxy)?),
+        ))
+    }
+
     /// Create a sign-in with an injected [`DeviceHttp`] layer (tests).
     pub fn with_http(endpoints: CopilotEndpoints, http: Arc<dyn DeviceHttp>) -> Self {
         Self {
@@ -350,7 +371,7 @@ impl CopilotSignIn {
     /// - `access_token` present → [`CopilotAccount`]
     /// - deadline elapses → [`SignInError::Timeout`]
     pub async fn wait(
-        self,
+        &self,
         started: &DeviceCodeStarted,
         timeout: Duration,
     ) -> Result<CopilotAccount, SignInError> {
@@ -828,6 +849,17 @@ mod tests {
     // ------------------------------------------------------------------
     // Constants / defaults
     // ------------------------------------------------------------------
+
+    #[test]
+    fn with_proxy_builds_or_rejects() {
+        // A valid proxy URL constructs the device layer; an unparsable one
+        // surfaces as `SignInError::Proxy` instead of panicking (P10).
+        assert!(CopilotSignIn::with_proxy(test_endpoints(), Some("http://127.0.0.1:1")).is_ok());
+        assert!(matches!(
+            CopilotSignIn::with_proxy(test_endpoints(), Some("not a url")),
+            Err(SignInError::Proxy(_))
+        ));
+    }
 
     #[test]
     fn defaults_match_github_copilot() {

@@ -29,6 +29,7 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: None,
+        proxy: None,
     }
 }
 
@@ -53,6 +54,7 @@ async fn non_streaming_proxy() {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![oai_provider("openai", &base)],
         model_routes: vec![any_converter_server::config::ModelRouteConfig {
@@ -157,6 +159,7 @@ async fn client_headers_passthrough_to_upstream() {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![oai_provider("openai", &base)],
         model_routes: vec![any_converter_server::config::ModelRouteConfig {
@@ -245,6 +248,7 @@ async fn streaming_proxy_text() {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![oai_provider("openai", &base)],
         model_routes: vec![any_converter_server::config::ModelRouteConfig {
@@ -318,6 +322,7 @@ async fn provider_failover_priority() {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers,
         model_routes: vec![any_converter_server::config::ModelRouteConfig {
@@ -374,6 +379,7 @@ async fn auth_missing_returns_401() {
             port: 8080,
             api_key: Some("secret".into()),
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![oai_provider("openai", "http://127.0.0.1:1")],
         model_routes: vec![any_converter_server::config::ModelRouteConfig {
@@ -425,6 +431,7 @@ async fn auth_invalid_returns_401() {
             port: 8080,
             api_key: Some("secret".into()),
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![oai_provider("openai", "http://127.0.0.1:1")],
         model_routes: vec![any_converter_server::config::ModelRouteConfig {
@@ -486,6 +493,7 @@ async fn upstream_error_returns_502() {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![oai_provider("openai", &base)],
         model_routes: vec![any_converter_server::config::ModelRouteConfig {
@@ -537,6 +545,7 @@ async fn health_returns_ok() {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![],
         model_routes: vec![],

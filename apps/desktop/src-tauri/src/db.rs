@@ -212,6 +212,7 @@ impl DesktopDb {
                     endpoints: Default::default(),
                     auth: Default::default(),
                     plugin: None,
+                    proxy: None,
                 })
             })
             .collect::<Result<Vec<_>, DbError>>()?;
@@ -266,6 +267,7 @@ impl DesktopDb {
                 port: parse_u16_setting(&settings, "server.port", 8080)?,
                 api_key: settings.get("server.api_key").cloned(),
                 pass_through_headers: Default::default(),
+                proxy: settings.get("server.proxy").cloned(),
             },
             providers: provider_configs,
             model_routes,

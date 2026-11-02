@@ -205,6 +205,7 @@ fn code_assist_provider(
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: None,
+        proxy: None,
     }
 }
 
@@ -215,6 +216,7 @@ fn server_config(provider: ProviderConfig) -> ServerConfig {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![provider],
         model_routes: vec![ModelRouteConfig {
@@ -546,6 +548,7 @@ async fn revoked_401_marks_account_and_fails_over() {
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers: vec![
                 code_assist_provider(
