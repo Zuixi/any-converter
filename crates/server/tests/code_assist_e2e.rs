@@ -18,6 +18,7 @@ use any_converter_server::credentials::{
     AccountResolver, Credential, FileSecretStore, SecretStore,
 };
 use any_converter_server::handlers::AppState;
+use any_converter_server::lockfile::{FileLock, LockError};
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
 use axum::extract::Request as AxumRequest;
@@ -45,6 +46,12 @@ struct FakeUpstream {
     generate_body: Mutex<Option<Value>>,
     token_calls: Mutex<usize>,
     token_body: Mutex<Option<String>>,
+    /// Queued 401 responses: one body per upcoming generate request.
+    generate_401_bodies: Mutex<Vec<String>>,
+    /// Number of generate requests received.
+    generate_calls: Mutex<usize>,
+    /// How long the token endpoint sleeps before answering.
+    token_delay_ms: Mutex<u64>,
 }
 
 impl FakeUpstream {
@@ -67,23 +74,51 @@ impl FakeUpstream {
     fn token_body(&self) -> Option<String> {
         self.token_body.lock().unwrap().clone()
     }
+
+    fn generate_calls(&self) -> usize {
+        *self.generate_calls.lock().unwrap()
+    }
+
+    fn push_generate_401(&self, body: &str) {
+        self.generate_401_bodies
+            .lock()
+            .unwrap()
+            .push(body.to_string());
+    }
+
+    fn set_token_delay(&self, ms: u64) {
+        *self.token_delay_ms.lock().unwrap() = ms;
+    }
 }
 
-/// The non-streaming Code Assist endpoint: record the request, answer with an
-/// enveloped `GenerateContentResponse`.
+/// The non-streaming Code Assist endpoint: record the request, answer with
+/// an enveloped `GenerateContentResponse`. When a 401 body is queued, fail
+/// the request with it instead.
 async fn generate_content(
     AxumState(state): AxumState<Arc<FakeUpstream>>,
     req: AxumRequest,
 ) -> Response {
+    let code_assist = req.uri().path().starts_with("/v1internal");
+    let fail_body = state.generate_401_bodies.lock().unwrap().pop();
+    *state.generate_calls.lock().unwrap() += 1;
     record_generate_request(&state, req).await;
-    axum::Json(json!({
-        "response": {
-            "candidates": [{
-                "content": {"parts": [{"text": "hi"}], "role": "model"}
-            }]
-        }
-    }))
-    .into_response()
+    if let Some(body) = fail_body {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)),
+        )
+            .into_response();
+    }
+    let candidates = json!([{
+        "content": {"parts": [{"text": "hi"}], "role": "model"}
+    }]);
+    // The Code Assist wire wraps the payload in a response envelope; the
+    // plain Gemini path serves the bare body.
+    if code_assist {
+        axum::Json(json!({ "response": { "candidates": candidates } })).into_response()
+    } else {
+        axum::Json(json!({ "candidates": candidates })).into_response()
+    }
 }
 
 /// The streaming Code Assist endpoint: same recording, then two enveloped SSE
@@ -121,6 +156,10 @@ async fn token_endpoint(
     AxumState(state): AxumState<Arc<FakeUpstream>>,
     body: axum::body::Bytes,
 ) -> Response {
+    let delay = *state.token_delay_ms.lock().unwrap();
+    if delay > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
     *state.token_calls.lock().unwrap() += 1;
     *state.token_body.lock().unwrap() = Some(String::from_utf8_lossy(&body).into_owned());
     axum::Json(json!({"access_token": "tok-2", "expires_in": 3600})).into_response()
@@ -135,6 +174,8 @@ async fn spawn_upstream() -> (String, Arc<FakeUpstream>) {
             "/v1internal:streamGenerateContent",
             post(stream_generate_content),
         )
+        // Plain Gemini path for providers without the Code Assist wire.
+        .route("/v1beta/models/{*rest}", post(generate_content))
         .route("/token", post(token_endpoint))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -200,6 +241,7 @@ fn oauth_credential(access_token: &str, expires_at_unix: i64) -> Credential {
 struct TestEnv {
     _dir: tempfile::TempDir,
     app: Router,
+    accounts: Arc<AccountResolver>,
     upstream: Arc<FakeUpstream>,
     secrets_path: std::path::PathBuf,
 }
@@ -226,7 +268,7 @@ impl TestEnv {
         let state = Arc::new(AppState {
             config: server_config(code_assist_provider("gemini-oauth", &base, format, account)),
             client,
-            accounts,
+            accounts: Arc::clone(&accounts),
             usage_logger: None,
             request_logger: None,
         });
@@ -235,30 +277,18 @@ impl TestEnv {
         Self {
             _dir: dir,
             app,
+            accounts,
             upstream,
             secrets_path,
         }
     }
 
     async fn chat(&self, body: Value) -> (StatusCode, String) {
-        let response = self
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/chat/completions")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        (status, String::from_utf8_lossy(&bytes).into_owned())
+        chat_via(&self.app, body).await
+    }
+
+    fn revoked_path(&self) -> std::path::PathBuf {
+        self._dir.path().join("revoked.json")
     }
 
     fn stored_oauth(&self) -> Value {
@@ -274,6 +304,27 @@ fn chat_body(stream: bool) -> Value {
         "messages": [{"role": "user", "content": "hi"}],
         "stream": stream,
     })
+}
+
+/// Send one chat request to `app` and return (status, body).
+async fn chat_via(app: &Router, body: Value) -> (StatusCode, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/chat/completions")
+                .method("POST")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -421,4 +472,193 @@ async fn unknown_account_returns_502_account_error() {
     );
     // The upstream never saw the request.
     assert!(env.upstream.generate_path().is_none());
+}
+
+// ── 401 semantics (S6) ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn expired_401_refreshes_and_retries_once() {
+    let env = TestEnv::build(
+        Format::Gemini,
+        Some("gemini:me@example.com"),
+        Some(unix_now() + 3600),
+    )
+    .await;
+    env.upstream
+        .push_generate_401(r#"{"error":{"message":"token_expired"}}"#);
+
+    let (status, body) = env.chat(chat_body(false)).await;
+    assert_eq!(status, StatusCode::OK, "response body: {body}");
+    let parsed: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["choices"][0]["message"]["content"], "hi");
+
+    // The token endpoint was hit exactly once (the Expired refresh)...
+    assert_eq!(env.upstream.token_calls(), 1);
+    // ...the upstream was hit exactly twice (401 + exactly one retry)...
+    assert_eq!(env.upstream.generate_calls(), 2, "exactly one retry");
+    // ...and the retried request carried the refreshed token.
+    assert_eq!(
+        env.upstream.generate_auth().as_deref(),
+        Some("Bearer tok-2"),
+        "the retry must use the refreshed token"
+    );
+    // The refreshed credential was persisted.
+    let stored = env.stored_oauth();
+    assert_eq!(stored["access_token"], "tok-2");
+}
+
+#[tokio::test]
+async fn revoked_401_marks_account_and_fails_over() {
+    let (revoked_base, revoked_upstream) = spawn_upstream().await;
+    let (healthy_base, healthy_upstream) = spawn_upstream().await;
+    let dir = tempfile::tempdir().unwrap();
+    let secrets_path = dir.path().join("secrets.json");
+    let store = FileSecretStore::new(secrets_path);
+    store
+        .put(
+            "gemini:me@example.com",
+            &oauth_credential("tok-1", unix_now() + 3600),
+        )
+        .unwrap();
+
+    let client = Client::builder().no_proxy().build().unwrap();
+    let accounts = Arc::new(AccountResolver::with_token_url(
+        store,
+        client.clone(),
+        format!("{revoked_base}/token"),
+    ));
+
+    let state = Arc::new(AppState {
+        config: ServerConfig {
+            server: ServerSettings {
+                host: "127.0.0.1".into(),
+                port: 8080,
+                api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
+            },
+            providers: vec![
+                code_assist_provider(
+                    "revoked-upstream",
+                    &revoked_base,
+                    Format::Gemini,
+                    Some("gemini:me@example.com"),
+                ),
+                code_assist_provider("healthy-upstream", &healthy_base, Format::Gemini, None),
+            ],
+            model_routes: vec![ModelRouteConfig {
+                pattern: "gemini-oauth".into(),
+                provider: None,
+                providers: vec!["revoked-upstream".into(), "healthy-upstream".into()],
+                upstream_model: None,
+                strategy: RouteStrategy::Priority,
+            }],
+            routes: vec![],
+            model_metadata: Default::default(),
+            logging: Default::default(),
+        },
+        client,
+        accounts,
+        usage_logger: None,
+        request_logger: None,
+    });
+    let app = create_router_with_state(state);
+
+    revoked_upstream.push_generate_401(r#"{"error":{"message":"token_revoked"}}"#);
+
+    // First request: the revoked provider 401s, the account is marked, and
+    // the request fails over to the healthy provider.
+    let (status, body) = chat_via(&app, chat_body(false)).await;
+    assert_eq!(status, StatusCode::OK, "response body: {body}");
+    let parsed: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["choices"][0]["message"]["content"], "hi");
+    assert_eq!(revoked_upstream.generate_calls(), 1);
+    assert_eq!(healthy_upstream.generate_calls(), 1);
+
+    // The revoked marker was persisted next to the secrets file.
+    let revoked = std::fs::read_to_string(dir.path().join("revoked.json")).unwrap();
+    assert!(revoked.contains("gemini:me@example.com"), "{revoked}");
+    assert!(revoked.contains("token_revoked"), "{revoked}");
+
+    // A second request never touches the revoked upstream again and gets
+    // the revoked guidance instead.
+    let (status, body) = chat_via(&app, chat_body(false)).await;
+    assert_eq!(
+        revoked_upstream.generate_calls(),
+        1,
+        "revoked upstream must not be called again"
+    );
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body.contains("revoked"), "{body}");
+}
+
+#[tokio::test]
+async fn unknown_401_does_not_mark() {
+    let env = TestEnv::build(
+        Format::Gemini,
+        Some("gemini:me@example.com"),
+        Some(unix_now() + 3600),
+    )
+    .await;
+    env.upstream
+        .push_generate_401(r#"{"error":"unauthorized"}"#);
+
+    let (_status, _body) = env.chat(chat_body(false)).await;
+
+    // No marker file may be written and no retry may be attempted.
+    assert!(
+        !env.revoked_path().exists(),
+        "revoked.json must not be created for an Unknown 401"
+    );
+    assert_eq!(env.upstream.generate_calls(), 1, "no retry on Unknown 401");
+}
+
+#[tokio::test]
+async fn refresh_takes_the_file_lock() {
+    let env = TestEnv::build(
+        Format::Gemini,
+        Some("gemini:me@example.com"),
+        Some(unix_now() - 100),
+    )
+    .await;
+    env.upstream.set_token_delay(300);
+
+    let lock_path = {
+        let mut path = env.secrets_path.clone().into_os_string();
+        path.push(".refresh.lock");
+        std::path::PathBuf::from(path)
+    };
+
+    let accounts = Arc::clone(&env.accounts);
+    let refresh =
+        tokio::spawn(async move { accounts.force_refresh("gemini:me@example.com").await });
+
+    // The refresh takes the file lock before calling the token endpoint;
+    // wait for the lock file to appear.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !lock_path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "refresh never took the file lock"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // While the refresh holds the lock, a second acquirer times out.
+    let err = FileLock::new(lock_path.clone())
+        .acquire_timeout(std::time::Duration::from_millis(150))
+        .unwrap_err();
+    assert!(
+        matches!(err, LockError::Timeout(_)),
+        "concurrent acquirer must be blocked: {err:?}"
+    );
+
+    let resolved = refresh.await.unwrap().unwrap();
+    assert_eq!(resolved.access_token, "tok-2");
+
+    // After the refresh the lock is released and the file removed.
+    let guard = FileLock::new(lock_path.clone())
+        .acquire_timeout(std::time::Duration::from_millis(500))
+        .unwrap();
+    drop(guard);
+    assert!(!lock_path.exists(), "guard drop must remove the lock file");
 }
