@@ -9,14 +9,19 @@ use axum::{
 };
 use reqwest::Client;
 
+use axum::Extension;
+
 use crate::config::ServerConfig;
 use crate::credentials::AccountResolver;
 use crate::credentials::copilot::CopilotSessions;
 use crate::handlers::{
-    AppState, handle_account_quotas, handle_claude, handle_count_tokens, handle_gemini,
-    handle_health, handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
+    AppState, handle_account_quotas, handle_account_remove, handle_account_signin,
+    handle_account_signin_cancel, handle_account_signin_status, handle_account_signin_submit,
+    handle_accounts, handle_claude, handle_count_tokens, handle_gemini, handle_health,
+    handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
 };
 use crate::plugins::{ManagedHosts, PluginAuthStore};
+use crate::signin_task::SignInTasks;
 
 /// Route metadata detected from the request path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +116,11 @@ pub fn create_router(config: ServerConfig) -> Router {
             crate::disk_quota::spawn_disk_quota_manager(PathBuf::from(dir), max_bytes);
     }
 
-    let client = Client::new();
+    let client = crate::config::build_proxied_client(config.server.proxy.as_deref())
+        .unwrap_or_else(|err| {
+            log::warn!("invalid proxy config, ignoring it: {err}");
+            Client::new()
+        });
     let accounts = AccountResolver::with_default_store(client.clone());
     let copilot = Arc::new(CopilotSessions::new(client.clone()));
     let hosts = Arc::new(ManagedHosts::with_store(Arc::new(PluginAuthStore::new(
@@ -131,7 +140,12 @@ pub fn create_router(config: ServerConfig) -> Router {
 
 /// Create a router with a pre-built `AppState`, enabling test injection of
 /// custom HTTP clients (e.g., pointing at a local `wiremock` server).
+///
+/// The sign-in task registry is the process-wide one (magpie `signIns`),
+/// seeded here with the server-level proxy so `run_with_shutdown` can
+/// cancel every outstanding task on exit.
 pub fn create_router_with_state(state: Arc<AppState>) -> Router {
+    let sign_ins = SignInTasks::init(state.config.server.proxy.clone());
     Router::new()
         // a new route here must be added to ROUTES in crates/server/tests/route_guard.rs
         .route("/health", get(handle_health))
@@ -139,7 +153,22 @@ pub fn create_router_with_state(state: Arc<AppState>) -> Router {
         .route("/models", get(handle_models))
         .route("/v1/models/{model_id}", get(handle_model_retrieve))
         .route("/models/{model_id}", get(handle_model_retrieve))
+        .route("/v1/accounts", get(handle_accounts))
         .route("/v1/accounts/quotas", get(handle_account_quotas))
+        .route("/v1/accounts/signin", post(handle_account_signin))
+        .route(
+            "/v1/accounts/signin/{id}",
+            get(handle_account_signin_status),
+        )
+        .route(
+            "/v1/accounts/signin/{id}/submit",
+            post(handle_account_signin_submit),
+        )
+        .route(
+            "/v1/accounts/signin/{id}/cancel",
+            post(handle_account_signin_cancel),
+        )
+        .route("/v1/accounts/{id}/remove", post(handle_account_remove))
         // With /v1/ prefix (standard)
         .route("/v1/chat/completions", post(handle_openai_chat))
         .route("/v1/messages", post(handle_claude))
@@ -153,6 +182,7 @@ pub fn create_router_with_state(state: Arc<AppState>) -> Router {
         .route("/v1beta/models/{*model_action}", post(handle_gemini))
         .fallback(handle_not_found)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
+        .layer(Extension(sign_ins))
         .with_state(state)
 }
 
@@ -183,6 +213,7 @@ mod tests {
                 port: 8080,
                 api_key: None,
                 pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
             },
             providers: vec![ProviderConfig {
                 name: "openai".into(),
@@ -197,6 +228,7 @@ mod tests {
                 endpoints: Default::default(),
                 auth: Default::default(),
                 plugin: None,
+                proxy: None,
             }],
             model_routes: vec![],
             routes: vec![

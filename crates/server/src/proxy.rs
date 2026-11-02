@@ -758,6 +758,7 @@ mod tests {
             },
             auth: crate::config::ProviderAuthConfig::default(),
             plugin: None,
+            proxy: None,
         };
 
         let url = build_upstream_url_for_provider(&provider, "abab6.5s-chat", true);

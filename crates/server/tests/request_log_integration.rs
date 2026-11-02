@@ -35,6 +35,7 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: None,
+        proxy: None,
     }
 }
 
@@ -45,6 +46,7 @@ fn test_config(base_url: &str, log_path: PathBuf) -> ServerConfig {
             port: 8080,
             api_key: None,
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![oai_provider("openai", base_url)],
         model_routes: vec![ModelRouteConfig {

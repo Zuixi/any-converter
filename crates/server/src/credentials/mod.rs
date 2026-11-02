@@ -91,6 +91,7 @@ pub mod allowance;
 pub mod copilot;
 pub mod gemini;
 pub mod gemini_models;
+pub mod signout;
 pub mod store;
 pub mod token;
 
@@ -139,6 +140,7 @@ mod tests {
                     .collect(),
             },
             plugin: None,
+            proxy: None,
         }
     }
 

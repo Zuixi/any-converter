@@ -236,6 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         port,
                         api_key,
                         pass_through_headers: Default::default(),
+                        proxy: None,
                     },
                     providers: vec![ProviderConfig {
                         name: provider.clone(),
@@ -250,6 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         endpoints: Default::default(),
                         auth: Default::default(),
                         plugin: None,
+                        proxy: None,
                     }],
                     model_routes: vec![ModelRouteConfig {
                         pattern: "*".into(),

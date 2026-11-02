@@ -4,6 +4,7 @@ import { ApiClientProvider } from "@any-converter/core";
 
 import { AppShell } from "./components/layout/AppShell";
 import { createDesktopApiClient } from "./lib/create-desktop-api-client";
+import { AccountsPage } from "./pages/AccountsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LogsPage } from "./pages/LogsPage";
 import { PlaygroundPage } from "./pages/PlaygroundPage";
@@ -23,6 +24,7 @@ export function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="providers" element={<ProvidersPage />} />
+            <Route path="accounts" element={<AccountsPage />} />
             <Route path="routes" element={<RoutesPage />} />
             <Route path="playground" element={<PlaygroundPage />} />
             <Route path="logs" element={<LogsPage />} />

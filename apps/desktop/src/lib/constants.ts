@@ -21,10 +21,22 @@ export const PROVIDER_FORMATS = [
 
 type NavIcon = ComponentType<SVGProps<SVGSVGElement>>;
 
-export const navItems: Array<{ path: AppPath; label: TranslationKey; Icon: NavIcon }> = [
+export const navItems: Array<{
+  path: AppPath;
+  label: TranslationKey;
+  /** Rendered when the i18n catalog has no entry for `label`. */
+  fallback?: string;
+  Icon: NavIcon;
+}> = [
   { path: "/dashboard", label: "nav.dashboard", Icon: DashboardIcon },
   { path: "/providers", label: "nav.providers", Icon: ProvidersIcon },
   { path: "/routes", label: "nav.routes", Icon: RoutesIcon },
+  {
+    path: "/accounts",
+    label: "nav.accounts" as unknown as TranslationKey,
+    fallback: "Accounts",
+    Icon: ProvidersIcon,
+  },
   { path: "/playground", label: "nav.playground", Icon: PlaygroundIcon },
   { path: "/logs", label: "nav.logs", Icon: LogsIcon },
   { path: "/usage", label: "nav.usage", Icon: UsageIcon },

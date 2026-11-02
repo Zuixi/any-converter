@@ -626,6 +626,55 @@ impl AccountResolver {
         self.revoked_entry(account_id).is_some()
     }
 
+    /// Persist a fresh sign-in result and clear any revoked marker (P10:
+    /// sign-ins now flow through the server's task API, not just the CLI).
+    pub async fn store_sign_in(
+        &self,
+        account_id: &str,
+        credential: Credential,
+    ) -> Result<(), AccountError> {
+        if let Credential::OAuth {
+            access_token,
+            expires_at_unix,
+            ..
+        } = &credential
+        {
+            self.cache_put(account_id, access_token.clone(), *expires_at_unix);
+        }
+        self.store.put(account_id, &credential)?;
+        self.clear_revoked(account_id).await?;
+        Ok(())
+    }
+
+    /// The stored credential for `account_id` (P10 sign-out reads it
+    /// before deleting so the refresh token can be revoked).
+    pub(crate) fn stored(&self, account_id: &str) -> Result<Option<Credential>, SecretStoreError> {
+        self.store.get(account_id)
+    }
+
+    /// Every stored credential (P10 `GET /v1/accounts`; callers must never
+    /// serialize the tokens).
+    pub(crate) fn list_credentials(&self) -> Result<Vec<(String, Credential)>, SecretStoreError> {
+        let mut out = Vec::new();
+        for id in self.store.list()? {
+            if let Some(credential) = self.store.get(&id)? {
+                out.push((id, credential));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remove the stored credential and its cached tokens (P10 sign-out;
+    /// the revocation request happens first in `credentials::signout`).
+    pub async fn delete_stored(&self, account_id: &str) -> Result<(), AccountError> {
+        self.cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(account_id);
+        self.store.delete(account_id)?;
+        Ok(())
+    }
+
     /// The revoked marker file: `revoked.json` next to the secrets file.
     fn revoked_path(&self) -> PathBuf {
         match self.store.path().parent() {

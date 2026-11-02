@@ -85,6 +85,7 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
             port: 8080,
             api_key: api_key.map(String::from),
             pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
         },
         providers: vec![ProviderConfig {
             name: "openai".into(),
@@ -100,6 +101,7 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
             endpoints: Default::default(),
             auth: Default::default(),
             plugin: None,
+            proxy: None,
         }],
         model_routes: vec![ModelRouteConfig {
             pattern: "*".into(),

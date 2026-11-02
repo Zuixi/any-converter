@@ -178,6 +178,7 @@ fn code_assist_provider(base: &str) -> ProviderConfig {
         endpoints: Default::default(),
         auth: Default::default(),
         plugin: None,
+        proxy: None,
     }
 }
 
@@ -222,6 +223,7 @@ impl TestEnv {
                     port: 8080,
                     api_key: None,
                     pass_through_headers: PassThroughHeadersConfig::default(),
+                    proxy: None,
                 },
                 providers: vec![code_assist_provider(&base)],
                 model_routes: vec![ModelRouteConfig {
