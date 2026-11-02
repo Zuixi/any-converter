@@ -122,6 +122,11 @@ export default async ({ client, directory, $ }) => {
         if (stored?.metadata?.relative === true) {
           return { baseURL: "/relative-only" };
         }
+        if (stored?.metadata?.versioned === true) {
+          // A base that already carries the version, as @ai-sdk/anthropic's
+          // npmBase does. The host must not append a second /v1.
+          return { baseURL: "https://gw.example.test/v1" };
+        }
         return { baseURL: "https://gw.example.test" };
       },
       models: async () => [
@@ -175,7 +180,7 @@ export default async ({ client, directory, $ }) => {
 
         const stream = (req.body ?? "").includes('"stream":true');
         const url = req.url;
-        if (url.includes("/v1/chat/completions")) {
+        if (url.includes("/chat/completions")) {
           return stream
             ? {
                 status: 200,
@@ -188,7 +193,7 @@ export default async ({ client, directory, $ }) => {
                 body: JSON.stringify(CHAT_OK),
               };
         }
-        if (url.includes("/v1/messages")) {
+        if (url.includes("/messages")) {
           return stream
             ? {
                 status: 200,
@@ -201,7 +206,7 @@ export default async ({ client, directory, $ }) => {
                 body: JSON.stringify(CLAUDE_OK),
               };
         }
-        if (url.includes("/v1/responses")) {
+        if (url.includes("/responses")) {
           return {
             status: 200,
             headers: { "content-type": "application/json" },

@@ -376,7 +376,9 @@ async fn plugin_url_is_base_plus_api_path() {
         )
         .await;
 
-    // url = loader.baseURL + the per-model API path (magpie pluginFetch).
+    // url = loader.baseURL + TrimPrefix(path, "/v1"), as magpie's
+    // pluginFetch does: the AI SDK's base ends where magpie's /v1 does, so a
+    // base of https://gw.example.test asks for /chat/completions.
     let seen = h.seen();
     let urls: Vec<&str> = seen
         .iter()
@@ -385,10 +387,43 @@ async fn plugin_url_is_base_plus_api_path() {
     assert_eq!(
         urls,
         vec![
-            "https://gw.example.test/v1/chat/completions",
-            "https://gw.example.test/v1/messages",
-            "https://gw.example.test/v1/responses",
+            "https://gw.example.test/chat/completions",
+            "https://gw.example.test/messages",
+            "https://gw.example.test/responses",
         ]
+    );
+}
+
+#[tokio::test]
+async fn loader_base_ending_in_v1_is_not_doubled() {
+    if !node_available() {
+        eprintln!("skipping: node not available");
+        return;
+    }
+    // A loader base that already carries the version (as @ai-sdk/anthropic's
+    // npmBase does: https://api.anthropic.com/v1) must not become
+    // /v1/v1/messages. magpie pluginFetch strips the leading /v1 from the
+    // path for exactly this reason.
+    let h = Harness::new(vec![plugin_provider("gw", "test")]).await;
+    // The `versioned` metadata makes the fixture's loader return a base that
+    // already ends in /v1 (as @ai-sdk/anthropic's npmBase does).
+    h.sign_in(
+        "test",
+        Some(BTreeMap::from([("versioned".to_string(), json!(true))])),
+    )
+    .await;
+    let (status, _, body) = h
+        .post(
+            "/v1/messages",
+            r#"{"max_tokens":8,"messages":[{"content":"hi","role":"user"}],"model":"gw-claude","stream":false}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "response body: {body}");
+    let seen = h.seen();
+    assert_eq!(seen.len(), 1, "one request reached the plugin");
+    assert_eq!(
+        seen[0]["url"].as_str().unwrap(),
+        "https://gw.example.test/v1/messages"
     );
 }
 
