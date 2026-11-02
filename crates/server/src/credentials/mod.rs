@@ -89,6 +89,7 @@ impl TokenSource for ApiKeySource {
 pub mod account;
 pub mod agent_import;
 pub mod allowance;
+pub mod codex_store;
 pub mod copilot;
 pub mod gemini;
 pub mod gemini_models;
@@ -97,12 +98,18 @@ pub mod signout;
 pub mod store;
 pub mod token;
 
-pub use account::{AccountError, AccountResolver, CodeAssistProject, ResolvedAccount};
+pub use account::{
+    AccountError, AccountResolver, CodeAssistProject, ResolvedAccount, codex_home_of, mark_adopted,
+    release_adopted,
+};
 pub use agent_import::{
     FoundAccount, codex_homes, discover, discover_with_env, read_claude, read_codex,
     read_codex_with_env, to_credential,
 };
 pub use allowance::{Allowance, Limit};
+pub use codex_store::{
+    CodexStore, TokenUpdate, WriteBackError, codex_store, write_tokens, write_tokens_with_timeout,
+};
 pub use copilot::{
     CopilotAccount, CopilotEndpoints, CopilotError, CopilotSession, CopilotSessions, CopilotSignIn,
     DeviceCodeStarted, ReqwestDeviceHttp,

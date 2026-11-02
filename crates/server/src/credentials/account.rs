@@ -33,6 +33,7 @@ use std::time::{Duration, SystemTime};
 use thiserror::Error;
 
 use super::Credential;
+use super::codex_store::{TokenUpdate, write_tokens};
 use super::gemini::GeminiEndpoints;
 use super::gemini_models::{self, GeminiFlags};
 use super::store::{self, FileSecretStore, SecretStore, SecretStoreError};
@@ -101,6 +102,17 @@ pub const PROJECT_CACHE_SECS: i64 = 3600;
 /// `onboardPoll`).
 const ONBOARD_POLL: Duration = Duration::from_secs(2);
 
+/// ChatGPT's OAuth token endpoint, where Codex CLI itself renews its
+/// sign-in (magpie `codexTokenURL`).
+pub const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+
+/// Codex CLI's own public OAuth client id (magpie `codexClientID`; a
+/// public-client identifier, not a secret).
+const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+/// The scope the codex refresh grant asks for (magpie `codexRefresh`).
+const CODEX_REFRESH_SCOPE: &str = "openid profile email";
+
 /// How long [`AccountResolver::resolve`] waits for the cross-process
 /// refresh lock before failing the request.
 const LOCK_TIMEOUT: Duration = crate::lockfile::DEFAULT_ACQUIRE_TIMEOUT;
@@ -139,6 +151,8 @@ pub struct AccountResolver {
     /// Token endpoint refreshes are sent to (defaults to the public Gemini
     /// CLI client endpoint).
     token_url: String,
+    /// ChatGPT's token endpoint (codex account refreshes).
+    codex_token_url: String,
     /// In-memory cache: account id → (access_token, expires_at_unix).
     cache: Mutex<HashMap<String, (String, Option<i64>)>>,
     /// Per-account single-flight refresh locks.
@@ -155,22 +169,39 @@ pub struct AccountResolver {
 }
 
 impl AccountResolver {
-    /// Create a resolver over `store` using the default Gemini token endpoint.
+    /// Create a resolver over `store` using the default token endpoints
+    /// (Gemini's for gemini accounts, ChatGPT's for codex accounts).
     pub fn new(store: FileSecretStore, client: reqwest::Client) -> Self {
-        Self::with_token_url(store, client, GeminiEndpoints::default().token_url)
+        Self::with_token_urls(
+            store,
+            client,
+            GeminiEndpoints::default().token_url,
+            CODEX_TOKEN_URL.to_string(),
+        )
     }
 
-    /// Create a resolver that refreshes against a specific `token_url` (test
-    /// seam; production uses [`Self::new`]).
+    /// Create a resolver that refreshes against a specific `token_url` for
+    /// every provider (test seam; production uses [`Self::new`], which
+    /// points codex accounts at ChatGPT's real token endpoint).
     pub fn with_token_url(
         store: FileSecretStore,
         client: reqwest::Client,
         token_url: String,
     ) -> Self {
+        Self::with_token_urls(store, client, token_url.clone(), token_url)
+    }
+
+    fn with_token_urls(
+        store: FileSecretStore,
+        client: reqwest::Client,
+        token_url: String,
+        codex_token_url: String,
+    ) -> Self {
         Self {
             store: Arc::new(store),
             client,
             token_url,
+            codex_token_url,
             cache: Mutex::new(HashMap::new()),
             flight_locks: Mutex::new(HashMap::new()),
             lock_timeout: LOCK_TIMEOUT,
@@ -316,29 +347,47 @@ impl AccountResolver {
         latest: &StoredOAuth,
     ) -> Result<ResolvedAccount, AccountError> {
         let provider = account_id.split(':').next().unwrap_or("");
-        if provider != "gemini" {
-            return Err(AccountError::UnsupportedProvider(account_id.to_string()));
-        }
+        let token_url = match provider {
+            "gemini" => self.token_url.as_str(),
+            "codex" => self.codex_token_url.as_str(),
+            _ => return Err(AccountError::UnsupportedProvider(account_id.to_string())),
+        };
         let refresh_token = latest.refresh_token.clone().ok_or_else(|| {
             AccountError::RefreshFailed("token expired and no refresh token is stored".to_string())
         })?;
 
-        let endpoints = GeminiEndpoints::default();
-        let form = form_urlencoded(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", &refresh_token),
-            ("client_id", &endpoints.client_id),
-            ("client_secret", &endpoints.client_secret),
-        ]);
+        // Gemini's refresh is the classic form grant; Codex CLI's own
+        // refresh is a JSON grant (magpie `codexRefresh`: Codex's public
+        // client id, the refresh token, and a fixed scope).
+        let (content_type, body) = if provider == "codex" {
+            (
+                "application/json",
+                serde_json::json!({
+                    "client_id": CODEX_CLIENT_ID,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "scope": CODEX_REFRESH_SCOPE,
+                })
+                .to_string(),
+            )
+        } else {
+            let endpoints = GeminiEndpoints::default();
+            (
+                "application/x-www-form-urlencoded",
+                form_urlencoded(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", &refresh_token),
+                    ("client_id", &endpoints.client_id),
+                    ("client_secret", &endpoints.client_secret),
+                ]),
+            )
+        };
 
         let response = self
             .client
-            .post(&self.token_url)
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/x-www-form-urlencoded",
-            )
-            .body(form)
+            .post(token_url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
             .send()
             .await
             .map_err(|e| {
@@ -363,14 +412,38 @@ impl AccountResolver {
             refresh_token: Option<String>,
             #[serde(default)]
             expires_in: Option<u64>,
+            #[serde(default)]
+            id_token: Option<String>,
         }
         let parsed: RefreshResponse = serde_json::from_str(&text).map_err(|e| {
             AccountError::RefreshFailed(format!("token endpoint returned malformed payload: {e}"))
         })?;
 
-        let expires_at_unix = parsed.expires_in.map(|secs| unix_now() + secs as i64);
-        // Google does not rotate refresh tokens; keep the old one when absent.
-        let new_refresh_token = parsed.refresh_token.or(latest.refresh_token.clone());
+        let expires_at_unix = match parsed.expires_in {
+            Some(secs) => Some(unix_now() + secs as i64),
+            // ChatGPT's token endpoint answers no `expires_in`: the new
+            // access token's own `exp` claim is the expiry (magpie
+            // `codexRefresh`).
+            None if provider == "codex" => access_token_exp(&parsed.access_token),
+            None => None,
+        };
+        // Google does not rotate refresh tokens; keep the old one when
+        // absent. ChatGPT rotates them, and a response that omits one
+        // keeps the stored one too.
+        let new_refresh_token = parsed
+            .refresh_token
+            .or_else(|| latest.refresh_token.clone());
+
+        // What an adopted codex account's auth.json receives: the rotated
+        // tokens, written back under the same cross-process refresh lock
+        // this refresh holds (magpie's `logins.json.codex.lock` spans the
+        // refresh and the write-back). The id_token is only rewritten when
+        // the endpoint rotated one.
+        let write_back = TokenUpdate {
+            access_token: parsed.access_token.clone(),
+            refresh_token: new_refresh_token.clone().unwrap_or_default(),
+            id_token: parsed.id_token.clone(),
+        };
 
         let updated = Credential::OAuth {
             provider: latest.provider.clone(),
@@ -381,6 +454,25 @@ impl AccountResolver {
         };
         self.store.put(account_id, &updated)?;
         self.cache_put(account_id, parsed.access_token.clone(), expires_at_unix);
+
+        // Adopted codex accounts write back where Codex reads them; the
+        // disk work runs off the async workers, and a failed write-back
+        // never fails the request — the new tokens are already in the
+        // secret store, and the next refresh retries the write-back
+        // (magpie's write-back is best-effort for the same reason).
+        if let Some(home) = self.adopted_home_of(account_id) {
+            let outcome =
+                tokio::task::spawn_blocking(move || write_tokens(&home, &write_back)).await;
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    log::warn!("codex write-back failed for account {account_id}: {error}");
+                }
+                Err(error) => {
+                    log::warn!("codex write-back task failed for account {account_id}: {error}");
+                }
+            }
+        }
 
         Ok(ResolvedAccount {
             id: account_id.to_string(),
@@ -688,6 +780,21 @@ impl AccountResolver {
         let mut path = self.store.path().as_os_str().to_owned();
         path.push(".refresh.lock");
         FileLock::new(PathBuf::from(path))
+    }
+
+    /// The CODEX_HOME an adopted account's refreshed tokens are written
+    /// back to, when `account_id` was adopted (`accounts adopt`, P11b).
+    fn adopted_home_of(&self, account_id: &str) -> Option<PathBuf> {
+        load_adopted(&self.adopted_path())
+            .get(account_id)
+            .map(PathBuf::from)
+    }
+
+    /// The adoption registry: `adopted.json` next to the secrets file
+    /// (same placement as `revoked.json`; the CLI and the server are
+    /// different processes and must agree on the file).
+    fn adopted_path(&self) -> PathBuf {
+        adopted_path_of(self.store.path())
     }
 
     /// Current revoked entry for `account_id`, reloading `revoked.json`
@@ -1015,6 +1122,115 @@ pub async fn clear_revoked_default_store(account_id: &str) -> Result<(), Account
         .await
 }
 
+/// Whether this account was adopted onto a Codex store, and where.
+///
+/// Adoption is kept in `adopted.json` beside the secrets file — the
+/// credential itself is deliberately unchanged (importing agents in P11a
+/// and every other construction site keeps working untouched):
+/// `accounts adopt` records the account id against the CODEX_HOME whose
+/// `auth.json` receives every refreshed token, and `accounts release`
+/// removes the record. This reads the default secrets store's registry.
+pub fn codex_home_of(cred: &Credential) -> Option<PathBuf> {
+    let Credential::OAuth {
+        provider, account, ..
+    } = cred
+    else {
+        return None;
+    };
+    if provider != "codex" {
+        return None;
+    }
+    load_adopted(&adopted_path_of(&crate::config::secrets_path()))
+        .get(&format!("codex:{account}"))
+        .map(PathBuf::from)
+}
+
+/// Mark `account_id` adopted onto the Codex store at `home`, in the
+/// registry next to `secrets_path` (CLI `accounts adopt`, P11b).
+pub fn mark_adopted(
+    secrets_path: &std::path::Path,
+    account_id: &str,
+    home: &std::path::Path,
+) -> Result<(), AccountError> {
+    let path = adopted_path_of(secrets_path);
+    let mut entries = load_adopted(&path);
+    entries.insert(account_id.to_string(), home.to_string_lossy().into_owned());
+    let bytes = serde_json::to_vec_pretty(&entries).map_err(SecretStoreError::from)?;
+    store::write_private(&path, &bytes)?;
+    Ok(())
+}
+
+/// Remove the adoption marker for `account_id` (CLI `accounts release`);
+/// `Ok(false)` when there was none.
+pub fn release_adopted(
+    secrets_path: &std::path::Path,
+    account_id: &str,
+) -> Result<bool, AccountError> {
+    let path = adopted_path_of(secrets_path);
+    let mut entries = load_adopted(&path);
+    if entries.remove(account_id).is_none() {
+        return Ok(false);
+    }
+    let bytes = serde_json::to_vec_pretty(&entries).map_err(SecretStoreError::from)?;
+    store::write_private(&path, &bytes)?;
+    Ok(true)
+}
+
+/// `adopted.json` next to the secrets file: codex account id → the
+/// CODEX_HOME its refreshed tokens are written back to.
+fn adopted_path_of(secrets_path: &std::path::Path) -> PathBuf {
+    match secrets_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join("adopted.json"),
+        _ => PathBuf::from("adopted.json"),
+    }
+}
+
+/// Read `adopted.json` into a map; an unreadable or malformed file reads
+/// as empty (a missing file is the normal state).
+fn load_adopted(path: &std::path::Path) -> HashMap<String, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// The access token's own JWT `exp` claim in unix seconds, decoded without
+/// checking the signature — ChatGPT's token endpoint answers no
+/// `expires_in`, so the new access token itself carries the expiry
+/// (magpie `codexRefresh` reads it the same way).
+fn access_token_exp(access_token: &str) -> Option<i64> {
+    let payload = access_token.split('.').nth(1)?;
+    let bytes = b64url_decode(payload)?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims.get("exp").and_then(serde_json::Value::as_i64)
+}
+
+/// base64url (RFC 4648 §5) decode, padding optional — hand-rolled because
+/// the workspace adds no base64 dependency (the same helper
+/// `credentials::agent_import` keeps for its own reads).
+fn b64url_decode(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut acc: u32 = 0;
+    let mut bits = 0;
+    for c in input.trim_end_matches('=').bytes() {
+        let value = match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a' + 26),
+            b'0'..=b'9' => u32::from(c - b'0' + 52),
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1042,5 +1258,17 @@ mod tests {
             form,
             "grant_type=refresh_token&refresh_token=r%2Ft%2Bo%26k%3De%20n"
         );
+    }
+
+    #[test]
+    fn test_access_token_exp_reads_the_jwt_exp_claim() {
+        // header.payload.sig; payload {"exp": 1800000000}.
+        let token = "eyJhbGciOiJub25lIn0.eyJleHAiOiAxODAwMDAwMDAwfQ.sig";
+        assert_eq!(access_token_exp(token), Some(1_800_000_000));
+        // A string `exp` is not a usable expiry.
+        let wrong = "eyJhbGciOiJub25lIn0.eyJleHAiOiJ4In0.sig";
+        assert_eq!(access_token_exp(wrong), None);
+        assert_eq!(access_token_exp("not-a-jwt"), None);
+        assert_eq!(access_token_exp("a.b"), None);
     }
 }

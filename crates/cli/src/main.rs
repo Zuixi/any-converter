@@ -15,9 +15,10 @@ use any_converter_server::config::{
 };
 use any_converter_server::credentials::account::clear_revoked_default_store;
 use any_converter_server::credentials::{
-    CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, FoundAccount, GeminiAccount,
-    GeminiEndpoints, GeminiSignIn, ImportStatus, SecretStore, discover,
-    gemini::DEFAULT_SIGN_IN_TIMEOUT, import_path, to_credential,
+    CodexStore, CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, FoundAccount,
+    GeminiAccount, GeminiEndpoints, GeminiSignIn, ImportStatus, SecretStore, TokenUpdate,
+    codex_store, discover, gemini::DEFAULT_SIGN_IN_TIMEOUT, import_path, mark_adopted,
+    release_adopted, to_credential, write_tokens,
 };
 use any_converter_server::plugins::{
     AuthMethodKind, Authorization, AuthorizeParams, CallbackParams, ManagedHosts, PluginAuthStore,
@@ -173,6 +174,17 @@ enum AccountsCommand {
         /// Print what would be written without writing anything
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+    },
+    /// Adopt a stored codex account: write refreshed tokens back to the
+    /// Codex auth.json it was imported from (P11b)
+    Adopt {
+        /// Account id to adopt (see `accounts list`)
+        account_id: String,
+    },
+    /// Stop writing refreshed tokens back to the account's Codex auth.json
+    Release {
+        /// Account id to release (see `accounts list`)
+        account_id: String,
     },
     /// Import accounts from another tool's export (claude-swap cswap /
     /// Sub2API / CLIProxyAPI)
@@ -360,6 +372,8 @@ async fn accounts(command: AccountsCommand) -> Result<(), Box<dyn std::error::Er
         AccountsCommand::ImportAgent { provider, dry_run } => {
             accounts_import_agent(provider, dry_run)
         }
+        AccountsCommand::Adopt { account_id } => accounts_adopt(&account_id),
+        AccountsCommand::Release { account_id } => accounts_release(&account_id),
     }
 }
 
@@ -970,6 +984,100 @@ fn accounts_import_agent(
             "Imported {} ({}) from {}",
             account.account, account.email, account.source
         );
+    }
+    Ok(())
+}
+
+/// `accounts adopt`: mark a stored codex account as adopted onto the Codex
+/// store its sign-in came from, so every token refresh writes the rotated
+/// tokens back to Codex's `auth.json` (P11b). The whole chain is validated
+/// once by writing the current tokens back immediately.
+///
+/// Only codex accounts whose CODEX_HOME uses the `file` store can be
+/// adopted; keyring/auto/ephemeral stores and unreadable `auth.json` files
+/// fail with the reason.
+#[allow(clippy::print_stdout)]
+fn accounts_adopt(account_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let store = open_secret_store()?;
+    let credential = store
+        .get(account_id)?
+        .ok_or_else(|| format!("no such account: {account_id}"))?;
+    let Credential::OAuth {
+        provider,
+        access_token,
+        refresh_token,
+        ..
+    } = &credential
+    else {
+        return Err(format!("account `{account_id}` is not an OAuth account").into());
+    };
+    if provider != "codex" {
+        return Err(format!(
+            "account `{account_id}` is a {provider} account; only codex accounts are adopted \
+             (their refreshes are written back to Codex's auth.json)"
+        )
+        .into());
+    }
+
+    // Where the sign-in lives: P11a's discovery names the auth.json it was
+    // imported from; its folder is the CODEX_HOME.
+    let found = discover(&home_dir())
+        .into_iter()
+        .find(|account| account.provider == "codex" && account.account == account_id)
+        .ok_or_else(|| {
+            format!(
+                "no codex sign-in for `{account_id}` was found on this machine; \
+                 `accounts import-agent` imports it, and adopt needs the original Codex store"
+            )
+        })?;
+    let home = PathBuf::from(&found.source)
+        .parent()
+        .filter(|dir| dir.is_dir())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("the source {} no longer exists", found.source))?;
+
+    // Only the `file` store can be written back (keyring/auto/ephemeral
+    // refuse with guidance).
+    match codex_store(&home) {
+        CodexStore::File(_) => {}
+        CodexStore::Refused(reason) => return Err(reason.into()),
+    }
+
+    // Validate the whole chain once — write the current tokens back
+    // exactly where Codex reads them — before the account is marked
+    // adopted, so a failed adopt leaves no marker behind.
+    let update = TokenUpdate {
+        access_token: access_token.clone(),
+        refresh_token: refresh_token.clone().unwrap_or_default(),
+        id_token: None,
+    };
+    write_tokens(&home, &update).map_err(|error| {
+        format!(
+            "can't write Codex's auth.json in {}: {error}",
+            home.display()
+        )
+    })?;
+
+    mark_adopted(store.path(), account_id, &home)?;
+    println!(
+        "Adopted {account_id}: refreshes now write the rotated tokens back to {}",
+        home.join("auth.json").display()
+    );
+    Ok(())
+}
+
+/// `accounts release`: stop writing refreshed tokens back to the account's
+/// Codex auth.json (only the adoption marker is removed, never the
+/// account).
+#[allow(clippy::print_stdout)]
+fn accounts_release(account_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let store = open_secret_store()?;
+    if store.get(account_id)?.is_none() {
+        return Err(format!("no such account: {account_id}").into());
+    }
+    match release_adopted(store.path(), account_id)? {
+        true => println!("Released {account_id}: refreshes no longer write Codex's auth.json"),
+        false => println!("{account_id} is not adopted; nothing to release"),
     }
     Ok(())
 }
