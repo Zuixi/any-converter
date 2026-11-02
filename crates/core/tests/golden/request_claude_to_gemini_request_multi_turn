@@ -1,0 +1,32 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "What is 2+2?"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "2+2 equals 4."
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "text": "And 3+3?"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 1024
+  },
+  "model": "claude-sonnet-4-20250514"
+}

@@ -1,0 +1,23 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "Hello!"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 1024
+  },
+  "model": "claude-sonnet-4-20250514",
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a helpful assistant."
+      }
+    ]
+  }
+}

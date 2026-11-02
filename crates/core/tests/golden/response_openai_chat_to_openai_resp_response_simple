@@ -1,0 +1,24 @@
+{
+  "created_at": 0,
+  "id": "resp_test123",
+  "model": "gpt-4.1",
+  "object": "response",
+  "output": [
+    {
+      "content": [
+        {
+          "text": "I'm doing well, thank you for asking!",
+          "type": "output_text"
+        }
+      ],
+      "role": "assistant",
+      "type": "message"
+    }
+  ],
+  "status": "completed",
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 15,
+    "total_tokens": 25
+  }
+}

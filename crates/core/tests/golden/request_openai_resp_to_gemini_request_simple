@@ -1,0 +1,13 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "Hello, how are you?"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-4.1"
+}

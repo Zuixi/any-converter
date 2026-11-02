@@ -1,0 +1,18 @@
+{
+  "content": [
+    {
+      "text": "I'm doing well, thank you for asking!",
+      "type": "text"
+    }
+  ],
+  "id": "msg_test123",
+  "model": "gpt-4.1",
+  "role": "assistant",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "type": "message",
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 15
+  }
+}

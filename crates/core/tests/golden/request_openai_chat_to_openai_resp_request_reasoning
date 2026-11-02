@@ -1,0 +1,35 @@
+{
+  "input": [
+    {
+      "content": [
+        {
+          "text": "hello",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    },
+    {
+      "content": [
+        {
+          "text": "hi there",
+          "type": "output_text"
+        }
+      ],
+      "role": "assistant",
+      "type": "message"
+    },
+    {
+      "content": [
+        {
+          "text": "continue our conversation",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    }
+  ],
+  "model": "o1"
+}

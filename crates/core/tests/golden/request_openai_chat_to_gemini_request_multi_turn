@@ -1,0 +1,29 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "What is 2+2?"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "2+2 equals 4."
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "text": "And 3+3?"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-4.1"
+}

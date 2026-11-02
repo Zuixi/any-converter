@@ -1,0 +1,43 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "What is the weather in Tokyo?"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 1024
+  },
+  "model": "claude-sonnet-4-20250514",
+  "toolConfig": {
+    "functionCallingConfig": {
+      "mode": "AUTO"
+    }
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "description": "Get current weather for a location",
+          "name": "get_weather",
+          "parameters": {
+            "properties": {
+              "location": {
+                "description": "City name",
+                "type": "string"
+              }
+            },
+            "required": [
+              "location"
+            ],
+            "type": "object"
+          }
+        }
+      ]
+    }
+  ]
+}

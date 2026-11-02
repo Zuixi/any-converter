@@ -1,0 +1,28 @@
+{
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "content": "What is the weather in Tokyo?",
+      "role": "user"
+    }
+  ],
+  "model": "",
+  "tools": [
+    {
+      "description": "Get current weather for a location",
+      "input_schema": {
+        "properties": {
+          "location": {
+            "description": "City name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "type": "object"
+      },
+      "name": "get_weather"
+    }
+  ]
+}

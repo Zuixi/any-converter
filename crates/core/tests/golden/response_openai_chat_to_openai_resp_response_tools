@@ -1,0 +1,20 @@
+{
+  "created_at": 0,
+  "id": "resp_tools456",
+  "model": "gpt-4.1",
+  "object": "response",
+  "output": [
+    {
+      "arguments": "{\"location\":\"Tokyo\"}",
+      "call_id": "call_abc123",
+      "name": "get_weather",
+      "type": "function_call"
+    }
+  ],
+  "status": "completed",
+  "usage": {
+    "input_tokens": 20,
+    "output_tokens": 10,
+    "total_tokens": 30
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "I'm doing well, thank you for asking!"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "modelVersion": "claude-sonnet-4-20250514",
+  "usageMetadata": {
+    "candidatesTokenCount": 15,
+    "promptTokenCount": 10,
+    "totalTokenCount": 25
+  }
+}

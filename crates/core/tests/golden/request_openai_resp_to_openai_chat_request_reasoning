@@ -1,0 +1,9 @@
+{
+  "messages": [
+    {
+      "content": "Solve this step by step",
+      "role": "user"
+    }
+  ],
+  "model": "o3"
+}

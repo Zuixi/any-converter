@@ -1,0 +1,20 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "Hello!"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-4.1",
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "You are a helpful assistant."
+      }
+    ]
+  }
+}

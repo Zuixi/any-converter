@@ -1,0 +1,20 @@
+{
+  "input": [
+    {
+      "content": [
+        {
+          "text": "What is in this image?",
+          "type": "input_text"
+        },
+        {
+          "image_url": "https://example.com/image.png",
+          "type": "input_image"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    }
+  ],
+  "max_output_tokens": 1024,
+  "model": "claude-sonnet-4-20250514"
+}

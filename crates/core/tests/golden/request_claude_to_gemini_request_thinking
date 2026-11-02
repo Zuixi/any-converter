@@ -1,0 +1,35 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "hello"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "The user greeted me, I should respond politely."
+        },
+        {
+          "text": "hi there"
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "parts": [
+        {
+          "text": "continue our conversation"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 4096
+  },
+  "model": "claude-sonnet-4-20250514"
+}

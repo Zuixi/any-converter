@@ -1,0 +1,22 @@
+{
+  "content": [
+    {
+      "id": "<uuid>",
+      "input": {
+        "location": "Tokyo"
+      },
+      "name": "get_weather",
+      "type": "tool_use"
+    }
+  ],
+  "id": "msg_<uuid>",
+  "model": "",
+  "role": "assistant",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "type": "message",
+  "usage": {
+    "input_tokens": 20,
+    "output_tokens": 10
+  }
+}

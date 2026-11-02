@@ -1,0 +1,22 @@
+{
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "What is in this image?",
+          "type": "text"
+        },
+        {
+          "source": {
+            "type": "url",
+            "url": "https://example.com/image.png"
+          },
+          "type": "image"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-4.1"
+}

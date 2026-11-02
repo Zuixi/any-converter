@@ -1,0 +1,17 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "Hello, how are you?"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 1024,
+    "temperature": 0.7
+  },
+  "model": "gpt-4.1"
+}

@@ -1,0 +1,13 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "Solve this step by step"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "o3"
+}

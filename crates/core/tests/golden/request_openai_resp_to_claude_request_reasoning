@@ -1,0 +1,14 @@
+{
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "content": "Solve this step by step",
+      "role": "user"
+    }
+  ],
+  "model": "o3",
+  "thinking": {
+    "budget_tokens": 4096,
+    "type": "enabled"
+  }
+}

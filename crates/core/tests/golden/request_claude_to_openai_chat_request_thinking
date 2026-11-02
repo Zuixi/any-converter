@@ -1,0 +1,20 @@
+{
+  "max_completion_tokens": 4096,
+  "messages": [
+    {
+      "content": "hello",
+      "role": "user"
+    },
+    {
+      "content": "hi there",
+      "reasoning_content": "The user greeted me, I should respond politely.",
+      "role": "assistant"
+    },
+    {
+      "content": "continue our conversation",
+      "role": "user"
+    }
+  ],
+  "model": "claude-sonnet-4-20250514",
+  "reasoning_effort": "high"
+}

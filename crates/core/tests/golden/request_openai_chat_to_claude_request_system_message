@@ -1,0 +1,11 @@
+{
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "content": "Hello!",
+      "role": "user"
+    }
+  ],
+  "model": "gpt-4.1",
+  "system": "You are a helpful assistant."
+}

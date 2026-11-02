@@ -1,0 +1,35 @@
+{
+  "input": [
+    {
+      "content": [
+        {
+          "text": "What is 2+2?",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    },
+    {
+      "content": [
+        {
+          "text": "2+2 equals 4.",
+          "type": "output_text"
+        }
+      ],
+      "role": "assistant",
+      "type": "message"
+    },
+    {
+      "content": [
+        {
+          "text": "And 3+3?",
+          "type": "input_text"
+        }
+      ],
+      "role": "user",
+      "type": "message"
+    }
+  ],
+  "model": "gpt-4.1"
+}

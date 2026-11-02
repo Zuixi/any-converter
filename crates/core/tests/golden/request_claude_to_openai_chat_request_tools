@@ -1,0 +1,32 @@
+{
+  "max_completion_tokens": 1024,
+  "messages": [
+    {
+      "content": "What is the weather in Tokyo?",
+      "role": "user"
+    }
+  ],
+  "model": "claude-sonnet-4-20250514",
+  "tool_choice": "auto",
+  "tools": [
+    {
+      "function": {
+        "description": "Get current weather for a location",
+        "name": "get_weather",
+        "parameters": {
+          "properties": {
+            "location": {
+              "description": "City name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "location"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ]
+}

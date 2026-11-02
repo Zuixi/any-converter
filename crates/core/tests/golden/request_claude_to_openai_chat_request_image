@@ -1,0 +1,21 @@
+{
+  "max_completion_tokens": 1024,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "What is in this image?",
+          "type": "text"
+        },
+        {
+          "image_url": {
+            "url": "https://example.com/image.png"
+          },
+          "type": "image_url"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-sonnet-4-20250514"
+}

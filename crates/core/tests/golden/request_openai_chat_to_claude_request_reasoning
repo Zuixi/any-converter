@@ -1,0 +1,31 @@
+{
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "content": "hello",
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "thinking": "The user greeted me, I should respond politely.",
+          "type": "thinking"
+        },
+        {
+          "text": "hi there",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": "continue our conversation",
+      "role": "user"
+    }
+  ],
+  "model": "o1",
+  "thinking": {
+    "budget_tokens": 4096,
+    "type": "enabled"
+  }
+}

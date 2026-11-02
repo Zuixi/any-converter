@@ -1,0 +1,28 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "location": "Tokyo"
+              },
+              "id": "toolu_abc123",
+              "name": "get_weather"
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "modelVersion": "claude-sonnet-4-20250514",
+  "usageMetadata": {
+    "candidatesTokenCount": 10,
+    "promptTokenCount": 20,
+    "totalTokenCount": 30
+  }
+}

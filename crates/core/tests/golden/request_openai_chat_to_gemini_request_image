@@ -1,0 +1,16 @@
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "What is in this image?"
+        },
+        {
+          "text": "https://example.com/image.png"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-4.1"
+}

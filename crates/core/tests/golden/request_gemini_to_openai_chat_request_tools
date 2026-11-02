@@ -1,0 +1,30 @@
+{
+  "messages": [
+    {
+      "content": "What is the weather in Tokyo?",
+      "role": "user"
+    }
+  ],
+  "model": "",
+  "tools": [
+    {
+      "function": {
+        "description": "Get current weather for a location",
+        "name": "get_weather",
+        "parameters": {
+          "properties": {
+            "location": {
+              "description": "City name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "location"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ]
+}
