@@ -4,6 +4,7 @@ pub mod config;
 pub mod credentials;
 pub mod disk_quota;
 pub mod handlers;
+pub mod lockfile;
 pub mod logging;
 pub(crate) mod model;
 pub(crate) mod namespace;

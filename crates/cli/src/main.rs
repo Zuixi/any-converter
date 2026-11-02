@@ -12,6 +12,7 @@ use any_converter_server::config::{
     LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
     secrets_path, warn_if_world_readable,
 };
+use any_converter_server::credentials::account::clear_revoked_default_store;
 use any_converter_server::credentials::{
     CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, GeminiAccount, GeminiEndpoints,
     GeminiSignIn, SecretStore, gemini::DEFAULT_SIGN_IN_TIMEOUT,
@@ -276,6 +277,10 @@ async fn accounts_add(provider: AccountsProvider) -> Result<(), Box<dyn std::err
             let account = sign_in.wait(DEFAULT_SIGN_IN_TIMEOUT).await?;
             let account_id = format!("gemini:{}", account.email);
             store.put(&account_id, &gemini_credential(&account))?;
+            // A fresh sign-in restores a previously revoked account.
+            if let Err(err) = clear_revoked_default_store(&account_id).await {
+                log::warn!("failed to clear revoked marker for {account_id}: {err}");
+            }
             println!("Signed in as {} (stored as {account_id})", account.email);
         }
         AccountsProvider::Copilot => {
@@ -296,6 +301,10 @@ async fn accounts_add(provider: AccountsProvider) -> Result<(), Box<dyn std::err
                     expires_at_unix: None,
                 },
             )?;
+            // A fresh sign-in restores a previously revoked account.
+            if let Err(err) = clear_revoked_default_store(&account_id).await {
+                log::warn!("failed to clear revoked marker for {account_id}: {err}");
+            }
             println!("Signed in (stored as {account_id})");
         }
     }

@@ -9,6 +9,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use http_body_util::BodyExt;
 use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde_json::Value;
@@ -16,6 +17,7 @@ use serde_json::Value;
 use crate::agent_id::agent_of;
 use crate::auth::{self, AuthError};
 use crate::config::{RouteStrategy, ServerConfig, Wire};
+use crate::credentials::token::{AuthErr401, classify_401};
 use crate::credentials::{AccountResolver, ApiKeySource, TokenSource};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
 use crate::namespace::{extract_namespace_map, patch_response_namespaces};
@@ -772,7 +774,15 @@ async fn process_request(
     let mut last_error: Option<String> = None;
     let provider_names = order_provider_names(&ctx.provider_names, &ctx.strategy);
 
-    for (attempt, provider_name) in provider_names.iter().enumerate() {
+    // Failover with account-aware 401/403 handling. `expired_retried`
+    // remembers which attempt already consumed its single `token_expired`
+    // → refresh → retry round, so a provider that keeps answering
+    // `token_expired` cannot loop forever.
+    let mut attempt: usize = 0;
+    let mut expired_retried: Option<usize> = None;
+
+    while attempt < provider_names.len() {
+        let provider_name = provider_names[attempt].as_str();
         let provider = match state.config.find_provider(provider_name) {
             Some(p) => p,
             None => {
@@ -781,6 +791,7 @@ async fn process_request(
                     provider_name, ctx.req_id
                 );
                 last_error = Some(format!("provider not found: {provider_name}"));
+                attempt += 1;
                 continue;
             }
         };
@@ -813,7 +824,7 @@ async fn process_request(
         );
 
         if ctx.streaming {
-            return match crate::proxy::forward_streaming(
+            match crate::proxy::forward_streaming(
                 &state.client,
                 &url,
                 converted_body,
@@ -833,6 +844,44 @@ async fn process_request(
             .await
             {
                 Ok((response, status)) => {
+                    // Account-aware 401/403 semantics: the proxy buffers the
+                    // whole error body on non-success statuses, so it can be
+                    // classified here; the response is rebuilt so it can
+                    // still be returned unchanged when nothing applies.
+                    let response = match provider.account.clone() {
+                        Some(account_id)
+                            if matches!(
+                                status,
+                                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+                            ) =>
+                        {
+                            let (rebuilt, text) = take_error_body(response).await;
+                            match classify_account_auth(
+                                state,
+                                &ctx,
+                                provider,
+                                &account_id,
+                                &text,
+                                expired_retried == Some(attempt),
+                                attempt,
+                                provider_names.len(),
+                                &mut expired_retried,
+                                &mut last_error,
+                            )
+                            .await
+                            {
+                                Ok(AuthStep::RetrySame) => continue,
+                                Ok(AuthStep::Next) => {
+                                    attempt += 1;
+                                    continue;
+                                }
+                                Ok(AuthStep::FallThrough) => rebuilt,
+                                Err(response) => return response,
+                            }
+                        }
+                        _ => response,
+                    };
+
                     // the same retry rule the non-streaming path applies: a
                     // retryable status moves to the next provider while one
                     // remains; otherwise the client sees the upstream answer
@@ -843,9 +892,10 @@ async fn process_request(
                         );
                         last_error =
                             Some(format!("provider {} returned {}", provider.name, status));
+                        attempt += 1;
                         continue;
                     }
-                    response
+                    return response;
                 }
                 Err(err) => {
                     warn!(
@@ -853,9 +903,10 @@ async fn process_request(
                         ctx.req_id, provider.name, err
                     );
                     last_error = Some(err);
+                    attempt += 1;
                     continue;
                 }
-            };
+            }
         }
 
         match crate::proxy::forward_non_streaming(
@@ -870,12 +921,43 @@ async fn process_request(
         .await
         {
             Ok((status, upstream_body)) => {
+                // Account-aware 401/403 semantics (only when the provider
+                // is signed in through an account).
+                if let Some(account_id) = provider.account.clone() {
+                    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+                        let text = String::from_utf8_lossy(&upstream_body);
+                        match classify_account_auth(
+                            state,
+                            &ctx,
+                            provider,
+                            &account_id,
+                            &text,
+                            expired_retried == Some(attempt),
+                            attempt,
+                            provider_names.len(),
+                            &mut expired_retried,
+                            &mut last_error,
+                        )
+                        .await
+                        {
+                            Ok(AuthStep::RetrySame) => continue,
+                            Ok(AuthStep::Next) => {
+                                attempt += 1;
+                                continue;
+                            }
+                            Ok(AuthStep::FallThrough) => {}
+                            Err(response) => return response,
+                        }
+                    }
+                }
+
                 if is_retryable_status(status) && attempt + 1 < provider_names.len() {
                     warn!(
                         "upstream returned {} request_id={} provider={}, trying next provider",
                         status, ctx.req_id, provider.name
                     );
                     last_error = Some(format!("provider {} returned {}", provider.name, status));
+                    attempt += 1;
                     continue;
                 }
 
@@ -898,12 +980,132 @@ async fn process_request(
                     ctx.req_id, provider.name, err
                 );
                 last_error = Some(err);
+                attempt += 1;
                 continue;
             }
         }
     }
 
     upstream_error_response(&last_error.unwrap_or_else(|| "all providers failed".into()))
+}
+
+/// Failover-loop action for one provider attempt after an account-aware
+/// 401/403.
+enum AuthStep {
+    /// Retry the same provider without consuming failover quota.
+    RetrySame,
+    /// Move to the next provider.
+    Next,
+    /// No account semantics applied: keep the existing status handling.
+    FallThrough,
+}
+
+/// Account-aware handling of an upstream 401/403 for providers with
+/// `account` set: one refresh on `token_expired`, a persisted marker in
+/// `revoked.json` on `token_revoked` / `invalid_grant` /
+/// `refresh_token_reused`, and the corresponding loop step.
+///
+/// Only the account id and the verdict are logged — never the response
+/// body, which can echo tokens. `Err(response)` ends the request right
+/// here (revoked account without a failover target).
+#[allow(clippy::too_many_arguments)]
+async fn classify_account_auth(
+    state: &AppState,
+    ctx: &RequestContext,
+    provider: &crate::config::ProviderConfig,
+    account_id: &str,
+    text: &str,
+    already_retried: bool,
+    attempt: usize,
+    provider_count: usize,
+    expired_retried: &mut Option<usize>,
+    last_error: &mut Option<String>,
+) -> Result<AuthStep, Response> {
+    let step = match classify_401(text) {
+        AuthErr401::Expired if !already_retried => {
+            info!(
+                "upstream returned token_expired request_id={} provider={} account={account_id}, refreshing once",
+                ctx.req_id, provider.name
+            );
+            match state.accounts.force_refresh(account_id).await {
+                Ok(_) => AuthStep::RetrySame,
+                Err(err) => {
+                    warn!(
+                        "refresh after token_expired failed request_id={} provider={} account={account_id} error={err}, trying next provider",
+                        ctx.req_id, provider.name
+                    );
+                    *last_error = Some(format!(
+                        "provider {} account {account_id}: refresh after token_expired failed",
+                        provider.name
+                    ));
+                    AuthStep::Next
+                }
+            }
+        }
+        AuthErr401::Expired => {
+            // The single retry for this attempt was already spent.
+            debug!(
+                "token_expired retry already consumed request_id={} provider={} account={account_id}",
+                ctx.req_id, provider.name
+            );
+            AuthStep::FallThrough
+        }
+        AuthErr401::Revoked => {
+            warn!(
+                "upstream revoked credentials request_id={} provider={} account={account_id}, marking account revoked",
+                ctx.req_id, provider.name
+            );
+            if let Err(err) = state.accounts.mark_revoked(account_id, text).await {
+                warn!(
+                    "failed to persist revoked marker request_id={} account={account_id} error={err}",
+                    ctx.req_id
+                );
+            }
+            *last_error = Some(format!(
+                "provider {} account {account_id} revoked",
+                provider.name
+            ));
+            if attempt + 1 >= provider_count {
+                return Err(revoked_account_response(account_id));
+            }
+            AuthStep::Next
+        }
+        AuthErr401::Unknown => AuthStep::FallThrough,
+    };
+
+    match step {
+        AuthStep::RetrySame => {
+            *expired_retried = Some(attempt);
+            Ok(AuthStep::RetrySame)
+        }
+        AuthStep::Next => Ok(AuthStep::Next),
+        AuthStep::FallThrough => Ok(AuthStep::FallThrough),
+    }
+}
+
+/// Split a fully-buffered error [`Response`] into its body text plus a
+/// rebuilt response, so the failover loop can classify 401 bodies while
+/// still returning the original response unchanged when nothing applies.
+async fn take_error_body(response: Response) -> (Response, String) {
+    let (parts, body) = response.into_parts();
+    let bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => axum::body::Bytes::new(),
+    };
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    (Response::from_parts(parts, Body::from(bytes)), text)
+}
+
+/// The unique provider's account was just revoked: the client must sign in
+/// again, so say so instead of a generic gateway error.
+fn revoked_account_response(account_id: &str) -> Response {
+    api_error_response(
+        StatusCode::BAD_GATEWAY,
+        "account_revoked",
+        format!(
+            "account {account_id} was revoked by the upstream provider — sign in again to continue (`any-converter accounts add`)"
+        ),
+    )
 }
 
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {

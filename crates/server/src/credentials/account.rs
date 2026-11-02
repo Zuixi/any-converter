@@ -9,15 +9,27 @@
 //!
 //! Model discovery (`loadCodeAssist`) deliberately lives in a later task:
 //! the model inventory comes from config / `model_map`, not from the account.
+//!
+//! Refreshes are additionally serialized **across processes** through a
+//! [`crate::lockfile::FileLock`] next to the secrets file (the CLI and the
+//! server are separate processes and must never spend the same refresh
+//! token concurrently — vendors answer with `refresh_token_reused` and
+//! revoke the sign-in). Accounts flagged revoked by an upstream
+//! `token_revoked` / `invalid_grant` / `refresh_token_reused` are marked
+//! in `revoked.json` next to the secrets file and refuse to resolve until
+//! [`AccountResolver::clear_revoked`] runs after a fresh sign-in.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
 
 use super::Credential;
 use super::gemini::GeminiEndpoints;
-use super::store::{FileSecretStore, SecretStore, SecretStoreError};
+use super::store::{self, FileSecretStore, SecretStore, SecretStoreError};
+use crate::lockfile::FileLock;
 
 /// A usable account: the id plus a ready-to-send access token.
 #[derive(Debug, Clone)]
@@ -41,6 +53,13 @@ pub enum AccountError {
     /// The token endpoint rejected the refresh or the response was unusable.
     #[error("token refresh failed: {0}")]
     RefreshFailed(String),
+    /// The account was flagged revoked after an upstream `token_revoked` /
+    /// `invalid_grant` / `refresh_token_reused`; sign in again.
+    #[error("account {0} is revoked ({1}); please sign in again (`any-converter accounts add`)")]
+    Revoked(String, String),
+    /// The cross-process refresh lock could not be acquired.
+    #[error("refresh lock error: {0}")]
+    Lock(#[from] crate::lockfile::LockError),
     /// Filesystem failure.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -51,6 +70,25 @@ pub enum AccountError {
 
 /// How early before `expires_at_unix` a token counts as expired.
 pub const REFRESH_MARGIN_SECS: i64 = 300;
+
+/// How long [`AccountResolver::resolve`] waits for the cross-process
+/// refresh lock before failing the request.
+const LOCK_TIMEOUT: Duration = crate::lockfile::DEFAULT_ACQUIRE_TIMEOUT;
+
+/// One entry of `revoked.json`: why the account was flagged and when.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RevokedEntry {
+    why: String,
+    at: i64,
+}
+
+/// In-memory view of `revoked.json`. Reloaded whenever the file's mtime
+/// changes, because the CLI and the server are different processes.
+#[derive(Debug, Default)]
+struct RevokedCache {
+    entries: HashMap<String, RevokedEntry>,
+    mtime: Option<SystemTime>,
+}
 
 /// The OAuth credential fields needed by [`AccountResolver`].
 struct StoredOAuth {
@@ -75,6 +113,10 @@ pub struct AccountResolver {
     cache: Mutex<HashMap<String, (String, Option<i64>)>>,
     /// Per-account single-flight refresh locks.
     flight_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// How long to wait for the cross-process refresh lock.
+    lock_timeout: Duration,
+    /// Cached `revoked.json` state (see [`RevokedCache`]).
+    revoked: Mutex<RevokedCache>,
 }
 
 impl AccountResolver {
@@ -96,7 +138,16 @@ impl AccountResolver {
             token_url,
             cache: Mutex::new(HashMap::new()),
             flight_locks: Mutex::new(HashMap::new()),
+            lock_timeout: LOCK_TIMEOUT,
+            revoked: Mutex::new(RevokedCache::default()),
         }
+    }
+
+    /// Override the cross-process refresh lock timeout (test seam; the
+    /// production default is [`crate::lockfile::DEFAULT_ACQUIRE_TIMEOUT`]).
+    pub fn with_lock_timeout(mut self, timeout: Duration) -> Self {
+        self.lock_timeout = timeout;
+        self
     }
 
     /// Create a resolver over the default secrets path
@@ -112,6 +163,11 @@ impl AccountResolver {
     /// access token, refreshing the credential when it is within
     /// [`REFRESH_MARGIN_SECS`] of expiry.
     pub async fn resolve(&self, account_id: &str) -> Result<ResolvedAccount, AccountError> {
+        // Revoked accounts never resolve until signed in again.
+        if let Some(entry) = self.revoked_entry(account_id) {
+            return Err(AccountError::Revoked(account_id.to_string(), entry.why));
+        }
+
         // Fast path: a cached token that is still valid skips the store.
         if let Some((token, expires_at_unix)) = self.cache_get(account_id) {
             if !expired(expires_at_unix) {
@@ -158,6 +214,70 @@ impl AccountResolver {
             });
         }
 
+        // Cross-process re-check: the CLI (or another server) may have
+        // refreshed and persisted while we waited for the file lock. Key
+        // the decision on the refresh token actually spent, mirroring
+        // magpie's per-token `logins.json.codex.lock`.
+        let _file_guard = self.refresh_lock().acquire(self.lock_timeout).await?;
+        let latest = self.read_oauth(account_id)?;
+        if latest.refresh_token != seen_refresh_token || !expired(latest.expires_at_unix) {
+            self.cache_put(
+                account_id,
+                latest.access_token.clone(),
+                latest.expires_at_unix,
+            );
+            return Ok(ResolvedAccount {
+                id: account_id.to_string(),
+                access_token: latest.access_token,
+            });
+        }
+
+        self.refresh_stored(account_id, &latest).await
+    }
+
+    /// Refresh the account's token immediately, ignoring the expiry margin.
+    ///
+    /// Used after an upstream `token_expired` verdict: the locally cached
+    /// expiry can still look valid while the vendor has rejected the
+    /// access token. Serialized by both the per-account single-flight lock
+    /// and the cross-process file lock.
+    pub async fn force_refresh(&self, account_id: &str) -> Result<ResolvedAccount, AccountError> {
+        if let Some(entry) = self.revoked_entry(account_id) {
+            return Err(AccountError::Revoked(account_id.to_string(), entry.why));
+        }
+
+        let lock = self.flight_lock(account_id);
+        let _guard = lock.lock().await;
+
+        let baseline = self.read_oauth(account_id)?;
+        let _file_guard = self.refresh_lock().acquire(self.lock_timeout).await?;
+        let latest = self.read_oauth(account_id)?;
+        if latest.refresh_token != baseline.refresh_token {
+            // A concurrent process refreshed and rotated the refresh token
+            // while we waited: spending the stale token would raise
+            // `refresh_token_reused`. Reuse the winner's result instead.
+            self.cache_put(
+                account_id,
+                latest.access_token.clone(),
+                latest.expires_at_unix,
+            );
+            return Ok(ResolvedAccount {
+                id: account_id.to_string(),
+                access_token: latest.access_token,
+            });
+        }
+        self.refresh_stored(account_id, &latest).await
+    }
+
+    /// Call the token endpoint for `latest` and persist the result.
+    ///
+    /// Callers must hold the per-account single-flight lock AND the
+    /// cross-process file lock.
+    async fn refresh_stored(
+        &self,
+        account_id: &str,
+        latest: &StoredOAuth,
+    ) -> Result<ResolvedAccount, AccountError> {
         let provider = account_id.split(':').next().unwrap_or("");
         if provider != "gemini" {
             return Err(AccountError::UnsupportedProvider(account_id.to_string()));
@@ -213,11 +333,11 @@ impl AccountResolver {
 
         let expires_at_unix = parsed.expires_in.map(|secs| unix_now() + secs as i64);
         // Google does not rotate refresh tokens; keep the old one when absent.
-        let new_refresh_token = parsed.refresh_token.or(latest.refresh_token);
+        let new_refresh_token = parsed.refresh_token.or(latest.refresh_token.clone());
 
         let updated = Credential::OAuth {
-            provider: latest.provider,
-            account: latest.account,
+            provider: latest.provider.clone(),
+            account: latest.account.clone(),
             access_token: parsed.access_token.clone(),
             refresh_token: new_refresh_token,
             expires_at_unix,
@@ -240,6 +360,73 @@ impl AccountResolver {
         _base: &str,
     ) -> Result<Vec<String>, AccountError> {
         Ok(Vec::new())
+    }
+
+    /// Mark `account_id` revoked with reason `why`, persisting the marker
+    /// to `revoked.json` next to the secrets file (`0600`, atomic write).
+    pub async fn mark_revoked(&self, account_id: &str, why: &str) -> Result<(), AccountError> {
+        let mut cache = self.revoked.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = load_revoked_file(&self.revoked_path());
+        entries.insert(
+            account_id.to_string(),
+            RevokedEntry {
+                why: why.to_string(),
+                at: unix_now(),
+            },
+        );
+        let bytes = serde_json::to_vec_pretty(&entries).map_err(SecretStoreError::from)?;
+        store::write_private(&self.revoked_path(), &bytes)?;
+        cache.entries = entries;
+        cache.mtime = revoked_mtime(&self.revoked_path());
+        Ok(())
+    }
+
+    /// Remove the revoked marker for `account_id` (call after a fresh
+    /// sign-in so the account can resolve again).
+    pub async fn clear_revoked(&self, account_id: &str) -> Result<(), AccountError> {
+        let mut cache = self.revoked.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = load_revoked_file(&self.revoked_path());
+        if entries.remove(account_id).is_some() {
+            let bytes = serde_json::to_vec_pretty(&entries).map_err(SecretStoreError::from)?;
+            store::write_private(&self.revoked_path(), &bytes)?;
+            cache.entries = entries;
+            cache.mtime = revoked_mtime(&self.revoked_path());
+        }
+        // Drop any stale in-memory marker even when the file had none.
+        cache.entries.remove(account_id);
+        Ok(())
+    }
+
+    /// Whether `account_id` is currently flagged revoked.
+    pub fn is_revoked(&self, account_id: &str) -> bool {
+        self.revoked_entry(account_id).is_some()
+    }
+
+    /// The revoked marker file: `revoked.json` next to the secrets file.
+    fn revoked_path(&self) -> PathBuf {
+        match self.store.path().parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.join("revoked.json"),
+            _ => PathBuf::from("revoked.json"),
+        }
+    }
+
+    /// The cross-process refresh lock for this store (one per secrets file).
+    fn refresh_lock(&self) -> FileLock {
+        let mut path = self.store.path().as_os_str().to_owned();
+        path.push(".refresh.lock");
+        FileLock::new(PathBuf::from(path))
+    }
+
+    /// Current revoked entry for `account_id`, reloading `revoked.json`
+    /// when its mtime changed since the last read.
+    fn revoked_entry(&self, account_id: &str) -> Option<RevokedEntry> {
+        let mut cache = self.revoked.lock().unwrap_or_else(|e| e.into_inner());
+        let disk_mtime = revoked_mtime(&self.revoked_path());
+        if cache.mtime != disk_mtime {
+            cache.entries = load_revoked_file(&self.revoked_path());
+            cache.mtime = disk_mtime;
+        }
+        cache.entries.get(account_id).cloned()
     }
 
     /// Read and validate the stored OAuth credential for `account_id`.
@@ -333,6 +520,32 @@ fn percent_encode(input: &str) -> String {
         }
     }
     out
+}
+
+/// Read `revoked.json` into a map; an unreadable or malformed file reads
+/// as empty (a missing file is the normal state).
+fn load_revoked_file(path: &std::path::Path) -> HashMap<String, RevokedEntry> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// `revoked.json`'s mtime, `None` when the file does not exist.
+fn revoked_mtime(path: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+}
+
+/// Clear the revoked marker for `account_id` on the default secrets store.
+///
+/// The CLI invokes this right after a successful sign-in (`accounts add`).
+/// It performs no network I/O, so a throwaway client is enough.
+pub async fn clear_revoked_default_store(account_id: &str) -> Result<(), AccountError> {
+    AccountResolver::with_default_store(reqwest::Client::new())
+        .clear_revoked(account_id)
+        .await
 }
 
 #[cfg(test)]

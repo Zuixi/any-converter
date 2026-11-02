@@ -18,6 +18,51 @@ use thiserror::Error;
 
 use super::Credential;
 
+/// Atomically write `bytes` to `path`: same-directory `0600` temp file →
+/// rename over the target, creating `0700` parent directories as needed.
+/// (Atomic on POSIX via same-directory rename; on Windows `rename` fails
+/// when the destination exists, so remove first.)
+///
+/// Shared by the secret store and the revoked-account marker so the
+/// permission logic lives in exactly one place.
+pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), SecretStoreError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(parent)?.permissions();
+                if perms.mode() & 0o777 != 0o700 {
+                    perms.set_mode(0o700);
+                    fs::set_permissions(parent, perms)?;
+                }
+            }
+        }
+    }
+
+    let tmp = tmp_path_for(path);
+    fs::write(&tmp, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+    }
+
+    #[cfg(windows)]
+    let _ = fs::remove_file(path);
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Temp-file path used by [`write_private`] (pid-suffixed so two processes
+/// writing the same target never collide).
+fn tmp_path_for(path: &std::path::Path) -> PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(format!(".tmp-{}", std::process::id()));
+    PathBuf::from(p)
+}
+
 /// Errors surfaced by [`SecretStore`] implementations.
 #[derive(Debug, Error)]
 pub enum SecretStoreError {
@@ -69,15 +114,14 @@ impl FileSecretStore {
         }
     }
 
+    /// The on-disk path this store reads and writes.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     fn backup_path(&self) -> PathBuf {
         let mut p = self.path.clone().into_os_string();
         p.push(".bak");
-        PathBuf::from(p)
-    }
-
-    fn tmp_path(&self) -> PathBuf {
-        let mut p = self.path.clone().into_os_string();
-        p.push(format!(".tmp-{}", std::process::id()));
         PathBuf::from(p)
     }
 
@@ -111,37 +155,9 @@ impl FileSecretStore {
     /// Persist `map` atomically: `0600` temp file → back up current → rename.
     fn save(&self, map: &DiskMap) -> Result<(), SecretStoreError> {
         let bytes = serde_json::to_vec_pretty(map)?;
-
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(parent)?.permissions();
-                    if perms.mode() & 0o777 != 0o700 {
-                        perms.set_mode(0o700);
-                        fs::set_permissions(parent, perms)?;
-                    }
-                }
-            }
-        }
-
-        let tmp = self.tmp_path();
-        fs::write(&tmp, &bytes)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
-        }
-
+        write_private(&self.path, &bytes)?;
         // Best-effort last-good backup: the committed state, taken after the
         // rename succeeds so `.bak` always mirrors a fully written file.
-        // (Atomic on POSIX via same-directory rename; on Windows `rename`
-        // fails when the destination exists, so remove first.)
-        #[cfg(windows)]
-        let _ = fs::remove_file(&self.path);
-        fs::rename(&tmp, &self.path)?;
         if self.path.exists() {
             let _ = fs::copy(&self.path, self.backup_path());
         }
