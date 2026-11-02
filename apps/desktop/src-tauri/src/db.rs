@@ -205,6 +205,7 @@ impl DesktopDb {
                     base_url: provider.base_url,
                     api_key: provider.keychain_ref,
                     account: None,
+                    api: None,
                     wire: None,
                     model_map: model_maps.remove(&provider.id).unwrap_or_default(),
                     endpoints: Default::default(),

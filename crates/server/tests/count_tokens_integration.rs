@@ -29,6 +29,7 @@ fn provider(name: &str, format: Format, base_url: &str) -> ProviderConfig {
         base_url: base_url.into(),
         api_key: "upstream-key".into(),
         account: None,
+        api: None,
         wire: None,
         model_map: [("*".into(), "claude-3-upstream".into())].into(),
         endpoints: Default::default(),

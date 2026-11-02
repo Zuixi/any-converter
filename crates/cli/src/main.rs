@@ -206,6 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         base_url: base,
                         api_key: key,
                         account: None,
+                        api: None,
                         wire: None,
                         model_map: HashMap::new(),
                         endpoints: Default::default(),

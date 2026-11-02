@@ -171,6 +171,7 @@ mod tests {
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-test".into(),
                 account: None,
+                api: None,
                 wire: None,
                 model_map: [("claude-sonnet-4".into(), "gpt-4.1".into())].into(),
                 endpoints: Default::default(),

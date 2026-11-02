@@ -91,6 +91,7 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
             base_url: base_url.into(),
             api_key: "upstream-key".into(),
             account: None,
+            api: None,
             wire: None,
             // Literal key so `/models/{model_id}` resolves instead of 404.
             model_map: [("guard-model".into(), "upstream-model".into())].into(),

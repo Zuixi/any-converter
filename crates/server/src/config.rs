@@ -122,15 +122,88 @@ pub struct ServerSettings {
     pub pass_through_headers: PassThroughHeadersConfig,
 }
 
-/// Transport wire used to reach a provider's upstream.
+/// The API an upstream speaks. Mirrors magpie's `Protocol` minus Copilot
+/// (which is an auth flavor returning Chat or Responses per model, not a
+/// protocol of its own: internal/provider/plugins.go copilotAPI).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Wire {
-    /// Regular provider APIs (Gemini/Claude/OpenAI chat/responses paths).
-    GeminiApi,
-    /// Gemini Code Assist internal endpoints (`cloudcode-pa.googleapis.com`)
-    /// with the `{"model", "request"}` envelope and OAuth bearer auth.
+pub enum UpstreamApi {
+    #[serde(rename = "chat")]
+    Chat,
+    #[serde(rename = "claude")]
+    Claude,
+    #[serde(rename = "responses")]
+    Responses,
+    #[serde(rename = "gemini")]
+    Gemini,
+    #[serde(rename = "code_assist")]
     CodeAssist,
+    /// Reserved for P7 deserialization only; [`Self::api_for`] never returns it.
+    #[serde(rename = "copilot")]
+    Copilot,
+}
+
+impl UpstreamApi {
+    /// The client-format the wire is shaped as. [`Self::Copilot`] is not
+    /// reachable here (documented as OpenAIChat, mirroring magpie's
+    /// `copilotAPI` fallthrough).
+    pub fn to_format(self) -> Format {
+        match self {
+            UpstreamApi::Chat | UpstreamApi::Copilot => Format::OpenAIChat,
+            UpstreamApi::Claude => Format::Claude,
+            UpstreamApi::Responses => Format::OpenAIResponses,
+            UpstreamApi::Gemini | UpstreamApi::CodeAssist => Format::Gemini,
+        }
+    }
+
+    /// The path appended to the base (magpie `pathOf`, gateway.go:7520).
+    /// The `model` is only used by [`Self::Gemini`], whose path carries it.
+    pub fn path(self, model: &str, streaming: bool) -> String {
+        match self {
+            UpstreamApi::Chat => "/v1/chat/completions".to_string(),
+            UpstreamApi::Claude => "/v1/messages".to_string(),
+            UpstreamApi::Responses => "/v1/responses".to_string(),
+            UpstreamApi::Gemini if streaming => {
+                format!("/v1beta/models/{model}:streamGenerateContent")
+            }
+            UpstreamApi::Gemini => format!("/v1beta/models/{model}:generateContent"),
+            UpstreamApi::CodeAssist if streaming => {
+                "/v1internal:streamGenerateContent?alt=sse".to_string()
+            }
+            UpstreamApi::CodeAssist => "/v1internal:generateContent".to_string(),
+            // Unreachable via `api_for`; Chat's path keeps the match total.
+            UpstreamApi::Copilot => "/v1/chat/completions".to_string(),
+        }
+    }
+
+    pub fn from_format(f: Format) -> Self {
+        match f {
+            Format::OpenAIChat => UpstreamApi::Chat,
+            Format::Claude => UpstreamApi::Claude,
+            Format::OpenAIResponses => UpstreamApi::Responses,
+            Format::Gemini => UpstreamApi::Gemini,
+        }
+    }
+}
+
+/// Legacy `wire` key values from pre-`UpstreamApi` configs.
+///
+/// Read-only compatibility shim: [`ProviderConfig::effective_api`] converts
+/// it to [`UpstreamApi`] once. New configs should use the `api` key instead;
+/// nothing else in the codebase reads this field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireCompat {
+    GeminiApi,
+    CodeAssist,
+}
+
+impl From<WireCompat> for UpstreamApi {
+    fn from(wire: WireCompat) -> Self {
+        match wire {
+            WireCompat::GeminiApi => UpstreamApi::Gemini,
+            WireCompat::CodeAssist => UpstreamApi::CodeAssist,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -144,9 +217,17 @@ pub struct ProviderConfig {
     /// and `api_key` is ignored.
     #[serde(default)]
     pub account: Option<String>,
-    /// Explicit wire override; otherwise inferred via [`Self::effective_wire`].
+    /// Explicit upstream API. Old configs keep using the `format` field,
+    /// which [`Self::effective_api`] falls back to via
+    /// [`UpstreamApi::from_format`]; the `format` field itself is kept for
+    /// backward compatibility only and no longer drives URL or conversion
+    /// (it remains a historical field for model routing).
     #[serde(default)]
-    pub wire: Option<Wire>,
+    pub api: Option<UpstreamApi>,
+    /// Legacy `wire` override from pre-`UpstreamApi` configs; otherwise
+    /// inferred via [`Self::effective_api`].
+    #[serde(default)]
+    pub wire: Option<WireCompat>,
     #[serde(default)]
     pub model_map: HashMap<String, String>,
     #[serde(default)]
@@ -390,20 +471,31 @@ fn default_port() -> u16 {
 }
 
 impl ProviderConfig {
-    /// Resolve the wire used to talk to this provider.
+    /// Resolve the API used to talk to this provider.
     ///
-    /// An explicit `wire` always wins. Otherwise an `account` whose provider
-    /// prefix (the part before `:`) is `gemini` or `antigravity` selects
-    /// [`Wire::CodeAssist`]; everything else stays on [`Wire::GeminiApi`].
-    pub fn effective_wire(&self) -> Wire {
+    /// Precedence: explicit `api` → legacy `wire` key → account prefix
+    /// (`gemini`/`antigravity` selects [`UpstreamApi::CodeAssist`]) →
+    /// [`UpstreamApi::from_format`] of `format`.
+    pub fn effective_api(&self) -> UpstreamApi {
+        if let Some(api) = self.api {
+            return api;
+        }
         if let Some(wire) = self.wire {
-            return wire;
+            return wire.into();
         }
         let prefix = self.account.as_deref().and_then(|a| a.split(':').next());
         match prefix {
-            Some("gemini" | "antigravity") => Wire::CodeAssist,
-            _ => Wire::GeminiApi,
+            Some("gemini" | "antigravity") => UpstreamApi::CodeAssist,
+            _ => UpstreamApi::from_format(self.format),
         }
+    }
+
+    /// Resolve the API for a specific upstream model.
+    ///
+    /// Per-model protocol dispatch arrives with the plugin model (P6.1);
+    /// today every model of a provider speaks [`Self::effective_api`].
+    pub fn api_for(&self, _model: &str) -> UpstreamApi {
+        self.effective_api()
     }
 
     /// Resolve a client model name to the upstream model using model_map.
@@ -599,6 +691,7 @@ mod tests {
             base_url: "https://api.openai.com".into(),
             api_key: "sk-test".into(),
             account: None,
+            api: None,
             wire: None,
             model_map,
             endpoints: Default::default(),
@@ -748,27 +841,98 @@ rotation = "never"
     }
 
     #[test]
-    fn test_effective_wire_defaults_and_overrides() {
+    fn test_effective_api_precedence() {
         let mut provider = sample_provider(HashMap::new());
-        assert_eq!(provider.effective_wire(), Wire::GeminiApi);
+        // No api/wire/account: falls back to the historical format field.
+        assert_eq!(provider.effective_api(), UpstreamApi::Chat);
 
         provider.account = Some("gemini:me@example.com".into());
-        assert_eq!(provider.effective_wire(), Wire::CodeAssist);
+        assert_eq!(provider.effective_api(), UpstreamApi::CodeAssist);
 
         provider.account = Some("antigravity:me@example.com".into());
-        assert_eq!(provider.effective_wire(), Wire::CodeAssist);
+        assert_eq!(provider.effective_api(), UpstreamApi::CodeAssist);
 
         provider.account = Some("copilot:me".into());
-        assert_eq!(provider.effective_wire(), Wire::GeminiApi);
+        assert_eq!(provider.effective_api(), UpstreamApi::Chat);
 
-        // Explicit wire always wins over account inference.
-        provider.wire = Some(Wire::GeminiApi);
+        // Legacy wire wins over account inference.
+        provider.wire = Some(WireCompat::GeminiApi);
         provider.account = Some("gemini:me@example.com".into());
-        assert_eq!(provider.effective_wire(), Wire::GeminiApi);
+        assert_eq!(provider.effective_api(), UpstreamApi::Gemini);
 
-        provider.wire = Some(Wire::CodeAssist);
+        provider.wire = Some(WireCompat::CodeAssist);
         provider.account = None;
-        assert_eq!(provider.effective_wire(), Wire::CodeAssist);
+        assert_eq!(provider.effective_api(), UpstreamApi::CodeAssist);
+
+        // Explicit api beats legacy wire, account, and format.
+        provider.api = Some(UpstreamApi::Responses);
+        provider.wire = Some(WireCompat::CodeAssist);
+        provider.account = Some("gemini:me@example.com".into());
+        assert_eq!(provider.effective_api(), UpstreamApi::Responses);
+    }
+
+    #[test]
+    fn test_api_from_format() {
+        // The four formats round-trip through UpstreamApi::to_format.
+        for (format, api) in [
+            (Format::OpenAIChat, UpstreamApi::Chat),
+            (Format::Claude, UpstreamApi::Claude),
+            (Format::OpenAIResponses, UpstreamApi::Responses),
+            (Format::Gemini, UpstreamApi::Gemini),
+        ] {
+            assert_eq!(UpstreamApi::from_format(format), api);
+            assert_eq!(api.to_format(), format);
+        }
+        // CodeAssist is not a Format; its wire format is Gemini.
+        assert_eq!(UpstreamApi::CodeAssist.to_format(), Format::Gemini);
+    }
+
+    #[test]
+    fn test_legacy_wire_key_still_parses() {
+        for (wire_value, expected) in [
+            ("code_assist", UpstreamApi::CodeAssist),
+            ("gemini_api", UpstreamApi::Gemini),
+        ] {
+            let toml_str = format!(
+                r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[[providers]]
+name = "legacy"
+format = "gemini"
+base_url = "https://cloudcode-pa.googleapis.com"
+api_key = ""
+account = "gemini:me@example.com"
+wire = "{wire_value}"
+"#
+            );
+            let config = ServerConfig::from_toml(&toml_str).unwrap();
+            let provider = &config.providers[0];
+            assert_eq!(provider.effective_api(), expected, "wire = {wire_value:?}");
+        }
+    }
+
+    #[test]
+    fn test_api_is_optional_and_defaults_from_format() {
+        let toml_str = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[[providers]]
+name = "openai"
+format = "openai_chat"
+base_url = "https://api.openai.com"
+api_key = "sk-proj-xxx"
+"#;
+        let config = ServerConfig::from_toml(toml_str).unwrap();
+        let provider = &config.providers[0];
+        assert_eq!(provider.api, None);
+        assert_eq!(provider.wire, None);
+        assert_eq!(provider.account, None);
+        assert_eq!(provider.effective_api(), UpstreamApi::Chat);
     }
 
     #[test]
@@ -789,8 +953,8 @@ wire = "code_assist"
         let config = ServerConfig::from_toml(toml_str).unwrap();
         let provider = &config.providers[0];
         assert_eq!(provider.account.as_deref(), Some("gemini:me@example.com"));
-        assert_eq!(provider.wire, Some(Wire::CodeAssist));
-        assert_eq!(provider.effective_wire(), Wire::CodeAssist);
+        assert_eq!(provider.wire, Some(WireCompat::CodeAssist));
+        assert_eq!(provider.effective_api(), UpstreamApi::CodeAssist);
     }
 
     #[test]
@@ -902,6 +1066,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     base_url: "https://api.anthropic.com".into(),
                     api_key: "sk-ant".into(),
                     account: None,
+                    api: None,
                     wire: None,
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
@@ -913,6 +1078,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     base_url: "https://api.openai.com".into(),
                     api_key: "sk-proj".into(),
                     account: None,
+                    api: None,
                     wire: None,
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
@@ -969,6 +1135,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
             base_url: "https://api.openai.com".into(),
             api_key: "sk-proj".into(),
             account: None,
+            api: None,
             wire: None,
             model_map: [("*".into(), "gpt-4.1".into())].into(),
             endpoints: Default::default(),
@@ -1027,6 +1194,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     base_url: "https://primary.com".into(),
                     api_key: "sk-1".into(),
                     account: None,
+                    api: None,
                     wire: None,
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
@@ -1038,6 +1206,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     base_url: "https://backup.com".into(),
                     api_key: "sk-2".into(),
                     account: None,
+                    api: None,
                     wire: None,
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
@@ -1107,6 +1276,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-test".into(),
                 account: None,
+                api: None,
                 wire: None,
                 model_map: [("gpt-4.1".into(), "gpt-4.1".into())].into(),
                 endpoints: Default::default(),

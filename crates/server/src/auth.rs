@@ -142,6 +142,7 @@ mod tests {
             base_url: "https://example.openai.azure.com/openai/deployments/test".into(),
             api_key: "azure-key".into(),
             account: None,
+            api: None,
             wire: None,
             model_map: std::collections::HashMap::new(),
             endpoints: crate::config::ProviderEndpointConfig::default(),
