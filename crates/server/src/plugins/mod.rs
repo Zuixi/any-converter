@@ -111,7 +111,12 @@ pub struct AuthMethod {
     /// `type` (magpie shape); the alias keeps that wire form parseable.
     #[serde(alias = "type")]
     pub kind: AuthMethodKind,
+    /// What the method is called in the vendor's UI (OpenCode's `label`),
+    /// e.g. "Sign in with Cursor". Empty when the plugin names none.
+    #[serde(default)]
+    pub label: String,
     /// Inputs the host collects before starting the flow.
+    #[serde(default)]
     pub prompts: Vec<PromptDef>,
 }
 
@@ -422,10 +427,12 @@ mod tests {
                     methods: vec![
                         AuthMethod {
                             kind: AuthMethodKind::Oauth,
+                            label: String::new(),
                             prompts: vec![],
                         },
                         AuthMethod {
                             kind: AuthMethodKind::Api,
+                            label: String::new(),
                             prompts: vec![],
                         },
                     ],
@@ -721,6 +728,7 @@ mod tests {
         // Method/prompt shapes use OpenCode's lowercase type tags.
         let method = AuthMethod {
             kind: AuthMethodKind::Oauth,
+            label: String::new(),
             prompts: vec![PromptDef {
                 key: "org".into(),
                 label: "Organization".into(),
@@ -733,6 +741,7 @@ mod tests {
             serde_json::to_value(&method).unwrap(),
             json!({
                 "kind": "oauth",
+                "label": "",
                 "prompts": [{
                     "key": "org",
                     "label": "Organization",

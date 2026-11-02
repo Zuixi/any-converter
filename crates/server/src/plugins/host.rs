@@ -1695,6 +1695,8 @@ for line in sys.stdin:
             plugin.info().methods,
             vec![AuthMethod {
                 kind: AuthMethodKind::Oauth,
+                // The fixture's own label, carried through the init reply.
+                label: "Sign in".to_string(),
                 prompts: vec![],
             }]
         );
