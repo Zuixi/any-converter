@@ -13,6 +13,7 @@ use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde_json::Value;
 
+use crate::agent_id::agent_of;
 use crate::auth::{self, AuthError};
 use crate::config::{RouteStrategy, ServerConfig};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
@@ -399,11 +400,12 @@ struct RequestContext {
 /// Extract a best-effort client identifier from request headers.
 ///
 /// Preference order: `user-agent` → `x-requested-with` → `x-stainless-*`.
+/// The user-agent is normalized to a known agent id (see [`crate::agent_id`]).
 fn extract_client_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
-        .map(String::from)
+        .map(agent_of)
         .or_else(|| {
             headers
                 .get("x-requested-with")
@@ -989,6 +991,20 @@ mod tests {
             usage_logger: None,
             request_logger: None,
         }
+    }
+
+    #[test]
+    fn test_extract_client_id_normalizes_user_agent() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::USER_AGENT,
+            HeaderValue::from_static("claude-cli/2.1.0 (external, cli)"),
+        );
+        assert_eq!(extract_client_id(&headers), Some("claude-code".into()));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-requested-with", HeaderValue::from_static("MyApp"));
+        assert_eq!(extract_client_id(&headers), Some("MyApp".into()));
     }
 
     #[test]
