@@ -31,8 +31,8 @@ format = "openai-chat"
 base_url = "https://api.openai.com"
 api_key = "test-key"
 
-[[routes]]
-client_format = "openai-chat"
+[[model_routes]]
+pattern = "*"
 provider = "openai"
 "#;
 

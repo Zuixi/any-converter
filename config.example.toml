@@ -101,14 +101,6 @@ pattern = "*"
 provider = "openai"
 upstream_model = "gpt-4.1-mini"
 
-# ── Legacy Routes (backward compatible) ─────────────────────────────
-# Format-based routing. Used as fallback when no model_routes are configured.
-# If model_routes is set, these are only used when no model pattern matches.
-
-# [[routes]]
-# client_format = "claude"
-# provider = "openai"
-
 # ── Logging ──────────────────────────────────────────────────────────
 
 [logging]

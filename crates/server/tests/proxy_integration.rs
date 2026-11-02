@@ -49,11 +49,14 @@ async fn non_streaming_proxy() {
             pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", &base)],
-        model_routes: vec![],
-        routes: vec![any_converter_server::config::RouteConfig {
-            client_format: any_converter_core::convert::Format::OpenAIChat,
-            provider: "openai".into(),
+        model_routes: vec![any_converter_server::config::ModelRouteConfig {
+            pattern: "*".into(),
+            provider: Some("openai".into()),
+            providers: vec![],
+            upstream_model: None,
+            strategy: RouteStrategy::Priority,
         }],
+        routes: vec![],
         model_metadata: Default::default(),
         logging: Default::default(),
     };
@@ -141,11 +144,14 @@ async fn client_headers_passthrough_to_upstream() {
             pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", &base)],
-        model_routes: vec![],
-        routes: vec![any_converter_server::config::RouteConfig {
-            client_format: any_converter_core::convert::Format::OpenAIChat,
-            provider: "openai".into(),
+        model_routes: vec![any_converter_server::config::ModelRouteConfig {
+            pattern: "*".into(),
+            provider: Some("openai".into()),
+            providers: vec![],
+            upstream_model: None,
+            strategy: RouteStrategy::Priority,
         }],
+        routes: vec![],
         model_metadata: Default::default(),
         logging: Default::default(),
     };
@@ -217,11 +223,14 @@ async fn streaming_proxy_text() {
             pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", &base)],
-        model_routes: vec![],
-        routes: vec![any_converter_server::config::RouteConfig {
-            client_format: any_converter_core::convert::Format::OpenAIChat,
-            provider: "openai".into(),
+        model_routes: vec![any_converter_server::config::ModelRouteConfig {
+            pattern: "*".into(),
+            provider: Some("openai".into()),
+            providers: vec![],
+            upstream_model: None,
+            strategy: RouteStrategy::Priority,
         }],
+        routes: vec![],
         model_metadata: Default::default(),
         logging: Default::default(),
     };
@@ -325,11 +334,14 @@ async fn auth_missing_returns_401() {
             pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", "http://127.0.0.1:1")],
-        model_routes: vec![],
-        routes: vec![any_converter_server::config::RouteConfig {
-            client_format: any_converter_core::convert::Format::OpenAIChat,
-            provider: "openai".into(),
+        model_routes: vec![any_converter_server::config::ModelRouteConfig {
+            pattern: "*".into(),
+            provider: Some("openai".into()),
+            providers: vec![],
+            upstream_model: None,
+            strategy: RouteStrategy::Priority,
         }],
+        routes: vec![],
         model_metadata: Default::default(),
         logging: Default::default(),
     };
@@ -364,11 +376,14 @@ async fn auth_invalid_returns_401() {
             pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", "http://127.0.0.1:1")],
-        model_routes: vec![],
-        routes: vec![any_converter_server::config::RouteConfig {
-            client_format: any_converter_core::convert::Format::OpenAIChat,
-            provider: "openai".into(),
+        model_routes: vec![any_converter_server::config::ModelRouteConfig {
+            pattern: "*".into(),
+            provider: Some("openai".into()),
+            providers: vec![],
+            upstream_model: None,
+            strategy: RouteStrategy::Priority,
         }],
+        routes: vec![],
         model_metadata: Default::default(),
         logging: Default::default(),
     };
@@ -413,11 +428,14 @@ async fn upstream_error_returns_502() {
             pass_through_headers: PassThroughHeadersConfig::default(),
         },
         providers: vec![oai_provider("openai", &base)],
-        model_routes: vec![],
-        routes: vec![any_converter_server::config::RouteConfig {
-            client_format: any_converter_core::convert::Format::OpenAIChat,
-            provider: "openai".into(),
+        model_routes: vec![any_converter_server::config::ModelRouteConfig {
+            pattern: "*".into(),
+            provider: Some("openai".into()),
+            providers: vec![],
+            upstream_model: None,
+            strategy: RouteStrategy::Priority,
         }],
+        routes: vec![],
         model_metadata: Default::default(),
         logging: Default::default(),
     };

@@ -333,7 +333,7 @@ fn prepare_request(
 
     let resolved = state
         .config
-        .resolve_provider(route_info.client_format, &client_model)
+        .resolve_provider(&client_model)
         .ok_or_else(|| {
             error!(
                 "no route for model={} format={} request_id={}",
@@ -946,14 +946,6 @@ mod tests {
         };
 
         assert!(!is_streaming_request(body, route));
-        assert_eq!(
-            state
-                .config
-                .find_route(route.client_format)
-                .unwrap()
-                .provider,
-            "openai"
-        );
         assert_eq!(
             state
                 .config
