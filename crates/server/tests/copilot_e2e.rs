@@ -288,6 +288,7 @@ fn server_config() -> ServerConfig {
             base_url: String::new(),
             api_key: String::new(),
             account: Some("copilot:octocat".into()),
+            accounts: Vec::new(),
             api: None,
             wire: None,
             model_map: Default::default(),

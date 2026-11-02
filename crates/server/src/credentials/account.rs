@@ -149,6 +149,9 @@ pub struct AccountResolver {
     revoked: Mutex<RevokedCache>,
     /// In-memory project cache: account id → (project, flags, at).
     projects: Mutex<HashMap<String, (CodeAssistProject, GeminiFlags, i64)>>,
+    /// In-memory quota window cache: account id → (read_at, windows).
+    /// Written by `credentials::allowance` (P9).
+    allowances: Mutex<HashMap<String, (i64, super::allowance::Allowance)>>,
 }
 
 impl AccountResolver {
@@ -173,6 +176,7 @@ impl AccountResolver {
             lock_timeout: LOCK_TIMEOUT,
             revoked: Mutex::new(RevokedCache::default()),
             projects: Mutex::new(HashMap::new()),
+            allowances: Mutex::new(HashMap::new()),
         }
     }
 
@@ -710,6 +714,43 @@ impl AccountResolver {
             .entry(account_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+
+    /// The shared HTTP client (quota reads in `credentials::allowance`).
+    pub(crate) fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    /// The cached quota windows for `account_id`, with the unix time they
+    /// were read at (P9).
+    pub(crate) fn allowance_cache_get(
+        &self,
+        account_id: &str,
+    ) -> Option<(i64, super::allowance::Allowance)> {
+        self.allowances
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(account_id)
+            .cloned()
+    }
+
+    /// Cache `windows` for `account_id`, read now (P9).
+    pub(crate) fn allowance_cache_put(
+        &self,
+        account_id: &str,
+        windows: super::allowance::Allowance,
+    ) {
+        self.allowances
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(account_id.to_string(), (unix_now(), windows));
+    }
+
+    /// The project id cached for `account_id`, when an earlier
+    /// `loadCodeAssist` found one (quota asks ride it; no onboarding).
+    pub(crate) fn cached_project_id(&self, account_id: &str) -> Option<String> {
+        self.projects_get(account_id)
+            .map(|(project, _, _)| project.id)
     }
 }
 

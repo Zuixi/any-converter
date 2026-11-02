@@ -171,6 +171,7 @@ fn code_assist_provider(base: &str) -> ProviderConfig {
         base_url: base.into(),
         api_key: String::new(),
         account: Some("gemini:me@example.com".into()),
+        accounts: Vec::new(),
         api: Some(UpstreamApi::CodeAssist),
         wire: None,
         model_map: Default::default(),

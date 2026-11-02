@@ -273,8 +273,18 @@ pub struct ProviderConfig {
     /// Optional account id in the secret store (e.g. `gemini:me@example.com`).
     /// When set, requests are signed with that account's OAuth access token
     /// and `api_key` is ignored.
+    ///
+    /// Single-account convenience form of [`Self::accounts`]: folded in on
+    /// read ([`Self::account_ids`]), never merged — setting both is a
+    /// config error.
     #[serde(default)]
     pub account: Option<String>,
+    /// The account ids this provider tries, in the user's order
+    /// (`account_ids` in the secret store, e.g. `gemini:me@example.com`).
+    /// When set, requests are signed per account and `account`/`api_key`
+    /// are ignored per account. Empty = use [`Self::account`] / `api_key`.
+    #[serde(default)]
+    pub accounts: Vec<String>,
     /// Explicit upstream API. Old configs keep using the `format` field,
     /// which [`Self::effective_api`] falls back to via
     /// [`UpstreamApi::from_format`]; the `format` field itself is kept for
@@ -534,6 +544,27 @@ fn default_port() -> u16 {
 }
 
 impl ProviderConfig {
+    /// The account ids in force: `accounts`, else `[account]`, else none.
+    /// One source of truth — `account` is folded in on read, never merged.
+    /// Empty ids and repeats are dropped so no account is ever tried twice
+    /// in one request.
+    pub fn account_ids(&self) -> Vec<&str> {
+        let mut ids: Vec<&str> = Vec::new();
+        let source: Vec<&str> = if !self.accounts.is_empty() {
+            self.accounts.iter().map(String::as_str).collect()
+        } else if let Some(account) = &self.account {
+            vec![account.as_str()]
+        } else {
+            Vec::new()
+        };
+        for id in source {
+            if !id.is_empty() && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
     /// Resolve the API used to talk to this provider.
     ///
     /// Precedence: explicit `api` → legacy `wire` key → account prefix
@@ -546,7 +577,9 @@ impl ProviderConfig {
         if let Some(wire) = self.wire {
             return wire.into();
         }
-        let prefix = self.account.as_deref().and_then(|a| a.split(':').next());
+        // The first account's prefix drives the inference (accounts and
+        // the single `account` form fold through account_ids, P9).
+        let prefix = self.account_ids().first().and_then(|a| a.split(':').next());
         match prefix {
             Some("gemini" | "antigravity") => UpstreamApi::CodeAssist,
             _ => UpstreamApi::from_format(self.format),
@@ -566,10 +599,10 @@ impl ProviderConfig {
     }
 
     /// Whether this provider signs in through a Copilot account
-    /// (`account` id starts with `copilot:`).
+    /// (its first account id starts with `copilot:`; P9).
     pub fn is_copilot_account(&self) -> bool {
-        self.account
-            .as_deref()
+        self.account_ids()
+            .first()
             .and_then(|account| account.split(':').next())
             == Some("copilot")
     }
@@ -652,6 +685,14 @@ impl ServerConfig {
             if provider.plugin.is_some() && (provider.api.is_some() || provider.wire.is_some()) {
                 errors.push(format!(
                     "providers[{i}] (name=\"{}\"): `api`/`wire` must not be set together with `plugin` (the plugin decides the protocol per model)",
+                    provider.name
+                ));
+            }
+            // `account` and `accounts` together are ambiguous: the single-
+            // account field is a convenience form of the list, never merged.
+            if provider.account.is_some() && !provider.accounts.is_empty() {
+                errors.push(format!(
+                    "providers[{i}] (name=\"{}\"): `account` and `accounts` cannot both be set — `account` is the single-account form of `accounts`; keep one",
                     provider.name
                 ));
             }
@@ -779,6 +820,7 @@ mod tests {
             base_url: "https://api.openai.com".into(),
             api_key: "sk-test".into(),
             account: None,
+            accounts: Vec::new(),
             api: None,
             wire: None,
             model_map,
@@ -1043,6 +1085,76 @@ api_key = "sk-proj-xxx"
     }
 
     #[test]
+    fn test_account_ids_folds_single_account_and_dedupes() {
+        // Single-account convenience form folds into the list on read.
+        let mut provider = sample_provider(HashMap::new());
+        assert!(provider.account_ids().is_empty());
+        provider.account = Some("gemini:me@example.com".into());
+        assert_eq!(provider.account_ids(), vec!["gemini:me@example.com"]);
+
+        // `accounts` wins outright; `account` is never merged.
+        provider.accounts = vec!["gemini:a@x".into(), "gemini:b@x".into()];
+        assert_eq!(provider.account_ids(), vec!["gemini:a@x", "gemini:b@x"]);
+
+        // Empty ids and repeats are dropped: one request never tries the
+        // same account twice.
+        provider.accounts = vec![
+            "gemini:a@x".into(),
+            String::new(),
+            "gemini:a@x".into(),
+            "gemini:c@x".into(),
+        ];
+        assert_eq!(provider.account_ids(), vec!["gemini:a@x", "gemini:c@x"]);
+    }
+
+    #[test]
+    fn test_account_ids_parse_from_toml() {
+        let toml_str = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[[providers]]
+name = "gemini"
+format = "gemini"
+base_url = "https://cloudcode-pa.googleapis.com"
+api_key = ""
+accounts = ["gemini:a@x", "gemini:b@x"]
+"#;
+        let config = ServerConfig::from_toml(toml_str).unwrap();
+        let provider = &config.providers[0];
+        assert_eq!(provider.account, None);
+        assert_eq!(provider.account_ids(), vec!["gemini:a@x", "gemini:b@x"],);
+    }
+
+    #[test]
+    fn test_validate_rejects_account_and_accounts_together() {
+        let mut provider = sample_provider(HashMap::new());
+        provider.account = Some("gemini:me@example.com".into());
+        provider.accounts = vec!["gemini:a@x".into()];
+        let config = ServerConfig {
+            server: ServerSettings {
+                host: "127.0.0.1".into(),
+                port: 8080,
+                api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
+            },
+            providers: vec![provider],
+            model_routes: vec![],
+            routes: vec![],
+            model_metadata: HashMap::new(),
+            logging: LoggingConfig::default(),
+        };
+        let errors = config.validate();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("`account` and `accounts` cannot both be set"),
+            "{}",
+            errors[0]
+        );
+    }
+
+    #[test]
     fn test_parse_provider_account_and_wire() {
         let toml_str = r#"
 [server]
@@ -1212,6 +1324,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     base_url: "https://api.anthropic.com".into(),
                     api_key: "sk-ant".into(),
                     account: None,
+                    accounts: Vec::new(),
                     api: None,
                     wire: None,
                     model_map: HashMap::new(),
@@ -1225,6 +1338,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     base_url: "https://api.openai.com".into(),
                     api_key: "sk-proj".into(),
                     account: None,
+                    accounts: Vec::new(),
                     api: None,
                     wire: None,
                     model_map: HashMap::new(),
@@ -1283,6 +1397,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
             base_url: "https://api.openai.com".into(),
             api_key: "sk-proj".into(),
             account: None,
+            accounts: Vec::new(),
             api: None,
             wire: None,
             model_map: [("*".into(), "gpt-4.1".into())].into(),
@@ -1343,6 +1458,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     base_url: "https://primary.com".into(),
                     api_key: "sk-1".into(),
                     account: None,
+                    accounts: Vec::new(),
                     api: None,
                     wire: None,
                     model_map: HashMap::new(),
@@ -1356,6 +1472,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     base_url: "https://backup.com".into(),
                     api_key: "sk-2".into(),
                     account: None,
+                    accounts: Vec::new(),
                     api: None,
                     wire: None,
                     model_map: HashMap::new(),
@@ -1427,6 +1544,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-test".into(),
                 account: None,
+                accounts: Vec::new(),
                 api: None,
                 wire: None,
                 model_map: [("gpt-4.1".into(), "gpt-4.1".into())].into(),

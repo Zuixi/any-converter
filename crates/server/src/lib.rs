@@ -10,6 +10,7 @@ pub(crate) mod model;
 pub(crate) mod namespace;
 pub mod observability;
 pub mod plugins;
+pub mod provider_pool;
 pub mod proxy;
 pub mod request_log;
 pub(crate) mod route_strategy;

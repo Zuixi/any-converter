@@ -30,6 +30,7 @@ const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/models", ""),
     ("GET", "/v1/models/guard-model", ""),
     ("GET", "/models/guard-model", ""),
+    ("GET", "/v1/accounts/quotas", ""),
     (
         "POST",
         "/v1/chat/completions",
@@ -91,6 +92,7 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
             base_url: base_url.into(),
             api_key: "upstream-key".into(),
             account: None,
+            accounts: Vec::new(),
             api: None,
             wire: None,
             // Literal key so `/models/{model_id}` resolves instead of 404.

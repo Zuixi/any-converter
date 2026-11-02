@@ -748,6 +748,7 @@ mod tests {
             base_url: "https://api.minimax.io".into(),
             api_key: "sk-test".into(),
             account: None,
+            accounts: Vec::new(),
             api: None,
             wire: None,
             model_map: std::collections::HashMap::new(),

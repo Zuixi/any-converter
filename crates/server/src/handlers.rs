@@ -17,15 +17,17 @@ use serde_json::Value;
 use crate::agent_id::agent_of;
 use crate::auth::{self, AuthError};
 use crate::config::{PluginRef, RouteStrategy, ServerConfig, UpstreamApi};
+use crate::credentials::allowance::copilot_allowance;
 use crate::credentials::copilot::{
     COPILOT_DEFAULT_API_BASE, CopilotError, CopilotSessions, copilot_api_headers,
 };
 use crate::credentials::token::{AuthErr401, classify_401};
-use crate::credentials::{AccountResolver, ApiKeySource, TokenSource};
+use crate::credentials::{AccountResolver, Allowance, ApiKeySource, Limit, TokenSource};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
 use crate::namespace::{extract_namespace_map, patch_response_namespaces};
 use crate::observability::utf8_prefix;
 use crate::plugins::{LoadParams, ManagedHosts, PluginFetchParams, ProviderPlugin};
+use crate::provider_pool::order_accounts;
 use crate::proxy::build_upstream_url_for_provider;
 use crate::request_log::{RequestLogContext, RequestLogger};
 use crate::route_strategy::order_provider_names;
@@ -139,6 +141,77 @@ pub async fn handle_models(
         "object": "list",
         "data": data,
     }))
+}
+
+/// Quota share past which an account counts as used up (P9; magpie's
+/// switch share, percent of the window — magpie's `Used` is 0–100 too).
+const QUOTA_SHARE: f64 = 95.0;
+
+/// `GET /v1/accounts/quotas` (P9): every configured account's allowance
+/// windows, one entry per account — accounts with no quota information
+/// report `"windows": []`, never null.
+pub async fn handle_account_quotas(State(state): State<Arc<AppState>>) -> Response {
+    let mut accounts = Vec::new();
+    for provider in &state.config.providers {
+        for account_id in provider.account_ids() {
+            let allowance = read_account_allowance(&state, provider, account_id).await;
+            let windows: Vec<serde_json::Value> = allowance
+                .map(|allowance| allowance.iter().map(quota_window_json).collect())
+                .unwrap_or_default();
+            accounts.push(serde_json::json!({
+                "provider": account_id.split(':').next().unwrap_or(""),
+                "account": account_id,
+                "windows": windows,
+            }));
+        }
+    }
+    Json(serde_json::json!({ "accounts": accounts })).into_response()
+}
+
+/// One allowance window as the quotas endpoint reports it.
+fn quota_window_json(window: &Limit) -> serde_json::Value {
+    serde_json::json!({
+        "name": window.model.as_deref().unwrap_or("all"),
+        "used": window.used,
+        "resets": window.resets.map(|at| {
+            chrono::DateTime::<chrono::Utc>::from(at)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        }),
+    })
+}
+
+/// The allowance windows of one account of `provider` (P9). Gemini and
+/// Antigravity report them through `fetchAvailableModels` (the resolver
+/// caches the reading); Copilot reports one window through the Copilot
+/// user endpoint; every other vendor says nothing → `None`.
+async fn read_account_allowance(
+    state: &AppState,
+    provider: &crate::config::ProviderConfig,
+    account_id: &str,
+) -> Option<Allowance> {
+    if account_id.split(':').next() == Some("copilot") {
+        let github = match state.accounts.resolve(account_id).await {
+            Ok(account) => account,
+            Err(err) => {
+                warn!("allowance read skipped account={account_id} error={err}");
+                return None;
+            }
+        };
+        let session = match state.copilot.session(&github.access_token).await {
+            Ok(session) => session,
+            Err(err) => {
+                warn!("allowance read skipped account={account_id} error={err}");
+                return None;
+            }
+        };
+        return copilot_allowance(&state.client, &session).await;
+    }
+    let base = if provider.base_url.is_empty() {
+        "https://cloudcode-pa.googleapis.com"
+    } else {
+        provider.base_url.as_str()
+    };
+    state.accounts.allowance(account_id, base).await
 }
 
 pub async fn handle_model_retrieve(
@@ -667,6 +740,20 @@ async fn resolve_upstream_api(
     Ok(UpstreamApi::Chat)
 }
 
+/// Outcome of building the upstream request for one account attempt (P9).
+enum AccountStep {
+    /// The converted body, URL and headers are ready to send.
+    Ready {
+        converted_body: Vec<u8>,
+        url: String,
+        upstream_headers: Vec<(String, String)>,
+    },
+    /// The account cannot serve this request (not signed in, revoked, or
+    /// its Copilot session was refused): skip it and try the next one.
+    /// `response` is what to send when no other account/provider remains.
+    Unavailable { response: Response },
+}
+
 async fn convert_and_build_upstream(
     state: &AppState,
     headers: &HeaderMap,
@@ -675,7 +762,7 @@ async fn convert_and_build_upstream(
     ctx: &mut RequestContext,
     provider: &crate::config::ProviderConfig,
     api: UpstreamApi,
-) -> Result<(Vec<u8>, String, Vec<(String, String)>), Box<Response>> {
+) -> Result<AccountStep, Box<Response>> {
     // Code Assist always speaks Gemini on the wire: conversion targets Gemini
     // (not `provider.format`) and the body rides inside the request envelope.
     let to_format = api.to_format();
@@ -731,43 +818,51 @@ async fn convert_and_build_upstream(
     // URL and the auth headers.
     let copilot_session = if provider.is_copilot_account() {
         let account_id = provider.account.clone().unwrap_or_default();
-        let github = match state.accounts.resolve(&account_id).await {
+        let account = match state.accounts.resolve(&account_id).await {
             Ok(account) => account,
             Err(err) => {
-                error!(
+                warn!(
                     "account resolution failed request_id={} account={} error={err}",
                     ctx.req_id, account_id
                 );
-                return Err(Box::new(api_error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "account_error",
-                    format!("account {account_id}: {err}"),
-                )));
+                return Ok(AccountStep::Unavailable {
+                    response: api_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "account_error",
+                        format!("account {account_id}: {err}"),
+                    ),
+                });
             }
         };
-        match state.copilot.session(&github.access_token).await {
+        match state.copilot.session(&account.access_token).await {
             Ok(session) => Some(session),
             Err(CopilotError::Refused(message)) => {
-                error!(
+                warn!(
                     "copilot session refused request_id={} account={} error={message}",
                     ctx.req_id, account_id
                 );
-                return Err(Box::new(api_error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "account_error",
-                    format!("Copilot account {account_id}: {message}; please re-login (重新登录)"),
-                )));
+                return Ok(AccountStep::Unavailable {
+                    response: api_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "account_error",
+                        format!(
+                            "Copilot account {account_id}: {message}; please re-login (重新登录)"
+                        ),
+                    ),
+                });
             }
             Err(CopilotError::Exchange(message)) => {
-                error!(
+                warn!(
                     "copilot session exchange failed request_id={} account={} error={message}",
                     ctx.req_id, account_id
                 );
-                return Err(Box::new(api_error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "account_error",
-                    format!("Copilot account {account_id}: {message}"),
-                )));
+                return Ok(AccountStep::Unavailable {
+                    response: api_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "account_error",
+                        format!("Copilot account {account_id}: {message}"),
+                    ),
+                });
             }
         }
     } else {
@@ -824,15 +919,17 @@ async fn convert_and_build_upstream(
         let account = match state.accounts.resolve(account_id).await {
             Ok(account) => account,
             Err(err) => {
-                error!(
+                warn!(
                     "account resolution failed request_id={} account={} error={err}",
                     ctx.req_id, account_id
                 );
-                return Err(Box::new(api_error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "account_error",
-                    format!("account {account_id}: {err}"),
-                )));
+                return Ok(AccountStep::Unavailable {
+                    response: api_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "account_error",
+                        format!("account {account_id}: {err}"),
+                    ),
+                });
             }
         };
         let mut headers = vec![(
@@ -875,7 +972,11 @@ async fn convert_and_build_upstream(
         log_ctx.upstream_request_body = converted_body.clone();
     }
 
-    Ok((converted_body, url, upstream_headers))
+    Ok(AccountStep::Ready {
+        converted_body,
+        url,
+        upstream_headers,
+    })
 }
 
 fn build_non_streaming_response(
@@ -962,15 +1063,13 @@ async fn process_request(
     let mut last_error: Option<String> = None;
     let provider_names = order_provider_names(&ctx.provider_names, &ctx.strategy);
 
-    // Failover with account-aware 401/403 handling. `expired_retried`
-    // remembers which attempt already consumed its single `token_expired`
-    // → refresh → retry round, so a provider that keeps answering
-    // `token_expired` cannot loop forever.
-    let mut attempt: usize = 0;
-    let mut expired_retried: Option<usize> = None;
-
-    while attempt < provider_names.len() {
-        let provider_name = provider_names[attempt].as_str();
+    // P9: flatten providers × accounts into one stable attempt plan. Each
+    // provider contributes its accounts in the user's order, with the ones
+    // past their quota line moved last rather than reordered
+    // (provider_pool); a provider with no accounts contributes a single
+    // api_key slot. The same account is never tried twice in one request.
+    let mut plan: Vec<(crate::config::ProviderConfig, UpstreamApi)> = Vec::new();
+    for provider_name in &provider_names {
         let provider = match state.config.find_provider(provider_name) {
             Some(p) => p,
             None => {
@@ -979,21 +1078,88 @@ async fn process_request(
                     provider_name, ctx.req_id
                 );
                 last_error = Some(format!("provider not found: {provider_name}"));
-                attempt += 1;
                 continue;
             }
         };
 
-        let api = match resolve_upstream_api(state, provider, &ctx.upstream_model).await {
-            Ok(api) => api,
-            Err(response) => return response,
+        let ids = provider.account_ids();
+        let mut allowances: HashMap<String, Allowance> = HashMap::new();
+        // Reading quota costs an upstream call (for Copilot a session
+        // exchange): with a single account there is nothing to reorder,
+        // so the reading is skipped (magpie reads quotas to rank seats).
+        if ids.len() > 1 {
+            for account_id in &ids {
+                if let Some(allowance) = read_account_allowance(state, provider, account_id).await {
+                    allowances.insert((*account_id).to_string(), allowance);
+                }
+            }
+        }
+        let candidates: Vec<Option<String>> = if ids.is_empty() {
+            vec![None]
+        } else {
+            let allowance_map: HashMap<&str, Allowance> = allowances
+                .iter()
+                .map(|(account_id, allowance)| (account_id.as_str(), allowance.clone()))
+                .collect();
+            order_accounts(
+                &ids,
+                &allowance_map,
+                &ctx.upstream_model,
+                QUOTA_SHARE,
+                std::time::SystemTime::now(),
+            )
+            .into_iter()
+            .map(|account_id| Some(account_id.to_string()))
+            .collect()
         };
+
+        for account in candidates {
+            let mut effective = provider.clone();
+            effective.account = account;
+            let api = match resolve_upstream_api(state, &effective, &ctx.upstream_model).await {
+                Ok(api) => api,
+                Err(response) => return response,
+            };
+            plan.push((effective, api));
+        }
+    }
+
+    // Failover with account-aware 401/403 handling. `expired_retried`
+    // remembers which attempt already consumed its single `token_expired`
+    // → refresh → retry round, so an account that keeps answering
+    // `token_expired` cannot loop forever.
+    let mut attempt: usize = 0;
+    let mut expired_retried: Option<usize> = None;
+    let has_next = |attempt: usize| attempt + 1 < plan.len();
+
+    while attempt < plan.len() {
+        let (provider, api) = &plan[attempt];
+
         let (converted_body, url, upstream_headers) = match convert_and_build_upstream(
-            state, headers, &body, route_info, &mut ctx, provider, api,
+            state, headers, &body, route_info, &mut ctx, provider, *api,
         )
         .await
         {
-            Ok(v) => v,
+            Ok(AccountStep::Ready {
+                converted_body,
+                url,
+                upstream_headers,
+            }) => (converted_body, url, upstream_headers),
+            Ok(AccountStep::Unavailable { response }) => {
+                // The account cannot serve this request (not signed in /
+                // revoked / Copilot refused): try the next account; the
+                // guidance below goes back only when no target remains.
+                last_error = Some(format!(
+                    "provider {} account {} unavailable",
+                    provider.name,
+                    provider.account.as_deref().unwrap_or("")
+                ));
+                if has_next(attempt) {
+                    attempt += 1;
+                    continue;
+                }
+                return response;
+            }
             Err(response) => return *response,
         };
 
@@ -1020,7 +1186,7 @@ async fn process_request(
                 state,
                 plugin_ref,
                 provider,
-                api,
+                *api,
                 upstream_headers,
                 converted_body,
                 &mut ctx,
@@ -1030,12 +1196,13 @@ async fn process_request(
             {
                 PluginOutcome::Answered(response, status) => {
                     // The same retry rule the http path applies: a retryable
-                    // status moves to the next provider while one remains.
-                    // 401/403 pass through unchanged — the plugin owns its
-                    // credentials, so no local account refresh applies.
-                    if is_retryable_status(status) && attempt + 1 < provider_names.len() {
+                    // status moves to the next account/provider while one
+                    // remains. 401/403 pass through unchanged — the plugin
+                    // owns its credentials, so no local account refresh
+                    // applies.
+                    if is_retryable_status(status) && has_next(attempt) {
                         warn!(
-                            "plugin provider returned {} request_id={} provider={}, trying next provider",
+                            "plugin provider returned {} request_id={} provider={}, trying next account/provider",
                             status, ctx.req_id, provider.name
                         );
                         last_error =
@@ -1067,7 +1234,7 @@ async fn process_request(
                 &state.config.server.pass_through_headers,
                 response_format,
                 route_info.client_format,
-                api,
+                *api,
                 &ctx.ns_map,
                 ctx.log_ctx.clone(),
                 state.request_logger.clone(),
@@ -1098,7 +1265,7 @@ async fn process_request(
                                 &text,
                                 expired_retried == Some(attempt),
                                 attempt,
-                                provider_names.len(),
+                                has_next(attempt),
                                 &mut expired_retried,
                                 &mut last_error,
                             )
@@ -1117,11 +1284,12 @@ async fn process_request(
                     };
 
                     // the same retry rule the non-streaming path applies: a
-                    // retryable status moves to the next provider while one
-                    // remains; otherwise the client sees the upstream answer
-                    if is_retryable_status(status) && attempt + 1 < provider_names.len() {
+                    // retryable status moves to the next account/provider
+                    // while one remains; otherwise the client sees the
+                    // upstream answer
+                    if is_retryable_status(status) && has_next(attempt) {
                         warn!(
-                            "upstream returned {} request_id={} provider={}, trying next provider",
+                            "upstream returned {} request_id={} provider={}, trying next account/provider",
                             status, ctx.req_id, provider.name
                         );
                         last_error =
@@ -1150,7 +1318,7 @@ async fn process_request(
             &upstream_headers,
             headers,
             &state.config.server.pass_through_headers,
-            api,
+            *api,
         )
         .await
         {
@@ -1168,7 +1336,7 @@ async fn process_request(
                             &text,
                             expired_retried == Some(attempt),
                             attempt,
-                            provider_names.len(),
+                            has_next(attempt),
                             &mut expired_retried,
                             &mut last_error,
                         )
@@ -1185,9 +1353,9 @@ async fn process_request(
                     }
                 }
 
-                if is_retryable_status(status) && attempt + 1 < provider_names.len() {
+                if is_retryable_status(status) && has_next(attempt) {
                     warn!(
-                        "upstream returned {} request_id={} provider={}, trying next provider",
+                        "upstream returned {} request_id={} provider={}, trying next account/provider",
                         status, ctx.req_id, provider.name
                     );
                     last_error = Some(format!("provider {} returned {}", provider.name, status));
@@ -1416,11 +1584,12 @@ enum AuthStep {
 /// Account-aware handling of an upstream 401/403 for providers with
 /// `account` set: one refresh on `token_expired`, a persisted marker in
 /// `revoked.json` on `token_revoked` / `invalid_grant` /
-/// `refresh_token_reused`, and the corresponding loop step.
+/// `refresh_token_reused`, and the corresponding loop step. An Unknown
+/// 401 moves on when another account/provider target remains (P9).
 ///
 /// Only the account id and the verdict are logged — never the response
 /// body, which can echo tokens. `Err(response)` ends the request right
-/// here (revoked account without a failover target).
+/// here (revoked account without another target).
 #[allow(clippy::too_many_arguments)]
 async fn classify_account_auth(
     state: &AppState,
@@ -1430,7 +1599,7 @@ async fn classify_account_auth(
     text: &str,
     already_retried: bool,
     attempt: usize,
-    provider_count: usize,
+    has_next: bool,
     expired_retried: &mut Option<usize>,
     last_error: &mut Option<String>,
 ) -> Result<AuthStep, Response> {
@@ -1444,7 +1613,7 @@ async fn classify_account_auth(
                 Ok(_) => AuthStep::RetrySame,
                 Err(err) => {
                     warn!(
-                        "refresh after token_expired failed request_id={} provider={} account={account_id} error={err}, trying next provider",
+                        "refresh after token_expired failed request_id={} provider={} account={account_id} error={err}, trying next account/provider",
                         ctx.req_id, provider.name
                     );
                     *last_error = Some(format!(
@@ -1478,12 +1647,21 @@ async fn classify_account_auth(
                 "provider {} account {account_id} revoked",
                 provider.name
             ));
-            if attempt + 1 >= provider_count {
+            if !has_next {
                 return Err(revoked_account_response(account_id));
             }
             AuthStep::Next
         }
-        AuthErr401::Unknown => AuthStep::FallThrough,
+        AuthErr401::Unknown => {
+            // No account semantics apply; with another target left (P9)
+            // the next account/provider takes the request, otherwise the
+            // upstream's own answer goes back unchanged.
+            if has_next {
+                AuthStep::Next
+            } else {
+                AuthStep::FallThrough
+            }
+        }
     };
 
     match step {
@@ -1697,6 +1875,7 @@ mod tests {
                     base_url: "https://api.openai.com".into(),
                     api_key: "sk-test".into(),
                     account: None,
+                    accounts: Vec::new(),
                     api: None,
                     wire: None,
                     model_map: [("*".into(), "gpt-4.1".into())].into(),

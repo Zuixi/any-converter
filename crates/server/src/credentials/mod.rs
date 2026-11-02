@@ -87,6 +87,7 @@ impl TokenSource for ApiKeySource {
 }
 
 pub mod account;
+pub mod allowance;
 pub mod copilot;
 pub mod gemini;
 pub mod gemini_models;
@@ -94,6 +95,7 @@ pub mod store;
 pub mod token;
 
 pub use account::{AccountError, AccountResolver, CodeAssistProject, ResolvedAccount};
+pub use allowance::{Allowance, Limit};
 pub use copilot::{
     CopilotAccount, CopilotEndpoints, CopilotError, CopilotSession, CopilotSessions, CopilotSignIn,
     DeviceCodeStarted, ReqwestDeviceHttp,
@@ -124,6 +126,7 @@ mod tests {
             base_url: "https://example.com".into(),
             api_key: "sk-test".into(),
             account: None,
+            accounts: Vec::new(),
             api: None,
             wire: None,
             model_map: HashMap::new(),
