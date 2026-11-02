@@ -1,0 +1,9 @@
+name = "responses_simple"
+tool = "codex"
+client_format = "openai_responses"
+upstream_format = "openai_responses"
+path = "/v1/responses"
+method = "POST"
+mode = "identity"
+stream = false
+normalize = ["id", "created_at"]
