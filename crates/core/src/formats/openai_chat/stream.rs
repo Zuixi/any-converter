@@ -77,6 +77,7 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                                     index: tc.index,
                                     id: id.clone(),
                                     name: name.clone(),
+                                    signature: None,
                                 });
                             }
                         }
@@ -113,6 +114,8 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
         state: &mut StreamState,
     ) -> Result<Vec<String>, ConvertError> {
         match event {
+            CanonicalStreamEvent::ThinkingSignature { .. }
+            | CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
             CanonicalStreamEvent::Start { id, model } => {
                 state.response_id = Some(id.clone());
                 state.model = Some(model.clone());
@@ -146,7 +149,9 @@ impl StreamAdapter for OpenAIChatStreamAdapter {
                 );
                 Ok(vec![format_sse_data(&chunk)])
             }
-            CanonicalStreamEvent::ToolCallStart { index, id, name } => {
+            CanonicalStreamEvent::ToolCallStart {
+                index, id, name, ..
+            } => {
                 let (resp_id, model) = stream_ids(state)?;
                 let chunk = make_stream_chunk(
                     &resp_id,
@@ -499,6 +504,7 @@ mod tests {
                 index: 0,
                 id: "call_abc".into(),
                 name: "get_weather".into(),
+                signature: None,
             },
             &mut state,
         )

@@ -60,7 +60,10 @@ pub fn read(req: OpenAIResponsesRequest) -> IrRequest {
     } else {
         // One joined part keeps `read(build(ir)) == ir`: `instructions` is a
         // single string on the wire, so the split points are not recoverable.
-        vec![IrPart::Text(system_texts.join("\n\n"))]
+        vec![IrPart::Text {
+            text: system_texts.join("\n\n"),
+            signature: None,
+        }]
     };
 
     let effort = reasoning
@@ -186,9 +189,14 @@ fn read_input(input: Option<Value>) -> (Vec<String>, Vec<IrMessage>) {
 
     match input {
         None => {}
-        Some(Value::String(text)) => {
-            push_message(&mut messages, Role::User, vec![IrPart::Text(text)])
-        }
+        Some(Value::String(text)) => push_message(
+            &mut messages,
+            Role::User,
+            vec![IrPart::Text {
+                text: text,
+                signature: None,
+            }],
+        ),
         Some(Value::Array(items)) => {
             for item in items {
                 read_input_item(item, &mut system_texts, &mut messages);
@@ -242,6 +250,7 @@ fn read_input_item(item: Value, system_texts: &mut Vec<String>, messages: &mut V
                 vec![IrPart::ToolCall {
                     id: call_id,
                     name,
+                    signature: None,
                     args,
                 }],
             );
@@ -255,7 +264,10 @@ fn read_input_item(item: Value, system_texts: &mut Vec<String>, messages: &mut V
                 vec![IrPart::ToolResult {
                     call_id,
                     is_error: false,
-                    content: vec![IrPart::Text(output)],
+                    content: vec![IrPart::Text {
+                        text: output,
+                        signature: None,
+                    }],
                 }],
             );
         }
@@ -291,7 +303,10 @@ fn push_message(messages: &mut Vec<IrMessage>, role: Role, mut parts: Vec<IrPart
 
 fn content_to_parts(content: Value) -> Vec<IrPart> {
     match content {
-        Value::String(text) => vec![IrPart::Text(text)],
+        Value::String(text) => vec![IrPart::Text {
+            text: text,
+            signature: None,
+        }],
         Value::Array(items) => items.into_iter().filter_map(part_from_value).collect(),
         _ => Vec::new(),
     }
@@ -306,7 +321,10 @@ fn part_from_value(part: Value) -> Option<IrPart> {
         Some(ITEM_TYPE_INPUT_TEXT | ITEM_TYPE_OUTPUT_TEXT | "text")
     );
     if is_text {
-        return Some(IrPart::Text(take_string(&mut part, "text")));
+        return Some(IrPart::Text {
+            text: take_string(&mut part, "text"),
+            signature: None,
+        });
     }
     if part.get("type").and_then(Value::as_str) == Some(ITEM_TYPE_INPUT_IMAGE) {
         let url = take_image_url(&mut part);
@@ -507,7 +525,10 @@ fn read_output_item(item: Value, parts: &mut Vec<IrPart>) {
                 let text = take_string(&mut part, "text");
                 // The reference readers drop empty text blocks.
                 if !text.is_empty() {
-                    parts.push(IrPart::Text(text));
+                    parts.push(IrPart::Text {
+                        text: text,
+                        signature: None,
+                    });
                 }
             }
         }
@@ -518,7 +539,12 @@ fn read_output_item(item: Value, parts: &mut Vec<IrPart>) {
                 return;
             }
             let args = parse_arguments(&take_string(&mut item, "arguments"));
-            parts.push(IrPart::ToolCall { id, name, args });
+            parts.push(IrPart::ToolCall {
+                id,
+                name,
+                args,
+                signature: None,
+            });
         }
         ItemKind::Reasoning => {
             let text = take_reasoning_text(&mut item);
@@ -604,7 +630,7 @@ mod tests {
             .filter(|m| m.role == Role::User)
             .flat_map(|m| m.parts.iter())
             .find_map(|part| match part {
-                IrPart::Text(text) => Some(text.as_str()),
+                IrPart::Text { text: text, .. } => Some(text.as_str()),
                 _ => None,
             })
     }
@@ -628,7 +654,7 @@ mod tests {
         ir.parts
             .iter()
             .map(|part| match part {
-                IrPart::Text(text) => format!("text:{text}"),
+                IrPart::Text { text: text, .. } => format!("text:{text}"),
                 IrPart::ToolCall { name, .. } => format!("tool:{name}"),
                 IrPart::Thinking { text, .. } => format!("thinking:{text}"),
                 other => format!("{other:?}"),
@@ -698,6 +724,7 @@ mod tests {
                 id: "call_abc123".into(),
                 name: "get_weather".into(),
                 args: serde_json::json!({"location": "Tokyo"}),
+                signature: None,
             }
         );
     }
@@ -711,7 +738,13 @@ mod tests {
             ]}"#,
         ));
 
-        assert_eq!(ir.system, vec![IrPart::Text("ctx\n\nBe brief".into())]);
+        assert_eq!(
+            ir.system,
+            vec![IrPart::Text {
+                text: "ctx\n\nBe brief".into(),
+                signature: None
+            }]
+        );
         assert_eq!(ir.messages.len(), 1);
         assert_eq!(first_user_text(&ir), Some("hi"));
     }
@@ -723,7 +756,13 @@ mod tests {
         ));
         assert_eq!(ir.messages.len(), 1);
         assert_eq!(ir.messages[0].role, Role::User);
-        assert_eq!(ir.messages[0].parts, vec![IrPart::Text("hello".into())]);
+        assert_eq!(
+            ir.messages[0].parts,
+            vec![IrPart::Text {
+                text: "hello".into(),
+                signature: None
+            }]
+        );
     }
 
     #[test]
@@ -734,7 +773,13 @@ mod tests {
                 {"role":"user","content":"hello"}
             ]}"#,
         ));
-        assert_eq!(ir.system, vec![IrPart::Text("You are concise.".into())]);
+        assert_eq!(
+            ir.system,
+            vec![IrPart::Text {
+                text: "You are concise.".into(),
+                signature: None
+            }]
+        );
         assert_eq!(ir.messages.len(), 1);
         assert_eq!(first_user_text(&ir), Some("hello"));
     }
@@ -773,6 +818,7 @@ mod tests {
                 id: "call_1".into(),
                 name: "get_weather".into(),
                 args: serde_json::json!({"location": "Tokyo"}),
+                signature: None,
             }
         );
         assert_eq!(
@@ -780,7 +826,10 @@ mod tests {
             IrPart::ToolResult {
                 call_id: "call_1".into(),
                 is_error: false,
-                content: vec![IrPart::Text("sunny".into())],
+                content: vec![IrPart::Text {
+                    text: "sunny".into(),
+                    signature: None
+                }],
             }
         );
     }
@@ -829,7 +878,10 @@ mod tests {
                     text: "deep".into(),
                     signature: None
                 },
-                IrPart::Text("answer".into())
+                IrPart::Text {
+                    text: "answer".into(),
+                    signature: None
+                }
             ]
         );
     }

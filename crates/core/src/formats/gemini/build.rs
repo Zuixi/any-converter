@@ -15,7 +15,7 @@ pub fn build(mut ir: IrRequest) -> GeminiRequest {
     let system_instruction = {
         let mut parts = Vec::new();
         for part in ir.system {
-            if let IrPart::Text(text) = part {
+            if let IrPart::Text { text: text, .. } = part {
                 if !text.is_empty() {
                     parts.push(GeminiPart::text(text));
                 }
@@ -63,7 +63,7 @@ fn build_parts(parts: Vec<IrPart>) -> Vec<GeminiPart> {
 
 fn push_part(out: &mut Vec<GeminiPart>, part: IrPart) {
     match part {
-        IrPart::Text(text) => {
+        IrPart::Text { text: text, .. } => {
             if !text.is_empty() {
                 out.push(GeminiPart::text(text));
             }
@@ -74,7 +74,7 @@ fn push_part(out: &mut Vec<GeminiPart>, part: IrPart) {
             Some((mime_type, data)) => GeminiPart::inline_data(mime_type, data),
             None => GeminiPart::text(url),
         }),
-        IrPart::ToolCall { id, name, args } => {
+        IrPart::ToolCall { id, name, args, .. } => {
             out.push(GeminiPart::function_call_with_id(name, args, id));
         }
         IrPart::ToolResult {
@@ -83,7 +83,7 @@ fn push_part(out: &mut Vec<GeminiPart>, part: IrPart) {
             let text = content
                 .into_iter()
                 .filter_map(|p| match p {
-                    IrPart::Text(text) => Some(text),
+                    IrPart::Text { text: text, .. } => Some(text),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -188,7 +188,7 @@ pub fn build_response(ir: IrResponse) -> GeminiResponse {
     let mut parts = Vec::new();
     for part in ir.parts {
         match part {
-            IrPart::Text(_) | IrPart::ToolCall { .. } | IrPart::Thinking { .. } => {
+            IrPart::Text { .. } | IrPart::ToolCall { .. } | IrPart::Thinking { .. } => {
                 push_part(&mut parts, part);
             }
             // A reply carries no images or tool results in any existing writer.

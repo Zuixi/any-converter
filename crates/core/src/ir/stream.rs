@@ -14,12 +14,29 @@ pub enum CanonicalStreamEvent {
         index: u32,
         id: String,
         name: String,
+        /// Gemini signs a call as it starts it: only a Gemini emitter
+        /// writes it back (magpie gemini_signature.go)
+        signature: Option<String>,
     },
     ToolCallDelta {
         index: u32,
         arguments_delta: String,
     },
     ThinkingDelta(String),
+    /// A thinking block's signature, whole or a chunk of it, and the API
+    /// that signed it: only that format's emitter may replay it (magpie
+    /// ir.go KSig; Claude streams it as signature_delta at block end)
+    ThinkingSignature {
+        by: crate::convert::Format,
+        delta: String,
+    },
+    /// Reasoning an upstream sealed whole, as its API wrote it (Anthropic's
+    /// redacted_thinking block; magpie ir.go KSealed): only the sealing
+    /// API's emitter may write it out
+    SealedThinking {
+        by: crate::convert::Format,
+        raw: serde_json::Value,
+    },
     Done {
         stop_reason: StopReason,
         usage: Option<Usage>,
@@ -48,6 +65,11 @@ pub struct StreamState {
     pub accumulated_tool_calls: Vec<AccumulatedToolCall>,
     pub phase: StreamPhase,
     pub done: bool,
+    /// A thinking block's signature as its deltas arrive (Claude streams
+    /// signature_delta in pieces; magpie's encoder accumulates then seals)
+    pub thinking_signature: String,
+    /// and which API signed it
+    pub thinking_signature_by: Option<crate::convert::Format>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -140,6 +162,7 @@ mod tests {
             index: 0,
             id: "call_abc".into(),
             name: "search".into(),
+            signature: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         let back: CanonicalStreamEvent = serde_json::from_str(&json).unwrap();

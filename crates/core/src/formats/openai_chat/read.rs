@@ -95,7 +95,10 @@ fn read_message(msg: OpenAIChatMessage, system: &mut Vec<IrPart>, out: &mut Vec<
     match role.as_str() {
         "system" | "developer" => {
             if let Some(text) = message_content_as_text(content) {
-                system.push(IrPart::Text(text));
+                system.push(IrPart::Text {
+                    text: text,
+                    signature: None,
+                });
             }
         }
         "assistant" => out.push(IrMessage {
@@ -121,7 +124,10 @@ fn read_message(msg: OpenAIChatMessage, system: &mut Vec<IrPart>, out: &mut Vec<
 fn user_parts(content: Option<MessageContent>) -> Vec<IrPart> {
     match content {
         None => Vec::new(),
-        Some(MessageContent::Text(text)) => vec![IrPart::Text(text)],
+        Some(MessageContent::Text(text)) => vec![IrPart::Text {
+            text: text,
+            signature: None,
+        }],
         Some(MessageContent::Parts(parts)) => parts.into_iter().map(content_part).collect(),
     }
 }
@@ -147,7 +153,10 @@ fn assistant_parts(
         None => {}
         Some(MessageContent::Text(text)) => {
             if !text.is_empty() {
-                parts.push(IrPart::Text(text));
+                parts.push(IrPart::Text {
+                    text: text,
+                    signature: None,
+                });
             }
         }
         Some(MessageContent::Parts(items)) => {
@@ -162,6 +171,7 @@ fn assistant_parts(
         parts.push(IrPart::ToolCall {
             id: tc.id,
             name: tc.function.name,
+            signature: None,
             args: parse_arguments(&tc.function.arguments),
         });
     }
@@ -171,14 +181,20 @@ fn assistant_parts(
 
 fn tool_result_content(content: Option<MessageContent>) -> Vec<IrPart> {
     match message_content_as_text(content) {
-        Some(text) if !text.is_empty() => vec![IrPart::Text(text)],
+        Some(text) if !text.is_empty() => vec![IrPart::Text {
+            text: text,
+            signature: None,
+        }],
         _ => Vec::new(),
     }
 }
 
 fn content_part(part: ContentPart) -> IrPart {
     match part {
-        ContentPart::Text { text } => IrPart::Text(text),
+        ContentPart::Text { text } => IrPart::Text {
+            text: text,
+            signature: None,
+        },
         ContentPart::ImageUrl { image_url } => image_part(image_url),
     }
 }
@@ -270,7 +286,10 @@ pub fn read_response(resp: OpenAIChatResponse) -> IrResponse {
 
     let mut parts = Vec::with_capacity(2);
     if let Some(text) = choice.message.content.filter(|t| !t.is_empty()) {
-        parts.push(IrPart::Text(text));
+        parts.push(IrPart::Text {
+            text: text,
+            signature: None,
+        });
     }
     if let Some(text) = choice.message.reasoning_content.filter(|t| !t.is_empty()) {
         parts.push(IrPart::Thinking {
@@ -282,6 +301,7 @@ pub fn read_response(resp: OpenAIChatResponse) -> IrResponse {
         parts.push(IrPart::ToolCall {
             id: tc.id,
             name: tc.function.name,
+            signature: None,
             args: parse_arguments(&tc.function.arguments),
         });
     }
@@ -325,7 +345,7 @@ mod tests {
         parts
             .iter()
             .find_map(|p| match p {
-                IrPart::Text(t) => Some(t.as_str()),
+                IrPart::Text { text: t, .. } => Some(t.as_str()),
                 _ => None,
             })
             .unwrap_or("")
@@ -374,7 +394,10 @@ mod tests {
         let ir = check_request("request_system_message.json", "gpt-4.1", "Hello!", &[]);
         assert_eq!(
             ir.system,
-            vec![IrPart::Text("You are a helpful assistant.".into())]
+            vec![IrPart::Text {
+                text: "You are a helpful assistant.".into(),
+                signature: None
+            }]
         );
         assert_eq!(ir.messages.len(), 1, "system never stays a message");
     }
@@ -415,7 +438,13 @@ mod tests {
                 signature: None,
             }
         );
-        assert_eq!(ir.messages[1].parts[1], IrPart::Text("hi there".into()));
+        assert_eq!(
+            ir.messages[1].parts[1],
+            IrPart::Text {
+                text: "hi there".into(),
+                signature: None
+            }
+        );
     }
 
     #[test]
@@ -460,6 +489,7 @@ mod tests {
                 id: "call_1".into(),
                 name: "get_weather".into(),
                 args: serde_json::json!({}),
+                signature: None,
             }
         );
         assert_eq!(
@@ -469,7 +499,10 @@ mod tests {
                 parts: vec![IrPart::ToolResult {
                     call_id: "call_1".into(),
                     is_error: false,
-                    content: vec![IrPart::Text("sunny".into())],
+                    content: vec![IrPart::Text {
+                        text: "sunny".into(),
+                        signature: None
+                    }],
                 }],
             }
         );
@@ -564,7 +597,10 @@ mod tests {
         assert_eq!(
             ir.parts,
             vec![
-                IrPart::Text("hi".into()),
+                IrPart::Text {
+                    text: "hi".into(),
+                    signature: None
+                },
                 IrPart::Thinking {
                     text: "thinking".into(),
                     signature: None,
@@ -588,6 +624,7 @@ mod tests {
                 id: "call_abc123".into(),
                 name: "get_weather".into(),
                 args: serde_json::json!({"location": "Tokyo"}),
+                signature: None,
             }
         );
     }

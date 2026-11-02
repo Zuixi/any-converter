@@ -31,7 +31,11 @@ pub enum Role {
 /// One block of a message (magpie `Part`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrPart {
-    Text(String),
+    Text {
+        text: String,
+        /// Gemini's thoughtSignature on text (#1445): Gemini's builder only
+        signature: Option<Signature>,
+    },
     Image {
         url: String,
         media_type: String,
@@ -44,6 +48,10 @@ pub enum IrPart {
         id: String,
         name: String,
         args: Value,
+        /// Gemini signs the first call of each step it thinks through and
+        /// refuses the next request without it (magpie gemini_signature.go,
+        /// #687): only Gemini's builder replays it
+        signature: Option<Signature>,
     },
     /// The output that answers a `ToolCall`; `content` holds text and images.
     ToolResult {
@@ -61,10 +69,7 @@ pub enum IrPart {
     /// `redacted_thinking` block, a Responses reasoning item with its
     /// `encrypted_content`. Carried byte-for-byte; any other format sees
     /// reasoning with no text.
-    Sealed {
-        by: Format,
-        raw: Value,
-    },
+    Sealed { by: Format, raw: Value },
 }
 
 #[derive(Debug, Clone, PartialEq)]
