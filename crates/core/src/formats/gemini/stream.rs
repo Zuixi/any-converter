@@ -1,3 +1,4 @@
+use crate::convert::Format;
 use crate::error::ConvertError;
 use crate::formats::StreamAdapter;
 use crate::ir::*;
@@ -40,6 +41,18 @@ impl StreamAdapter for GeminiStreamAdapter {
             for part in &candidate.content.parts {
                 if let Some(text) = &part.text {
                     if !text.is_empty() {
+                        // A `thought` part is the model's reasoning, not
+                        // content: it goes out as thinking, its signature after.
+                        if part.thought == Some(true) {
+                            events.push(CanonicalStreamEvent::ThinkingDelta(text.clone()));
+                            if let Some(sig) = &part.thought_signature {
+                                events.push(CanonicalStreamEvent::ThinkingSignature {
+                                    by: Format::Gemini,
+                                    delta: sig.clone(),
+                                });
+                            }
+                            continue;
+                        }
                         state.phase = StreamPhase::Content;
                         events.push(CanonicalStreamEvent::TextDelta(text.clone()));
                     }
@@ -54,7 +67,7 @@ impl StreamAdapter for GeminiStreamAdapter {
                     events.push(CanonicalStreamEvent::ToolCallStart {
                         index,
                         id,
-                        signature: None,
+                        signature: part.thought_signature.clone(),
                         name: fc.name.clone(),
                     });
                     if !fc.args.is_null() && fc.args != serde_json::json!({}) {
@@ -86,8 +99,7 @@ impl StreamAdapter for GeminiStreamAdapter {
         state: &mut StreamState,
     ) -> Result<Vec<String>, ConvertError> {
         match event {
-            CanonicalStreamEvent::ThinkingSignature { .. }
-            | CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
+            CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
             CanonicalStreamEvent::Start { id, model } => {
                 state.response_id = Some(id.clone());
                 state.model = Some(model.clone());
@@ -99,7 +111,10 @@ impl StreamAdapter for GeminiStreamAdapter {
                 Ok(vec![format_sse_data(&chunk)])
             }
             CanonicalStreamEvent::ToolCallStart {
-                index, id, name, ..
+                index,
+                id,
+                name,
+                signature,
             } => {
                 state.accumulated_tool_calls.push(AccumulatedToolCall {
                     index: *index,
@@ -109,11 +124,14 @@ impl StreamAdapter for GeminiStreamAdapter {
                 });
                 let chunk = make_stream_response(
                     state,
-                    vec![GeminiPart::function_call_with_id(
-                        name.clone(),
-                        serde_json::json!({}),
-                        id.clone(),
-                    )],
+                    vec![
+                        GeminiPart::function_call_with_id(
+                            name.clone(),
+                            serde_json::json!({}),
+                            id.clone(),
+                        )
+                        .with_thought_signature(signature.clone()),
+                    ],
                     None,
                     None,
                 )?;
@@ -138,6 +156,9 @@ impl StreamAdapter for GeminiStreamAdapter {
                 };
                 let name = entry.name.clone();
                 let id = entry.id.clone();
+                // shortcut: the signature rode on the start chunk only; a client
+                // that takes the whole part from this delta loses it. Upgrade
+                // when StreamState can hold a signature per call.
                 let chunk = make_stream_response(
                     state,
                     vec![GeminiPart::function_call_with_id(name, args, id)],
@@ -146,7 +167,26 @@ impl StreamAdapter for GeminiStreamAdapter {
                 )?;
                 Ok(vec![format_sse_data(&chunk)])
             }
-            CanonicalStreamEvent::ThinkingDelta(_) => Ok(vec![]),
+            // Buffered until its signature arrives whole at the end of the
+            // thought block, so the signature rides on the part it signs.
+            CanonicalStreamEvent::ThinkingDelta(text) => {
+                state.accumulated_text.push_str(text);
+                Ok(vec![])
+            }
+            CanonicalStreamEvent::ThinkingSignature {
+                by: Format::Gemini,
+                delta,
+            } => {
+                let text = std::mem::take(&mut state.accumulated_text);
+                let chunk = make_stream_response(
+                    state,
+                    vec![GeminiPart::thinking(text).with_thought_signature(Some(delta.clone()))],
+                    None,
+                    None,
+                )?;
+                Ok(vec![format_sse_data(&chunk)])
+            }
+            CanonicalStreamEvent::ThinkingSignature { .. } => Ok(vec![]),
             CanonicalStreamEvent::Done { stop_reason, usage } => {
                 state.done = true;
                 state.phase = StreamPhase::Done;
@@ -230,6 +270,86 @@ mod tests {
             CanonicalStreamEvent::ToolCallStart { name, id, .. }
                 if name == "search" && id == "call_1"
         )));
+    }
+
+    #[test]
+    fn test_parse_signed_function_call_chunk() {
+        let mut state = StreamState::new();
+        let data = r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"search","args":{"q":"rust"},"id":"call_1"},"thoughtSignature":"sig-call"}]},"index":0}]}"#;
+        let events = parse_data(data, &mut state);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            CanonicalStreamEvent::ToolCallStart { signature: Some(sig), .. } if sig == "sig-call"
+        )));
+    }
+
+    #[test]
+    fn test_parse_signed_thought_part_chunk() {
+        let mut state = StreamState::new();
+        let data = r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"thinking","thought":true,"thoughtSignature":"sig-thinking"}]},"index":0}]}"#;
+        let events = parse_data(data, &mut state);
+        assert_eq!(
+            events,
+            vec![
+                CanonicalStreamEvent::Start {
+                    id: state.response_id.clone().unwrap(),
+                    model: "gemini".into(),
+                },
+                CanonicalStreamEvent::ThinkingDelta("thinking".into()),
+                CanonicalStreamEvent::ThinkingSignature {
+                    by: Format::Gemini,
+                    delta: "sig-thinking".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_emit_tool_call_start_writes_thought_signature() {
+        let mut state = StreamState::new();
+        state.model = Some("gemini-2.0-flash".into());
+
+        let output = GeminiStreamAdapter::emit_sse_event(
+            &CanonicalStreamEvent::ToolCallStart {
+                index: 0,
+                id: "call_1".into(),
+                name: "search".into(),
+                signature: Some("sig-call".into()),
+            },
+            &mut state,
+        )
+        .unwrap();
+
+        assert_eq!(output.len(), 1);
+        assert!(output[0].contains(r#""thoughtSignature":"sig-call""#));
+    }
+
+    #[test]
+    fn test_emit_thinking_signature_writes_thought_part() {
+        let mut state = StreamState::new();
+        state.model = Some("gemini-2.0-flash".into());
+
+        let delta = GeminiStreamAdapter::emit_sse_event(
+            &CanonicalStreamEvent::ThinkingDelta("thinking".into()),
+            &mut state,
+        )
+        .unwrap();
+        assert!(delta.is_empty());
+
+        let output = GeminiStreamAdapter::emit_sse_event(
+            &CanonicalStreamEvent::ThinkingSignature {
+                by: Format::Gemini,
+                delta: "sig-thinking".into(),
+            },
+            &mut state,
+        )
+        .unwrap();
+
+        assert_eq!(output.len(), 1);
+        assert!(output[0].contains(r#""text":"thinking""#));
+        assert!(output[0].contains(r#""thought":true"#));
+        assert!(output[0].contains(r#""thoughtSignature":"sig-thinking""#));
+        assert!(state.accumulated_text.is_empty());
     }
 
     #[test]

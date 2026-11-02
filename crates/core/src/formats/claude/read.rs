@@ -78,7 +78,7 @@ pub fn read_response(resp: ClaudeResponse) -> IrResponse {
     for block in content {
         parts.push(match block {
             ClaudeContentBlock::Text { text } => IrPart::Text {
-                text: text,
+                text,
                 signature: None,
             },
             ClaudeContentBlock::ToolUse { id, name, input } => IrPart::ToolCall {
@@ -96,6 +96,10 @@ pub fn read_response(resp: ClaudeResponse) -> IrResponse {
                     by: Format::Claude,
                     value,
                 }),
+            },
+            ClaudeContentBlock::RedactedThinking { data } => IrPart::Sealed {
+                by: Format::Claude,
+                raw: serde_json::json!({"type": "redacted_thinking", "data": data}),
             },
         });
     }
@@ -121,7 +125,7 @@ pub fn read_response(resp: ClaudeResponse) -> IrResponse {
 fn read_system(system: Option<Value>) -> Vec<IrPart> {
     match system {
         Some(Value::String(text)) => vec![IrPart::Text {
-            text: text,
+            text,
             signature: None,
         }],
         Some(Value::Array(items)) => items
@@ -158,7 +162,7 @@ fn read_message(msg: ClaudeMessage) -> Option<IrMessage> {
 fn read_parts(content: Value) -> Vec<IrPart> {
     match content {
         Value::String(text) => vec![IrPart::Text {
-            text: text,
+            text,
             signature: None,
         }],
         Value::Array(blocks) => blocks.into_iter().filter_map(read_block).collect(),
@@ -308,7 +312,7 @@ mod tests {
             .find(|m| m.role == Role::User)
             .and_then(|m| {
                 m.parts.iter().find_map(|p| match p {
-                    IrPart::Text { text: text, .. } => Some(text.as_str()),
+                    IrPart::Text { text, .. } => Some(text.as_str()),
                     _ => None,
                 })
             })

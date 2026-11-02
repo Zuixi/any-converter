@@ -169,7 +169,7 @@ fn merge_same_role(messages: Vec<IrMessage>) -> Vec<IrMessage> {
 fn text_or_blocks(mut parts: Vec<IrPart>, empty: Value) -> Value {
     if parts.len() == 1 {
         if let IrPart::Text { text: _, .. } = parts[0] {
-            if let IrPart::Text { text: text, .. } = parts.remove(0) {
+            if let IrPart::Text { text, .. } = parts.remove(0) {
                 return Value::String(text);
             }
         }
@@ -182,7 +182,7 @@ fn text_or_blocks(mut parts: Vec<IrPart>, empty: Value) -> Value {
 
 fn build_part(part: IrPart) -> Option<Value> {
     Some(match part {
-        IrPart::Text { text: text, .. } => text_block(text),
+        IrPart::Text { text, .. } => text_block(text),
         IrPart::Image {
             url,
             media_type,
@@ -236,7 +236,7 @@ fn build_part(part: IrPart) -> Option<Value> {
 fn build_system(parts: Vec<IrPart>) -> Option<Value> {
     let mut texts: Vec<String> = Vec::new();
     for part in parts {
-        if let IrPart::Text { text: text, .. } = part {
+        if let IrPart::Text { text, .. } = part {
             texts.push(text);
         }
     }
@@ -262,7 +262,7 @@ fn build_response_block(part: IrPart) -> Option<ClaudeContentBlock> {
     Some(match part {
         // Every pairwise response builder dropped empty text/thinking.
         IrPart::Text {
-            text: text,
+            text,
             signature: None,
         } if !text.is_empty() => ClaudeContentBlock::Text { text },
         IrPart::Thinking { text, signature } if !text.is_empty() => ClaudeContentBlock::Thinking {

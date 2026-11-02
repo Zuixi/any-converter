@@ -96,7 +96,7 @@ fn read_message(msg: OpenAIChatMessage, system: &mut Vec<IrPart>, out: &mut Vec<
         "system" | "developer" => {
             if let Some(text) = message_content_as_text(content) {
                 system.push(IrPart::Text {
-                    text: text,
+                    text,
                     signature: None,
                 });
             }
@@ -125,7 +125,7 @@ fn user_parts(content: Option<MessageContent>) -> Vec<IrPart> {
     match content {
         None => Vec::new(),
         Some(MessageContent::Text(text)) => vec![IrPart::Text {
-            text: text,
+            text,
             signature: None,
         }],
         Some(MessageContent::Parts(parts)) => parts.into_iter().map(content_part).collect(),
@@ -154,7 +154,7 @@ fn assistant_parts(
         Some(MessageContent::Text(text)) => {
             if !text.is_empty() {
                 parts.push(IrPart::Text {
-                    text: text,
+                    text,
                     signature: None,
                 });
             }
@@ -182,7 +182,7 @@ fn assistant_parts(
 fn tool_result_content(content: Option<MessageContent>) -> Vec<IrPart> {
     match message_content_as_text(content) {
         Some(text) if !text.is_empty() => vec![IrPart::Text {
-            text: text,
+            text,
             signature: None,
         }],
         _ => Vec::new(),
@@ -192,7 +192,7 @@ fn tool_result_content(content: Option<MessageContent>) -> Vec<IrPart> {
 fn content_part(part: ContentPart) -> IrPart {
     match part {
         ContentPart::Text { text } => IrPart::Text {
-            text: text,
+            text,
             signature: None,
         },
         ContentPart::ImageUrl { image_url } => image_part(image_url),
@@ -287,7 +287,7 @@ pub fn read_response(resp: OpenAIChatResponse) -> IrResponse {
     let mut parts = Vec::with_capacity(2);
     if let Some(text) = choice.message.content.filter(|t| !t.is_empty()) {
         parts.push(IrPart::Text {
-            text: text,
+            text,
             signature: None,
         });
     }

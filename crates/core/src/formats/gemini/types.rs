@@ -29,6 +29,13 @@ pub struct GeminiContent {
 pub struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Marks a part as the model's own reasoning rather than content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought: Option<bool>,
+    /// Gemini 3 signs the parts it thought through and refuses the next
+    /// request without the signature back (magpie gemini_signature.go, #687).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inline_data: Option<GeminiInlineData>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,15 +48,31 @@ impl GeminiPart {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             text: Some(text.into()),
+            thought: None,
+            thought_signature: None,
             inline_data: None,
             function_call: None,
             function_response: None,
         }
     }
 
+    pub fn thinking(text: impl Into<String>) -> Self {
+        Self {
+            thought: Some(true),
+            ..Self::text(text)
+        }
+    }
+
+    pub fn with_thought_signature(mut self, signature: Option<String>) -> Self {
+        self.thought_signature = signature;
+        self
+    }
+
     pub fn inline_data(mime_type: impl Into<String>, data: impl Into<String>) -> Self {
         Self {
             text: None,
+            thought: None,
+            thought_signature: None,
             inline_data: Some(GeminiInlineData {
                 mime_type: mime_type.into(),
                 data: data.into(),
@@ -62,6 +85,8 @@ impl GeminiPart {
     pub fn function_call(name: impl Into<String>, args: serde_json::Value) -> Self {
         Self {
             text: None,
+            thought: None,
+            thought_signature: None,
             inline_data: None,
             function_call: Some(GeminiFunctionCall {
                 name: name.into(),
@@ -79,6 +104,8 @@ impl GeminiPart {
     ) -> Self {
         Self {
             text: None,
+            thought: None,
+            thought_signature: None,
             inline_data: None,
             function_call: Some(GeminiFunctionCall {
                 name: name.into(),
@@ -92,6 +119,8 @@ impl GeminiPart {
     pub fn function_response(name: impl Into<String>, response: serde_json::Value) -> Self {
         Self {
             text: None,
+            thought: None,
+            thought_signature: None,
             inline_data: None,
             function_call: None,
             function_response: Some(GeminiFunctionResponse {
@@ -109,6 +138,8 @@ impl GeminiPart {
     ) -> Self {
         Self {
             text: None,
+            thought: None,
+            thought_signature: None,
             inline_data: None,
             function_call: None,
             function_response: Some(GeminiFunctionResponse {

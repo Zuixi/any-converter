@@ -1,3 +1,4 @@
+use crate::convert::Format;
 use crate::error::ConvertError;
 use crate::formats::StreamAdapter;
 use crate::ir::*;
@@ -37,6 +38,7 @@ impl StreamAdapter for ClaudeStreamAdapter {
         state: &mut StreamState,
     ) -> Result<Vec<String>, ConvertError> {
         match event {
+            // Claude is a producer of signatures here, not a consumer of canonical ones.
             CanonicalStreamEvent::ThinkingSignature { .. }
             | CanonicalStreamEvent::SealedThinking { .. } => Ok(vec![]),
             CanonicalStreamEvent::Start { id, model } => emit_message_start(id, model, state),
@@ -90,7 +92,30 @@ fn parse_content_block_start(
     data: &str,
     state: &mut StreamState,
 ) -> Result<Vec<CanonicalStreamEvent>, ConvertError> {
-    let parsed: ClaudeContentBlockStartEvent = serde_json::from_str(data)
+    let value: serde_json::Value = serde_json::from_str(data)
+        .map_err(|e| ConvertError::SseParse(format!("content_block_start parse error: {e}")))?;
+
+    // redacted_thinking is no ClaudeStreamContentBlock variant: Anthropic seals it
+    // whole, so it crosses as-is (magpie ir.go KSealed).
+    let sealed = value
+        .get("content_block")
+        .filter(|block| {
+            block.get("type").and_then(serde_json::Value::as_str) == Some("redacted_thinking")
+        })
+        .cloned();
+    if let Some(raw) = sealed {
+        state.block_index = value
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32;
+        state.phase = StreamPhase::Content;
+        return Ok(vec![CanonicalStreamEvent::SealedThinking {
+            by: Format::Claude,
+            raw,
+        }]);
+    }
+
+    let parsed: ClaudeContentBlockStartEvent = serde_json::from_value(value)
         .map_err(|e| ConvertError::SseParse(format!("content_block_start parse error: {e}")))?;
 
     state.block_index = parsed.index;
@@ -136,7 +161,13 @@ fn parse_content_block_delta(
         ClaudeStreamDelta::ThinkingDelta { thinking } => {
             Ok(vec![CanonicalStreamEvent::ThinkingDelta(thinking)])
         }
-        ClaudeStreamDelta::SignatureDelta { .. } => Ok(vec![]),
+        // A piece of the block's signature; the emitter accumulates.
+        ClaudeStreamDelta::SignatureDelta { signature } => {
+            Ok(vec![CanonicalStreamEvent::ThinkingSignature {
+                by: Format::Claude,
+                delta: signature,
+            }])
+        }
     }
 }
 
@@ -424,15 +455,58 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_content_block_delta_signature_delta_is_ignored() {
+    fn test_parse_content_block_delta_signature_delta_emits_thinking_signature() {
         let event = SseEvent {
             event: Some("content_block_delta".into()),
             data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_abc"}}"#.into(),
         };
         let mut state = StreamState::new();
         let events = ClaudeStreamAdapter::parse_sse_event(&event, &mut state).unwrap();
-        assert!(events.is_empty());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            CanonicalStreamEvent::ThinkingSignature { by: Format::Claude, delta } if delta == "sig_abc"
+        ));
         assert_eq!(state.block_index, 0);
+    }
+
+    #[test]
+    fn test_parse_content_block_start_redacted_thinking_emits_sealed_thinking() {
+        let data = r#"{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"EmwKAhgBEgy3"}}"#;
+        let event = SseEvent {
+            event: Some("content_block_start".into()),
+            data: data.into(),
+        };
+        let mut state = StreamState::new();
+        let events = ClaudeStreamAdapter::parse_sse_event(&event, &mut state).unwrap();
+        assert_eq!(events.len(), 1);
+        let expected: serde_json::Value = serde_json::json!({
+            "type": "redacted_thinking",
+            "data": "EmwKAhgBEgy3",
+        });
+        assert!(matches!(
+            &events[0],
+            CanonicalStreamEvent::SealedThinking { by: Format::Claude, raw } if *raw == expected
+        ));
+        assert_eq!(state.block_index, 0);
+    }
+
+    #[test]
+    fn test_emit_foreign_signature_events_emit_nothing() {
+        let mut state = StreamState::new();
+        for event in [
+            CanonicalStreamEvent::ThinkingSignature {
+                by: Format::Gemini,
+                delta: "sig_abc".into(),
+            },
+            CanonicalStreamEvent::SealedThinking {
+                by: Format::Gemini,
+                raw: serde_json::json!({ "type": "redacted_thinking", "data": "x" }),
+            },
+        ] {
+            let lines = ClaudeStreamAdapter::emit_sse_event(&event, &mut state).unwrap();
+            assert!(lines.is_empty());
+        }
     }
 
     #[test]

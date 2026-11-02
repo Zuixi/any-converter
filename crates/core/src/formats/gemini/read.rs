@@ -81,7 +81,7 @@ fn read_system(content: GeminiContent) -> Vec<IrPart> {
         Vec::new()
     } else {
         vec![IrPart::Text {
-            text: text,
+            text,
             signature: None,
         }]
     }
@@ -135,10 +135,18 @@ fn read_message(content: GeminiContent) -> Option<IrMessage> {
     for part in content.parts {
         let GeminiPart {
             text,
+            thought,
+            thought_signature,
             inline_data,
             function_call,
             function_response,
         } = part;
+        // Gemini's own signature on the part it signed; no other vendor's
+        // signature can arrive on this wire.
+        let signature = thought_signature.map(|value| Signature {
+            by: Format::Gemini,
+            value,
+        });
 
         if let Some(fr) = function_response {
             // `gemini_to_claude` 400'd on this in model content.
@@ -156,9 +164,11 @@ fn read_message(content: GeminiContent) -> Option<IrMessage> {
         }
         if let Some(text) = text {
             if !text.is_empty() {
-                parts.push(IrPart::Text {
-                    text: text,
-                    signature: None,
+                let signature = signature.clone();
+                parts.push(if thought == Some(true) {
+                    IrPart::Thinking { text, signature }
+                } else {
+                    IrPart::Text { text, signature }
                 });
             }
         }
@@ -167,7 +177,7 @@ fn read_message(content: GeminiContent) -> Option<IrMessage> {
                 parts.push(IrPart::ToolCall {
                     id: fc.id.unwrap_or_else(new_uuid),
                     name: fc.name,
-                    signature: None,
+                    signature,
                     args: fc.args,
                 });
             }
@@ -212,14 +222,22 @@ pub fn read_response(resp: GeminiResponse) -> IrResponse {
         for part in candidate.content.parts {
             let GeminiPart {
                 text,
+                thought,
+                thought_signature,
                 function_call,
                 ..
             } = part;
+            let signature = thought_signature.map(|value| Signature {
+                by: Format::Gemini,
+                value,
+            });
             if let Some(text) = text {
                 if !text.is_empty() {
-                    parts.push(IrPart::Text {
-                        text: text,
-                        signature: None,
+                    let signature = signature.clone();
+                    parts.push(if thought == Some(true) {
+                        IrPart::Thinking { text, signature }
+                    } else {
+                        IrPart::Text { text, signature }
                     });
                 }
             }
@@ -227,7 +245,7 @@ pub fn read_response(resp: GeminiResponse) -> IrResponse {
                 parts.push(IrPart::ToolCall {
                     id: fc.id.unwrap_or_else(new_uuid),
                     name: fc.name,
-                    signature: None,
+                    signature,
                     args: fc.args,
                 });
             }
@@ -366,6 +384,108 @@ mod tests {
             }
             other => panic!("expected tool call, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn thought_signature_rides_on_its_own_part() {
+        let ir = read(request(
+            r#"{
+              "contents": [
+                {"role": "user", "parts": [{"text": "what's the weather?"}]},
+                {"role": "model", "parts": [
+                  {"text": "I should look this up.", "thought": true, "thoughtSignature": "sig-thinking"},
+                  {"functionCall": {"name": "get_weather", "args": {"city": "Tokyo"}, "id": "call_1"}, "thoughtSignature": "sig-call"},
+                  {"text": "Fetching now.", "thoughtSignature": "sig-text"}
+                ]}
+              ]
+            }"#,
+        ));
+
+        let gemini = |value: &str| {
+            Some(Signature {
+                by: Format::Gemini,
+                value: value.into(),
+            })
+        };
+        assert_eq!(
+            ir.messages[1].parts,
+            vec![
+                IrPart::Thinking {
+                    text: "I should look this up.".into(),
+                    signature: gemini("sig-thinking"),
+                },
+                IrPart::ToolCall {
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                    args: serde_json::json!({"city": "Tokyo"}),
+                    signature: gemini("sig-call"),
+                },
+                IrPart::Text {
+                    text: "Fetching now.".into(),
+                    signature: gemini("sig-text"),
+                },
+            ]
+        );
+
+        // A real signature survives read -> build -> read untouched.
+        assert_eq!(read(build(ir.clone())), ir);
+        let parts = &build(ir).contents[1].parts;
+        assert_eq!(parts[0].thought_signature.as_deref(), Some("sig-thinking"));
+        assert_eq!(parts[0].thought, Some(true));
+        assert_eq!(parts[1].thought_signature.as_deref(), Some("sig-call"));
+        assert_eq!(parts[2].thought_signature.as_deref(), Some("sig-text"));
+        assert_eq!(parts[2].thought, None);
+    }
+
+    #[test]
+    fn only_gemini_signatures_are_written_back() {
+        let signed = |by: Format, value: &str| {
+            Some(Signature {
+                by,
+                value: value.into(),
+            })
+        };
+        let back = build(IrRequest {
+            model: "gemini-3-pro".into(),
+            messages: vec![IrMessage {
+                role: Role::Assistant,
+                parts: vec![
+                    IrPart::ToolCall {
+                        id: "call_1".into(),
+                        name: "get_weather".into(),
+                        args: serde_json::json!({}),
+                        signature: signed(Format::Gemini, "sig-call"),
+                    },
+                    IrPart::Thinking {
+                        text: "thinking".into(),
+                        signature: signed(Format::Gemini, "sig-thinking"),
+                    },
+                    IrPart::Text {
+                        text: "done".into(),
+                        signature: signed(Format::Gemini, "sig-text"),
+                    },
+                    // Only the signing API may replay its own signature.
+                    IrPart::ToolCall {
+                        id: "call_2".into(),
+                        name: "get_time".into(),
+                        args: serde_json::json!({}),
+                        signature: signed(Format::Claude, "sig-claude"),
+                    },
+                ],
+            }],
+            ..IrRequest::default()
+        });
+
+        let parts = &back.contents[0].parts;
+        assert_eq!(parts[0].thought_signature.as_deref(), Some("sig-call"));
+        assert_eq!(parts[1].thought_signature.as_deref(), Some("sig-thinking"));
+        assert_eq!(parts[1].thought, Some(true));
+        assert_eq!(parts[2].thought_signature.as_deref(), Some("sig-text"));
+        assert_eq!(parts[3].thought_signature, None);
+        assert_eq!(
+            serde_json::to_value(&parts[0]).unwrap()["thoughtSignature"],
+            serde_json::json!("sig-call")
+        );
     }
 
     #[test]

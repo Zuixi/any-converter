@@ -19,7 +19,8 @@ use crate::formats::openai_resp::types::{
     InputTokensDetails, OpenAIResponsesRequest, OpenAIResponsesResponse, ResponsesUsage,
 };
 use crate::ir::{
-    IrMessage, IrPart, IrRequest, IrResponse, IrTool, IrToolChoice, Reasoning, Role, StopReason,
+    IrMessage, IrPart, IrRequest, IrResponse, IrTool, IrToolChoice, Reasoning, Role, Signature,
+    StopReason,
 };
 
 const ITEM_TYPE_REASONING: &str = "reasoning";
@@ -103,7 +104,7 @@ pub fn build_response(ir: IrResponse) -> OpenAIResponsesResponse {
     let mut text_content = Vec::new();
     for part in parts {
         match part {
-            IrPart::Text { text: text, .. } => {
+            IrPart::Text { text, .. } => {
                 text_content.push(serde_json::json!({
                     "type": ITEM_TYPE_OUTPUT_TEXT,
                     "text": text,
@@ -118,9 +119,21 @@ pub fn build_response(ir: IrResponse) -> OpenAIResponsesResponse {
                     "arguments": arguments_to_string(&args),
                 }));
             }
-            IrPart::Thinking { text, .. } => {
+            IrPart::Thinking { text, signature } => {
                 flush_text(&mut output, &mut text_content);
-                output.push(reasoning_item(text));
+                // Only Claude's own signature may be sealed: another vendor's
+                // is meaningless to Anthropic and no Responses client reads it.
+                let claude = signature.filter(|s| s.by == Format::Claude);
+                output.push(reasoning_item(text, claude));
+            }
+            // Claude's redacted_thinking goes back whole, in encrypted_content,
+            // to come back on the next turn of a tool loop (claudeseal).
+            IrPart::Sealed {
+                by: Format::Claude,
+                raw,
+            } => {
+                flush_text(&mut output, &mut text_content);
+                output.push(sealed_reasoning_item(&raw));
             }
             // Responses output carries text, tool calls and reasoning only.
             _ => {}
@@ -157,7 +170,7 @@ fn system_to_instructions(system: Vec<IrPart>) -> Option<String> {
     let texts: Vec<String> = system
         .into_iter()
         .filter_map(|part| match part {
-            IrPart::Text { text: text, .. } => Some(text),
+            IrPart::Text { text, .. } => Some(text),
             _ => None,
         })
         .collect();
@@ -175,7 +188,7 @@ fn messages_to_input(messages: Vec<IrMessage>) -> Option<Value> {
         let mut content = Vec::new();
         for part in message.parts {
             match part {
-                IrPart::Text { text: text, .. } => content.push(serde_json::json!({
+                IrPart::Text { text, .. } => content.push(serde_json::json!({
                     "type": text_part_type(role),
                     "text": text,
                 })),
@@ -257,7 +270,7 @@ fn parts_to_text(parts: Vec<IrPart>) -> String {
     parts
         .into_iter()
         .filter_map(|part| match part {
-            IrPart::Text { text: text, .. } => Some(text),
+            IrPart::Text { text, .. } => Some(text),
             _ => None,
         })
         .collect()
@@ -303,12 +316,118 @@ fn arguments_to_string(args: &Value) -> String {
     serde_json::to_string(args).unwrap_or_else(|_| "{}".into())
 }
 
-fn reasoning_item(text: String) -> Value {
-    serde_json::json!({
+fn reasoning_item(text: String, claude_signature: Option<Signature>) -> Value {
+    let mut item = serde_json::json!({
         "type": ITEM_TYPE_REASONING,
         "id": format!("rs_{}", new_uuid()),
         "summary": [{"type": ITEM_TYPE_SUMMARY_TEXT, "text": text}],
+    });
+    if let Some(signature) = claude_signature {
+        item["encrypted_content"] = Value::String(seal_thinking(&text, &signature.value));
+    }
+    item
+}
+
+/// A block an upstream sealed whole: no summary, the block itself in
+/// `encrypted_content` (magpie `renderResponses`' `sealedBy(sealAnthropic)`).
+fn sealed_reasoning_item(raw: &Value) -> Value {
+    serde_json::json!({
+        "type": ITEM_TYPE_REASONING,
+        "id": format!("rs_{}", new_uuid()),
+        "summary": [],
+        "encrypted_content": seal_block(raw),
     })
+}
+
+// ── claudeseal ─────────────────────────────────────────────────────────
+//
+// Claude signs each thinking block and seals a redacted_thinking block whole,
+// and Anthropic wants both back as they came. A Responses client with store
+// off keeps only what a reply's reasoning items carry, and of those only
+// `encrypted_content` is opaque, so the block rides there (magpie
+// internal/claudeseal, internal/gateway/claude_seal.go).
+//
+// Deviation from magpie: magpie seals only when the request asked for
+// `include: ["reasoning.encrypted_content"]` (`asksSealing`);
+// `convert_response` never sees the request here, so we always seal.
+
+/// Begins the `encrypted_content` of a reasoning item carrying Claude's block.
+/// Same mark as magpie, so a session survives a gateway switch.
+const CLAUDE_SEAL_MARK: &str = "magpie-claude1:";
+
+/// `encrypted_content` for Claude's thinking block with its signature. The
+/// field order is Anthropic's, as magpie marshals it (`claudeThinking`).
+pub(super) fn seal_thinking(text: &str, signature: &str) -> String {
+    let block = format!(
+        r#"{{"type":"thinking","thinking":{},"signature":{}}}"#,
+        Value::String(text.into()),
+        Value::String(signature.into())
+    );
+    seal(block.as_bytes())
+}
+
+/// `encrypted_content` for a block sealed whole, as the upstream wrote it.
+pub(super) fn seal_block(raw: &Value) -> String {
+    seal(raw.to_string().as_bytes())
+}
+
+fn seal(block: &[u8]) -> String {
+    format!("{CLAUDE_SEAL_MARK}{}", base64_encode(block))
+}
+
+/// The block an `encrypted_content` carries, for one magpie sealed: `None`
+/// when it is not ours or can't be read (magpie `claudeseal.Open`).
+pub(super) fn open_seal(encrypted: &str) -> Option<Value> {
+    let b64 = encrypted.strip_prefix(CLAUDE_SEAL_MARK)?;
+    serde_json::from_slice(&base64_decode(b64)?).ok()
+}
+
+/// Whether `encrypted_content` is one magpie sealed, readable or not
+/// (magpie `claudeseal.Is`).
+pub(super) fn is_sealed(encrypted: &str) -> bool {
+    encrypted.starts_with(CLAUDE_SEAL_MARK)
+}
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(BASE64[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in text.trim_end_matches('=').bytes() {
+        let value = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
 }
 
 fn flush_text(output: &mut Vec<Value>, content: &mut Vec<Value>) {
@@ -320,4 +439,36 @@ fn flush_text(output: &mut Vec<Value>, content: &mut Vec<Value>) {
         "role": "assistant",
         "content": std::mem::take(content),
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_matches_the_standard_vectors() {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64_encode(plain.as_bytes()), encoded);
+            assert_eq!(base64_decode(encoded).as_deref(), Some(plain.as_bytes()));
+        }
+    }
+
+    #[test]
+    fn seal_thinking_writes_the_block_in_anthropic_field_order() {
+        let seal = seal_thinking("t", "s");
+        let b64 = seal.strip_prefix(CLAUDE_SEAL_MARK).unwrap_or_default();
+        let block = base64_decode(b64).unwrap_or_default();
+        assert_eq!(
+            String::from_utf8(block).unwrap_or_default(),
+            r#"{"type":"thinking","thinking":"t","signature":"s"}"#
+        );
+    }
 }
