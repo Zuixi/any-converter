@@ -98,6 +98,28 @@ impl StopReason {
             _ => StopReason::EndTurn,
         }
     }
+
+    /// OpenAI Responses' `status/incomplete.details.reason`.
+    pub fn from_openai_resp(s: &str) -> Self {
+        match s {
+            "max_output_tokens" => StopReason::MaxTokens,
+            "content_filter" => StopReason::ContentFilter,
+            _ => StopReason::EndTurn,
+        }
+    }
+}
+
+/// A reply, whichever API it must leave in (request IR's counterpart).
+/// Readers turn a wire response into this; builders turn it back. `parts`
+/// hold the assistant blocks (text, thinking, tool calls) in order.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrResponse {
+    pub id: Option<String>,
+    pub model: String,
+    pub parts: Vec<crate::ir::IrPart>,
+    pub stop_reason: StopReason,
+    pub stop_sequence: Option<String>,
+    pub usage: Usage,
 }
 
 #[cfg(test)]
