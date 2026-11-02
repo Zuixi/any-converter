@@ -524,3 +524,19 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo build --release
 ```
+
+### CI and automated tests
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and on pushes to `main`, in two jobs:
+
+- **rust**: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`.
+- **js**: `pnpm install --frozen-lockfile`, then `pnpm typecheck` (turbo runs `typecheck` across every workspace package).
+
+Local parity is the same two commands:
+
+```bash
+cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace
+pnpm install --frozen-lockfile && pnpm typecheck
+```
+
+Planned: contract fixtures and a proxy smoke test will be added to CI by later tasks.

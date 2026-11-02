@@ -111,6 +111,7 @@ pub fn create_router(config: ServerConfig) -> Router {
 /// custom HTTP clients (e.g., pointing at a local `wiremock` server).
 pub fn create_router_with_state(state: Arc<AppState>) -> Router {
     Router::new()
+        // a new route here must be added to ROUTES in crates/server/tests/route_guard.rs
         .route("/health", get(handle_health))
         .route("/v1/models", get(handle_models))
         .route("/models", get(handle_models))

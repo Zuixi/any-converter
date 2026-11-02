@@ -22,6 +22,7 @@
 - **Monorepo layout** (`packages/*`): Shared packages for UI atoms (`packages/ui`), business components (`packages/core`), page views (`packages/views`), types/utilities (`packages/shared`), TypeScript configs (`packages/tsconfig`), and the Rust napi-rs bridge (`packages/bridge`).
 - **`crates/web-bridge`**: Native Node.js addon exposing `convert_request_string` and `convert_response_string` from `any-converter-core`.
 - **Turborepo + pnpm workspace**: Root-level scripts for installing, building, and formatting the web stack alongside the Rust workspace.
+- **CI workflow** (`.github/workflows/ci.yml`): GitHub Actions now gates pull requests on Rust `fmt` / `clippy -D warnings` / `cargo test --workspace` plus a workspace-wide `pnpm typecheck`.
 
 ### Changed
 
