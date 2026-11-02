@@ -12,6 +12,7 @@ use any_converter_server::config::{
     ModelRouteConfig, PassThroughHeadersConfig, ProviderConfig, RouteStrategy, ServerConfig,
     ServerSettings,
 };
+use any_converter_server::credentials::AccountResolver;
 use any_converter_server::handlers::AppState;
 use any_converter_server::router::{create_router_with_state, detect_format_from_path};
 use axum::Router;
@@ -89,6 +90,8 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
             format: Format::OpenAIChat,
             base_url: base_url.into(),
             api_key: "upstream-key".into(),
+            account: None,
+            wire: None,
             // Literal key so `/models/{model_id}` resolves instead of 404.
             model_map: [("guard-model".into(), "upstream-model".into())].into(),
             endpoints: Default::default(),
@@ -108,6 +111,7 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
     create_router_with_state(Arc::new(AppState {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
+        accounts: AccountResolver::with_default_store(Client::new()),
         usage_logger: None,
         request_logger: None,
     }))

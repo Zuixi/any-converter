@@ -10,6 +10,7 @@ use axum::{
 use reqwest::Client;
 
 use crate::config::ServerConfig;
+use crate::credentials::AccountResolver;
 use crate::handlers::{
     AppState, handle_claude, handle_count_tokens, handle_gemini, handle_health,
     handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
@@ -98,9 +99,12 @@ pub fn create_router(config: ServerConfig) -> Router {
             crate::disk_quota::spawn_disk_quota_manager(PathBuf::from(dir), max_bytes);
     }
 
+    let client = Client::new();
+    let accounts = AccountResolver::with_default_store(client.clone());
     let state = Arc::new(AppState {
         config,
-        client: Client::new(),
+        client,
+        accounts,
         usage_logger,
         request_logger,
     });
@@ -166,6 +170,8 @@ mod tests {
                 format: Format::OpenAIChat,
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-test".into(),
+                account: None,
+                wire: None,
                 model_map: [("claude-sonnet-4".into(), "gpt-4.1".into())].into(),
                 endpoints: Default::default(),
                 auth: Default::default(),

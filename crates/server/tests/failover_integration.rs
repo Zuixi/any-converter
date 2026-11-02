@@ -22,6 +22,8 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         format: any_converter_core::convert::Format::OpenAIChat,
         base_url: base_url.into(),
         api_key: "upstream-key".into(),
+        account: None,
+        wire: None,
         model_map: [("*".into(), "gpt-4".into())].into(),
         endpoints: Default::default(),
         auth: Default::default(),
@@ -55,6 +57,9 @@ fn make_app(config: ServerConfig) -> axum::Router {
     let state = Arc::new(AppState {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
+        accounts: any_converter_server::credentials::AccountResolver::with_default_store(
+            Client::new(),
+        ),
         usage_logger: None,
         request_logger: None,
     });

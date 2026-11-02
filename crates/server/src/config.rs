@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use any_converter_core::convert::Format;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
@@ -56,12 +56,31 @@ pub struct ServerSettings {
     pub pass_through_headers: PassThroughHeadersConfig,
 }
 
+/// Transport wire used to reach a provider's upstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Wire {
+    /// Regular provider APIs (Gemini/Claude/OpenAI chat/responses paths).
+    GeminiApi,
+    /// Gemini Code Assist internal endpoints (`cloudcode-pa.googleapis.com`)
+    /// with the `{"model", "request"}` envelope and OAuth bearer auth.
+    CodeAssist,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
     pub name: String,
     pub format: Format,
     pub base_url: String,
     pub api_key: String,
+    /// Optional account id in the secret store (e.g. `gemini:me@example.com`).
+    /// When set, requests are signed with that account's OAuth access token
+    /// and `api_key` is ignored.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Explicit wire override; otherwise inferred via [`Self::effective_wire`].
+    #[serde(default)]
+    pub wire: Option<Wire>,
     #[serde(default)]
     pub model_map: HashMap<String, String>,
     #[serde(default)]
@@ -305,6 +324,22 @@ fn default_port() -> u16 {
 }
 
 impl ProviderConfig {
+    /// Resolve the wire used to talk to this provider.
+    ///
+    /// An explicit `wire` always wins. Otherwise an `account` whose provider
+    /// prefix (the part before `:`) is `gemini` or `antigravity` selects
+    /// [`Wire::CodeAssist`]; everything else stays on [`Wire::GeminiApi`].
+    pub fn effective_wire(&self) -> Wire {
+        if let Some(wire) = self.wire {
+            return wire;
+        }
+        let prefix = self.account.as_deref().and_then(|a| a.split(':').next());
+        match prefix {
+            Some("gemini" | "antigravity") => Wire::CodeAssist,
+            _ => Wire::GeminiApi,
+        }
+    }
+
     /// Resolve a client model name to the upstream model using model_map.
     ///
     /// Priority: exact match → longest prefix wildcard → `"*"` → passthrough.
@@ -418,6 +453,29 @@ impl ServerConfig {
     }
 }
 
+/// `$ANY_CONVERTER_SECRETS` overrides the store location; otherwise it is
+/// `<config_dir>/secrets.json` where `config_dir` is
+/// `$HOME/.config/any-converter` (or `$APPDATA/any-converter` on Windows).
+///
+/// Shared by the server runtime and the CLI so both agree on the account
+/// store location.
+pub fn secrets_path() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("ANY_CONVERTER_SECRETS") {
+        return std::path::PathBuf::from(path);
+    }
+    config_dir().join("secrets.json")
+}
+
+fn config_dir() -> std::path::PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return std::path::PathBuf::from(appdata).join("any-converter");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(home)
+        .join(".config")
+        .join("any-converter")
+}
+
 /// Simple glob matching: supports `*` as a wildcard segment.
 ///
 /// - `"*"` matches everything
@@ -474,6 +532,8 @@ mod tests {
             format: Format::OpenAIChat,
             base_url: "https://api.openai.com".into(),
             api_key: "sk-test".into(),
+            account: None,
+            wire: None,
             model_map,
             endpoints: Default::default(),
             auth: Default::default(),
@@ -622,6 +682,52 @@ rotation = "never"
     }
 
     #[test]
+    fn test_effective_wire_defaults_and_overrides() {
+        let mut provider = sample_provider(HashMap::new());
+        assert_eq!(provider.effective_wire(), Wire::GeminiApi);
+
+        provider.account = Some("gemini:me@example.com".into());
+        assert_eq!(provider.effective_wire(), Wire::CodeAssist);
+
+        provider.account = Some("antigravity:me@example.com".into());
+        assert_eq!(provider.effective_wire(), Wire::CodeAssist);
+
+        provider.account = Some("copilot:me".into());
+        assert_eq!(provider.effective_wire(), Wire::GeminiApi);
+
+        // Explicit wire always wins over account inference.
+        provider.wire = Some(Wire::GeminiApi);
+        provider.account = Some("gemini:me@example.com".into());
+        assert_eq!(provider.effective_wire(), Wire::GeminiApi);
+
+        provider.wire = Some(Wire::CodeAssist);
+        provider.account = None;
+        assert_eq!(provider.effective_wire(), Wire::CodeAssist);
+    }
+
+    #[test]
+    fn test_parse_provider_account_and_wire() {
+        let toml_str = r#"
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[[providers]]
+name = "code-assist"
+format = "gemini"
+base_url = "https://cloudcode-pa.googleapis.com"
+api_key = ""
+account = "gemini:me@example.com"
+wire = "code_assist"
+"#;
+        let config = ServerConfig::from_toml(toml_str).unwrap();
+        let provider = &config.providers[0];
+        assert_eq!(provider.account.as_deref(), Some("gemini:me@example.com"));
+        assert_eq!(provider.wire, Some(Wire::CodeAssist));
+        assert_eq!(provider.effective_wire(), Wire::CodeAssist);
+    }
+
+    #[test]
     fn test_glob_match() {
         assert!(glob_match("*", "anything"));
         assert!(glob_match("claude-*", "claude-sonnet-4"));
@@ -729,6 +835,8 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     format: Format::Claude,
                     base_url: "https://api.anthropic.com".into(),
                     api_key: "sk-ant".into(),
+                    account: None,
+                    wire: None,
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
                     auth: Default::default(),
@@ -738,6 +846,8 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     format: Format::OpenAIChat,
                     base_url: "https://api.openai.com".into(),
                     api_key: "sk-proj".into(),
+                    account: None,
+                    wire: None,
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
                     auth: Default::default(),
@@ -792,6 +902,8 @@ headers = { "x-ms-client-request-id" = "test-client" }
             format: Format::OpenAIChat,
             base_url: "https://api.openai.com".into(),
             api_key: "sk-proj".into(),
+            account: None,
+            wire: None,
             model_map: [("*".into(), "gpt-4.1".into())].into(),
             endpoints: Default::default(),
             auth: Default::default(),
@@ -848,6 +960,8 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     format: Format::OpenAIChat,
                     base_url: "https://primary.com".into(),
                     api_key: "sk-1".into(),
+                    account: None,
+                    wire: None,
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
                     auth: Default::default(),
@@ -857,6 +971,8 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     format: Format::OpenAIChat,
                     base_url: "https://backup.com".into(),
                     api_key: "sk-2".into(),
+                    account: None,
+                    wire: None,
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
                     auth: Default::default(),
@@ -924,6 +1040,8 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 format: Format::OpenAIChat,
                 base_url: "https://api.openai.com".into(),
                 api_key: "sk-test".into(),
+                account: None,
+                wire: None,
                 model_map: [("gpt-4.1".into(), "gpt-4.1".into())].into(),
                 endpoints: Default::default(),
                 auth: Default::default(),

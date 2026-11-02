@@ -15,8 +15,8 @@ use serde_json::Value;
 
 use crate::agent_id::agent_of;
 use crate::auth::{self, AuthError};
-use crate::config::{RouteStrategy, ServerConfig};
-use crate::credentials::{ApiKeySource, TokenSource};
+use crate::config::{RouteStrategy, ServerConfig, Wire};
+use crate::credentials::{AccountResolver, ApiKeySource, TokenSource};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
 use crate::namespace::{extract_namespace_map, patch_response_namespaces};
 use crate::observability::utf8_prefix;
@@ -30,6 +30,8 @@ use crate::usage::{self, UsageLogger, UsageRecord};
 pub struct AppState {
     pub config: ServerConfig,
     pub client: Client,
+    /// First-class OAuth accounts (e.g. Gemini Code Assist sign-ins).
+    pub accounts: Arc<AccountResolver>,
     pub usage_logger: Option<Arc<UsageLogger>>,
     pub request_logger: Option<Arc<RequestLogger>>,
 }
@@ -290,6 +292,10 @@ pub async fn handle_count_tokens(
 /// Forward `count_tokens` to the resolved provider when it natively speaks Claude.
 ///
 /// Returns `None` when the caller should fall back to the local estimate.
+///
+/// Only the static `api_key` path is supported here on purpose: the Gemini
+/// Code Assist wire has no count_tokens endpoint, so account-auth providers
+/// fall back to the local byte-length estimate.
 async fn forward_count_tokens(
     state: &AppState,
     body: &[u8],
@@ -555,16 +561,24 @@ async fn convert_and_build_upstream(
     ctx: &mut RequestContext,
     provider: &crate::config::ProviderConfig,
 ) -> Result<(Vec<u8>, String, Vec<(String, String)>), Box<Response>> {
+    let wire = provider.effective_wire();
+    // Code Assist always speaks Gemini on the wire: conversion targets Gemini
+    // (not `provider.format`) and the body rides inside the request envelope.
+    let to_format = if wire == Wire::CodeAssist {
+        Format::Gemini
+    } else {
+        provider.format
+    };
+
     if state.config.logging.conversion_log {
         debug!(
             target: "conversion",
             "request_original request_id={} client_format={} provider_format={} body={}",
-            ctx.req_id, route_info.client_format, provider.format, truncated_body(body, 4096)
+            ctx.req_id, route_info.client_format, to_format, truncated_body(body, 4096)
         );
     }
 
-    let converted_body = match safe_convert_request(body, route_info.client_format, provider.format)
-    {
+    let converted_body = match safe_convert_request(body, route_info.client_format, to_format) {
         Ok(mut bytes) => {
             if state.config.logging.conversion_log {
                 debug!(
@@ -573,27 +587,82 @@ async fn convert_and_build_upstream(
                     ctx.req_id, truncated_body(&bytes, 4096)
                 );
             }
-            if let Err(err) = patch_model_in_body(&mut bytes, provider.format, &ctx.upstream_model)
-            {
-                error!("failed to patch model: {err} request_id={}", ctx.req_id);
+            if wire == Wire::CodeAssist {
+                // The model id rides in the Code Assist envelope, not in the
+                // Gemini body or URL.
+                crate::wire::wrap_code_assist(&bytes, &ctx.upstream_model).map_err(|err| {
+                    error!(
+                        "code assist envelope failed request_id={} error={err}",
+                        ctx.req_id
+                    );
+                    Box::new(conversion_error_response(HandlerError::Envelope(err)))
+                })?
+            } else {
+                if let Err(err) =
+                    patch_model_in_body(&mut bytes, provider.format, &ctx.upstream_model)
+                {
+                    error!("failed to patch model: {err} request_id={}", ctx.req_id);
+                }
+                bytes
             }
-            bytes
         }
         Err(err) => {
             error!(
                 "request conversion failed request_id={} from={} to={} error={}",
-                ctx.req_id, route_info.client_format, provider.format, err
+                ctx.req_id, route_info.client_format, to_format, err
             );
             return Err(Box::new(conversion_error_response(err)));
         }
     };
 
-    let url = build_upstream_url_for_provider(provider, &ctx.upstream_model, ctx.streaming);
+    let url = match wire {
+        Wire::GeminiApi => {
+            build_upstream_url_for_provider(provider, &ctx.upstream_model, ctx.streaming)
+        }
+        Wire::CodeAssist => crate::wire::build_url(
+            Wire::CodeAssist,
+            provider.format,
+            &provider.base_url,
+            &ctx.upstream_model,
+            ctx.streaming,
+        ),
+    };
 
-    let auth_headers = ApiKeySource::for_provider(provider)
-        .auth_headers()
-        .await
-        .unwrap_or_default();
+    // Account-based OAuth signing wins over the static API key path: when
+    // `provider.account` is set, `provider.api_key` is ignored entirely.
+    let auth_headers: Vec<(String, String)> = if let Some(account_id) = &provider.account {
+        let account = match state.accounts.resolve(account_id).await {
+            Ok(account) => account,
+            Err(err) => {
+                error!(
+                    "account resolution failed request_id={} account={} error={err}",
+                    ctx.req_id, account_id
+                );
+                return Err(Box::new(api_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "account_error",
+                    format!("account {account_id}: {err}"),
+                )));
+            }
+        };
+        let mut headers = vec![(
+            "Authorization".to_string(),
+            format!("Bearer {}", account.access_token),
+        )];
+        headers.extend(
+            provider
+                .auth
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        headers
+    } else {
+        ApiKeySource::for_provider(provider)
+            .auth_headers()
+            .await
+            .unwrap_or_default()
+    };
     let upstream_headers = crate::proxy::build_upstream_headers(
         headers,
         &auth_headers,
@@ -626,6 +695,7 @@ fn build_non_streaming_response(
     route_info: RouteInfo,
     ctx: &RequestContext,
     provider: &crate::config::ProviderConfig,
+    from_format: Format,
 ) -> Result<Response, HandlerError> {
     if state.config.logging.conversion_log {
         debug!(
@@ -636,7 +706,7 @@ fn build_non_streaming_response(
     }
 
     let mut converted =
-        safe_convert_response(upstream_body, provider.format, route_info.client_format)?;
+        safe_convert_response(upstream_body, from_format, route_info.client_format)?;
 
     patch_response_namespaces(&mut converted, &ctx.ns_map);
 
@@ -674,7 +744,7 @@ fn build_non_streaming_response(
                 upstream_body,
                 &converted,
                 status,
-                provider.format,
+                from_format,
                 &state.config.logging.request_log,
             );
         }
@@ -723,6 +793,15 @@ async fn process_request(
                 Err(response) => return *response,
             };
 
+        let wire = provider.effective_wire();
+        // Code Assist responses are enveloped in a response wrapper that the
+        // proxy unwraps to plain Gemini before conversion.
+        let response_format = if wire == Wire::CodeAssist {
+            Format::Gemini
+        } else {
+            provider.format
+        };
+
         info!(
             "forwarding request request_id={} client_format={} provider={} upstream_model={} streaming={} attempt={}",
             ctx.req_id,
@@ -741,8 +820,9 @@ async fn process_request(
                 &upstream_headers,
                 headers,
                 &state.config.server.pass_through_headers,
-                provider.format,
+                response_format,
                 route_info.client_format,
+                wire,
                 &ctx.ns_map,
                 ctx.log_ctx.clone(),
                 state.request_logger.clone(),
@@ -785,6 +865,7 @@ async fn process_request(
             &upstream_headers,
             headers,
             &state.config.server.pass_through_headers,
+            wire,
         )
         .await
         {
@@ -805,6 +886,7 @@ async fn process_request(
                     route_info,
                     &ctx,
                     provider,
+                    response_format,
                 ) {
                     Ok(response) => response,
                     Err(err) => conversion_error_response(err),
@@ -929,6 +1011,7 @@ fn conversion_error_response(err: HandlerError) -> Response {
 #[derive(Debug)]
 enum HandlerError {
     Conversion(any_converter_core::error::ConvertError),
+    Envelope(String),
     Panic,
 }
 
@@ -936,6 +1019,7 @@ impl std::fmt::Display for HandlerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HandlerError::Conversion(e) => write!(f, "{e}"),
+            HandlerError::Envelope(e) => write!(f, "{e}"),
             HandlerError::Panic => write!(f, "conversion not implemented"),
         }
     }
@@ -997,6 +1081,8 @@ mod tests {
                     format: Format::OpenAIChat,
                     base_url: "https://api.openai.com".into(),
                     api_key: "sk-test".into(),
+                    account: None,
+                    wire: None,
                     model_map: [("*".into(), "gpt-4.1".into())].into(),
                     endpoints: Default::default(),
                     auth: Default::default(),
@@ -1010,6 +1096,7 @@ mod tests {
                 logging: LoggingConfig::default(),
             },
             client: Client::new(),
+            accounts: AccountResolver::with_default_store(Client::new()),
             usage_logger: None,
             request_logger: None,
         }
@@ -1105,6 +1192,7 @@ mod tests {
                 logging: LoggingConfig::default(),
             },
             client: Client::new(),
+            accounts: AccountResolver::with_default_store(Client::new()),
             usage_logger: None,
             request_logger: None,
         });

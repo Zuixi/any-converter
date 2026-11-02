@@ -89,11 +89,13 @@ impl TokenSource for ApiKeySource {
     }
 }
 
+pub mod account;
 pub mod copilot;
 pub mod gemini;
 pub mod store;
 pub mod token;
 
+pub use account::{AccountError, AccountResolver, ResolvedAccount};
 pub use copilot::{
     CopilotAccount, CopilotEndpoints, CopilotSignIn, DeviceCodeStarted, ReqwestDeviceHttp,
 };
@@ -121,6 +123,8 @@ mod tests {
             format,
             base_url: "https://example.com".into(),
             api_key: "sk-test".into(),
+            account: None,
+            wire: None,
             model_map: HashMap::new(),
             endpoints: crate::config::ProviderEndpointConfig::default(),
             auth: crate::config::ProviderAuthConfig {

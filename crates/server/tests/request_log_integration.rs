@@ -8,6 +8,7 @@ use any_converter_server::config::{
     LoggingConfig, ModelRouteConfig, PassThroughHeadersConfig, ProviderConfig, RequestLogConfig,
     RouteStrategy, ServerConfig, ServerSettings,
 };
+use any_converter_server::credentials::AccountResolver;
 use any_converter_server::handlers::AppState;
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
@@ -26,6 +27,8 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         format: Format::OpenAIChat,
         base_url: base_url.into(),
         api_key: "upstream-key".into(),
+        account: None,
+        wire: None,
         model_map: [("*".into(), "gpt-4".into())].into(),
         endpoints: Default::default(),
         auth: Default::default(),
@@ -118,6 +121,7 @@ async fn request_log_non_streaming_captures_body_usage_latency() {
     let state = Arc::new(AppState {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
+        accounts: AccountResolver::with_default_store(Client::new()),
         usage_logger: None,
         request_logger: any_converter_server::request_log::create_request_logger(
             Some(&log_path.to_string_lossy()),
@@ -221,6 +225,7 @@ async fn request_log_streaming_captures_ttfb_and_sse_lines() {
     let state = Arc::new(AppState {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
+        accounts: AccountResolver::with_default_store(Client::new()),
         usage_logger: None,
         request_logger: any_converter_server::request_log::create_request_logger(
             Some(&log_path.to_string_lossy()),
