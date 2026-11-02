@@ -168,7 +168,7 @@ fn merge_same_role(messages: Vec<IrMessage>) -> Vec<IrMessage> {
 /// builder did; `empty` is what no blocks at all become.
 fn text_or_blocks(mut parts: Vec<IrPart>, empty: Value) -> Value {
     if parts.len() == 1 {
-        if let IrPart::Text { text: _, .. } = parts[0] {
+        if let IrPart::Text { .. } = parts[0] {
             if let IrPart::Text { text, .. } = parts.remove(0) {
                 return Value::String(text);
             }
