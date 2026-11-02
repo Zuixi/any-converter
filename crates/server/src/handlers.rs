@@ -744,7 +744,21 @@ async fn process_request(
             )
             .await
             {
-                Ok(response) => response,
+                Ok((response, status)) => {
+                    // the same retry rule the non-streaming path applies: a
+                    // retryable status moves to the next provider while one
+                    // remains; otherwise the client sees the upstream answer
+                    if is_retryable_status(status) && attempt + 1 < provider_names.len() {
+                        warn!(
+                            "upstream returned {} request_id={} provider={}, trying next provider",
+                            status, ctx.req_id, provider.name
+                        );
+                        last_error =
+                            Some(format!("provider {} returned {}", provider.name, status));
+                        continue;
+                    }
+                    response
+                }
                 Err(err) => {
                     warn!(
                         "streaming forward failed request_id={} provider={} error={}",

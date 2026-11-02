@@ -185,7 +185,7 @@ pub async fn forward_streaming(
     max_capture_bytes: usize,
     trace_enabled: bool,
     trace_max_preview_bytes: usize,
-) -> Result<Response, String> {
+) -> Result<(Response, StatusCode), String> {
     let upstream_headers =
         build_upstream_headers(client_headers, auth_headers, pass_through_config);
 
@@ -205,6 +205,28 @@ pub async fn forward_streaming(
         .map_err(|e| format!("upstream request failed: {e}"))?;
     let status = upstream.status();
     info!("upstream streaming response received url={url} status={status}");
+
+    // a non-success upstream answer is returned whole so the caller can
+    // retry the next provider (the retry rule lives in process_request,
+    // as for non-streaming)
+    if !status.is_success() {
+        let content_type = upstream
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        let body = upstream
+            .bytes()
+            .await
+            .map_err(|e| format!("error body read failed: {e}"))?;
+        let response = Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, content_type)
+            .body(Body::from(body))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        return Ok((response, status));
+    }
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(64);
 
@@ -344,12 +366,15 @@ pub async fn forward_streaming(
         }
     });
 
-    Ok(Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .body(Body::from_stream(ReceiverStream::new(rx)))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()))
+    Ok((
+        Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .header(header::CACHE_CONTROL, "no-cache")
+            .body(Body::from_stream(ReceiverStream::new(rx)))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        status,
+    ))
 }
 
 /// Patch namespace info in a single SSE line.
