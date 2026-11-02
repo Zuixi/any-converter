@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use any_converter_core::convert::{
     Format, convert_request, convert_response, convert_stream_event,
@@ -9,6 +10,10 @@ use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
     LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
+};
+use any_converter_server::credentials::{
+    CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, GeminiAccount, GeminiEndpoints,
+    GeminiSignIn, SecretStore, gemini::DEFAULT_SIGN_IN_TIMEOUT,
 };
 use any_converter_server::{logging::init_logging, run};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -83,6 +88,33 @@ enum Commands {
         #[arg(long)]
         api_key: Option<String>,
     },
+    /// Manage stored provider accounts (OAuth sign-ins)
+    Accounts {
+        #[command(subcommand)]
+        command: AccountsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountsCommand {
+    /// Sign in with a provider and store the account
+    Add {
+        /// Provider to sign in with
+        provider: AccountsProvider,
+    },
+    /// List stored accounts (never prints tokens)
+    List,
+    /// Remove a stored account by id
+    Remove {
+        /// Account id to remove (see `accounts list`)
+        account_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AccountsProvider {
+    Gemini,
+    Copilot,
 }
 
 #[tokio::main]
@@ -209,9 +241,141 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             run(server_config).await?;
         }
+        Commands::Accounts { command } => accounts(command).await?,
     }
 
     Ok(())
+}
+
+// ── accounts ─────────────────────────────────────────────────────────
+
+#[allow(clippy::print_stdout)]
+async fn accounts(command: AccountsCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        AccountsCommand::Add { provider } => accounts_add(provider).await,
+        AccountsCommand::List => accounts_list(),
+        AccountsCommand::Remove { account_id } => accounts_remove(&account_id),
+    }
+}
+
+#[allow(clippy::print_stdout)]
+async fn accounts_add(provider: AccountsProvider) -> Result<(), Box<dyn std::error::Error>> {
+    let store = open_secret_store()?;
+    match provider {
+        AccountsProvider::Gemini => {
+            let sign_in = GeminiSignIn::new(GeminiEndpoints::default());
+            let started = sign_in.start().await?;
+            println!("Open this URL in your browser to sign in:");
+            println!("  {}", started.url);
+            println!("Waiting up to 600s for the browser callback...");
+            let account = sign_in.wait(DEFAULT_SIGN_IN_TIMEOUT).await?;
+            let account_id = format!("gemini:{}", account.email);
+            store.put(&account_id, &gemini_credential(&account))?;
+            println!("Signed in as {} (stored as {account_id})", account.email);
+        }
+        AccountsProvider::Copilot => {
+            let sign_in = CopilotSignIn::new(CopilotEndpoints::default());
+            let started = sign_in.start().await?;
+            println!("Open {} and enter this code:", started.verification_uri);
+            println!("  {}", started.user_code);
+            println!("Waiting up to 600s for the device flow to complete...");
+            let account = sign_in.wait(&started, DEFAULT_SIGN_IN_TIMEOUT).await?;
+            let account_id = format!("copilot:{}", account.user_code_hint);
+            store.put(
+                &account_id,
+                &Credential::OAuth {
+                    provider: "copilot".to_string(),
+                    account: account.user_code_hint.clone(),
+                    access_token: account.access_token,
+                    refresh_token: None,
+                    expires_at_unix: None,
+                },
+            )?;
+            println!("Signed in (stored as {account_id})");
+        }
+    }
+    Ok(())
+}
+
+fn gemini_credential(account: &GeminiAccount) -> Credential {
+    Credential::OAuth {
+        provider: "gemini".to_string(),
+        account: account.email.clone(),
+        access_token: account.tokens.access_token.clone(),
+        refresh_token: account.tokens.refresh_token.clone(),
+        expires_at_unix: account.tokens.expires_at.and_then(instant_to_unix),
+    }
+}
+
+/// `Instant` → unix seconds (round-trips through `SystemTime`; `None` when
+/// the expiry already passed or the clock overflows).
+fn instant_to_unix(expires_at: Instant) -> Option<i64> {
+    let delta = expires_at.checked_duration_since(Instant::now())?;
+    let unix = SystemTime::now().checked_add(delta)?;
+    unix.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
+}
+
+#[allow(clippy::print_stdout)]
+fn accounts_list() -> Result<(), Box<dyn std::error::Error>> {
+    let store = open_secret_store()?;
+    let ids = store.list()?;
+    if ids.is_empty() {
+        println!("No accounts stored.");
+        return Ok(());
+    }
+    for id in ids {
+        let kind = match store.get(&id)? {
+            Some(cred) => kind_label(&cred),
+            None => "unknown",
+        };
+        println!("{id}  [{kind}]");
+    }
+    Ok(())
+}
+
+/// Storage tag of a credential — deliberately only the variant name, so
+/// listing can never leak secret material.
+fn kind_label(cred: &Credential) -> &'static str {
+    match cred {
+        Credential::ApiKey { .. } => "api_key",
+        Credential::KeychainRef { .. } => "keychain_ref",
+        Credential::OAuth { .. } => "oauth",
+    }
+}
+
+#[allow(clippy::print_stdout)]
+fn accounts_remove(account_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let store = open_secret_store()?;
+    if store.get(account_id)?.is_none() {
+        return Err(format!("no such account: {account_id}").into());
+    }
+    store.delete(account_id)?;
+    println!("Removed {account_id}");
+    Ok(())
+}
+
+fn open_secret_store() -> Result<FileSecretStore, Box<dyn std::error::Error>> {
+    Ok(FileSecretStore::new(secrets_path()))
+}
+
+/// `$ANY_CONVERTER_SECRETS` overrides the store location; otherwise it is
+/// `<config_dir>/secrets.json` where `config_dir` is
+/// `$HOME/.config/any-converter` (or `$APPDATA/any-converter` on Windows).
+fn secrets_path() -> PathBuf {
+    if let Ok(path) = std::env::var("ANY_CONVERTER_SECRETS") {
+        return PathBuf::from(path);
+    }
+    config_dir().join("secrets.json")
+}
+
+fn config_dir() -> PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("any-converter");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config").join("any-converter")
 }
 
 fn read_input(
