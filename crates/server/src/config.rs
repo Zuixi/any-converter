@@ -220,9 +220,31 @@ impl From<WireCompat> for UpstreamApi {
     }
 }
 
+/// A provider served by an OpenCode plugin (P6.2).
+///
+/// The plugin owns the upstream transport: its loader supplies the real
+/// base URL/API key, and its model list selects the wire protocol per model.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PluginRef {
+    /// npm spec or path, e.g. "@magpie-community/opencode-cursor-auth".
+    pub spec: String,
+    /// Directory the spec resolves from ("" = process cwd).
+    #[serde(default)]
+    pub target: String,
+}
+
+/// `format` no longer drives the wire (see [`ProviderConfig::effective_api`])
+/// and plugin providers do not need it at all, so it gets a serde default
+/// instead of being required. `Format` lives in the core crate (out of scope
+/// for a `Default` impl), hence this local fallback function.
+fn default_format() -> Format {
+    Format::OpenAIChat
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
     pub name: String,
+    #[serde(default = "default_format")]
     pub format: Format,
     pub base_url: String,
     pub api_key: String,
@@ -248,6 +270,11 @@ pub struct ProviderConfig {
     pub endpoints: ProviderEndpointConfig,
     #[serde(default)]
     pub auth: ProviderAuthConfig,
+    /// Optional OpenCode plugin serving this provider's requests (P6.2).
+    /// When set, the plugin decides the protocol per model; `api`/`wire`
+    /// must stay unset and `base_url`/`api_key` may be empty.
+    #[serde(default)]
+    pub plugin: Option<PluginRef>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -583,6 +610,18 @@ impl ServerConfig {
         let mut errors = Vec::new();
         let provider_names: Vec<&str> = self.providers.iter().map(|p| p.name.as_str()).collect();
 
+        for (i, provider) in self.providers.iter().enumerate() {
+            // Plugin providers may leave `base_url`/`api_key` empty (the
+            // plugin's loader supplies them), but the plugin decides the
+            // protocol per model, so an explicit `api`/`wire` is a conflict.
+            if provider.plugin.is_some() && (provider.api.is_some() || provider.wire.is_some()) {
+                errors.push(format!(
+                    "providers[{i}] (name=\"{}\"): `api`/`wire` must not be set together with `plugin` (the plugin decides the protocol per model)",
+                    provider.name
+                ));
+            }
+        }
+
         for (i, mr) in self.model_routes.iter().enumerate() {
             for name in mr.provider_names() {
                 if !provider_names.contains(&name.as_str()) {
@@ -710,6 +749,7 @@ mod tests {
             model_map,
             endpoints: Default::default(),
             auth: Default::default(),
+            plugin: None,
         }
     }
 
@@ -1103,6 +1143,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
                     auth: Default::default(),
+                    plugin: None,
                 },
                 ProviderConfig {
                     name: "openai".into(),
@@ -1115,6 +1156,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
                     auth: Default::default(),
+                    plugin: None,
                 },
             ],
             model_routes: vec![
@@ -1172,6 +1214,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
             model_map: [("*".into(), "gpt-4.1".into())].into(),
             endpoints: Default::default(),
             auth: Default::default(),
+            plugin: None,
         };
         let server = ServerSettings {
             host: "127.0.0.1".into(),
@@ -1231,6 +1274,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
                     auth: Default::default(),
+                    plugin: None,
                 },
                 ProviderConfig {
                     name: "backup".into(),
@@ -1243,6 +1287,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     model_map: HashMap::new(),
                     endpoints: Default::default(),
                     auth: Default::default(),
+                    plugin: None,
                 },
             ],
             model_routes: vec![ModelRouteConfig {
@@ -1313,6 +1358,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 model_map: [("gpt-4.1".into(), "gpt-4.1".into())].into(),
                 endpoints: Default::default(),
                 auth: Default::default(),
+                plugin: None,
             }],
             model_routes: vec![
                 ModelRouteConfig {

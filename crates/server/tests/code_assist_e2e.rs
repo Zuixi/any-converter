@@ -203,6 +203,7 @@ fn code_assist_provider(
         model_map: Default::default(),
         endpoints: Default::default(),
         auth: Default::default(),
+        plugin: None,
     }
 }
 
@@ -272,6 +273,11 @@ impl TestEnv {
             accounts: Arc::clone(&accounts),
             usage_logger: None,
             request_logger: None,
+            hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+                Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                    std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+                )),
+            )),
         });
         let app = create_router_with_state(state);
 
@@ -561,6 +567,11 @@ async fn revoked_401_marks_account_and_fails_over() {
         accounts,
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 

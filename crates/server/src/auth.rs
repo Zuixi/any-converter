@@ -150,6 +150,7 @@ mod tests {
                 scheme: Some(crate::config::AuthScheme::ApiKeyHeader),
                 headers: [("api-version".to_string(), "2024-10-21".to_string())].into(),
             },
+            plugin: None,
         };
 
         let headers = build_upstream_auth_headers_for_provider(&provider);

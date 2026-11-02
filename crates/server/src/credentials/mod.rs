@@ -132,6 +132,7 @@ mod tests {
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
             },
+            plugin: None,
         }
     }
 

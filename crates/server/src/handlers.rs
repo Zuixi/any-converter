@@ -16,12 +16,13 @@ use serde_json::Value;
 
 use crate::agent_id::agent_of;
 use crate::auth::{self, AuthError};
-use crate::config::{RouteStrategy, ServerConfig, UpstreamApi};
+use crate::config::{PluginRef, RouteStrategy, ServerConfig, UpstreamApi};
 use crate::credentials::token::{AuthErr401, classify_401};
 use crate::credentials::{AccountResolver, ApiKeySource, TokenSource};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
 use crate::namespace::{extract_namespace_map, patch_response_namespaces};
 use crate::observability::utf8_prefix;
+use crate::plugins::{LoadParams, ManagedHosts, PluginFetchParams, ProviderPlugin};
 use crate::proxy::build_upstream_url_for_provider;
 use crate::request_log::{RequestLogContext, RequestLogger};
 use crate::route_strategy::order_provider_names;
@@ -36,6 +37,8 @@ pub struct AppState {
     pub accounts: Arc<AccountResolver>,
     pub usage_logger: Option<Arc<UsageLogger>>,
     pub request_logger: Option<Arc<RequestLogger>>,
+    /// Plugin subprocess hosts for providers with a `plugin` entry (P6.2).
+    pub hosts: Arc<ManagedHosts>,
 }
 
 pub async fn handle_health() -> impl IntoResponse {
@@ -46,7 +49,31 @@ pub async fn handle_models(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let available = state.config.available_models();
+    let mut available = state.config.available_models();
+    // Plugin providers list their models at runtime (P6.2): fold the ids
+    // into the catalog. A plugin that cannot answer only loses its entries.
+    for provider in &state.config.providers {
+        let Some(plugin_ref) = &provider.plugin else {
+            continue;
+        };
+        let account = provider.account.clone().unwrap_or_default();
+        match state.hosts.models_for(plugin_ref, &account).await {
+            Ok(models) => {
+                for model in models {
+                    if !available.contains(&model.id) {
+                        available.push(model.id);
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "plugin models failed provider={} error={err}, omitting plugin models",
+                    provider.name
+                );
+            }
+        }
+    }
+
     let is_codex = params.contains_key("client_version");
 
     if is_codex {
@@ -555,6 +582,50 @@ fn path_for_route(route_info: RouteInfo, model: &str) -> String {
     }
 }
 
+/// The upstream API a request for `model` is shaped as.
+///
+/// Plugin providers resolve per model: the plugin's model list is consulted
+/// and the matched model's `npm` package selects the wire protocol
+/// ([`UpstreamApi::from_npm`]); a model the plugin does not list falls back
+/// to Chat. Every other provider uses its static [`ProviderConfig::effective_api`].
+async fn resolve_upstream_api(
+    state: &AppState,
+    provider: &crate::config::ProviderConfig,
+    model: &str,
+) -> Result<UpstreamApi, Response> {
+    let Some(plugin_ref) = &provider.plugin else {
+        return Ok(provider.effective_api());
+    };
+    let account = provider.account.clone().unwrap_or_default();
+    let models = state
+        .hosts
+        .models_for(plugin_ref, &account)
+        .await
+        .map_err(|err| {
+            error!(
+                "plugin models failed provider={} error={err}",
+                provider.name
+            );
+            api_error_response(
+                StatusCode::BAD_GATEWAY,
+                "plugin_error",
+                format!("plugin models: {err}"),
+            )
+        })?;
+    for plugin_model in &models {
+        if plugin_model.id == model
+            || (!plugin_model.api_id.is_empty() && plugin_model.api_id == model)
+        {
+            return Ok(UpstreamApi::from_npm(&plugin_model.npm));
+        }
+    }
+    warn!(
+        "plugin model `{model}` not listed by provider {}, falling back to Chat",
+        provider.name
+    );
+    Ok(UpstreamApi::Chat)
+}
+
 async fn convert_and_build_upstream(
     state: &AppState,
     headers: &HeaderMap,
@@ -562,8 +633,8 @@ async fn convert_and_build_upstream(
     route_info: RouteInfo,
     ctx: &mut RequestContext,
     provider: &crate::config::ProviderConfig,
+    api: UpstreamApi,
 ) -> Result<(Vec<u8>, String, Vec<(String, String)>), Box<Response>> {
-    let api = provider.effective_api();
     // Code Assist always speaks Gemini on the wire: conversion targets Gemini
     // (not `provider.format`) and the body rides inside the request envelope.
     let to_format = api.to_format();
@@ -613,19 +684,37 @@ async fn convert_and_build_upstream(
         }
     };
 
-    let url = match api {
-        UpstreamApi::CodeAssist => crate::wire::build_url(
-            UpstreamApi::CodeAssist,
-            &provider.base_url,
-            &ctx.upstream_model,
-            ctx.streaming,
-        ),
-        _ => build_upstream_url_for_provider(provider, &ctx.upstream_model, ctx.streaming),
+    let url = if provider.plugin.is_some() {
+        // Plugin transport: the URL is `loader.base_url + api.path(...)`,
+        // computed on the plugin branch of `process_request` where the
+        // loader options are known. The CodeAssist envelope above still
+        // applies — only the URL moves.
+        String::new()
+    } else {
+        match api {
+            UpstreamApi::CodeAssist => crate::wire::build_url(
+                UpstreamApi::CodeAssist,
+                &provider.base_url,
+                &ctx.upstream_model,
+                ctx.streaming,
+            ),
+            _ => build_upstream_url_for_provider(provider, &ctx.upstream_model, ctx.streaming),
+        }
     };
 
     // Account-based OAuth signing wins over the static API key path: when
     // `provider.account` is set, `provider.api_key` is ignored entirely.
-    let auth_headers: Vec<(String, String)> = if let Some(account_id) = &provider.account {
+    // Plugin providers sign their own requests (the loader owns the base
+    // URL, API key and headers), so the host never builds an Authorization
+    // header for them; provider-level extra headers still ride along.
+    let auth_headers: Vec<(String, String)> = if provider.plugin.is_some() {
+        provider
+            .auth
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    } else if let Some(account_id) = &provider.account {
         let account = match state.accounts.resolve(account_id).await {
             Ok(account) => account,
             Err(err) => {
@@ -789,15 +878,19 @@ async fn process_request(
             }
         };
 
-        let (converted_body, url, upstream_headers) =
-            match convert_and_build_upstream(state, headers, &body, route_info, &mut ctx, provider)
-                .await
-            {
-                Ok(v) => v,
-                Err(response) => return *response,
-            };
+        let api = match resolve_upstream_api(state, provider, &ctx.upstream_model).await {
+            Ok(api) => api,
+            Err(response) => return response,
+        };
+        let (converted_body, url, upstream_headers) = match convert_and_build_upstream(
+            state, headers, &body, route_info, &mut ctx, provider, api,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(response) => return *response,
+        };
 
-        let api = provider.effective_api();
         // Code Assist responses are enveloped in a response wrapper that the
         // proxy unwraps to plain Gemini before conversion.
         let response_format = api.to_format();
@@ -811,6 +904,52 @@ async fn process_request(
             ctx.streaming,
             attempt + 1
         );
+
+        // Plugin transport (P6.2): the request goes through the plugin's
+        // `fetch` hook instead of the local HTTP client. Everything up to
+        // here is shared — the body is already converted to the per-model
+        // wire protocol and the plugin URL is computed inside the branch.
+        if let Some(plugin_ref) = &provider.plugin {
+            match forward_via_plugin(
+                state,
+                plugin_ref,
+                provider,
+                api,
+                upstream_headers,
+                converted_body,
+                &mut ctx,
+                route_info,
+            )
+            .await
+            {
+                PluginOutcome::Answered(response, status) => {
+                    // The same retry rule the http path applies: a retryable
+                    // status moves to the next provider while one remains.
+                    // 401/403 pass through unchanged — the plugin owns its
+                    // credentials, so no local account refresh applies.
+                    if is_retryable_status(status) && attempt + 1 < provider_names.len() {
+                        warn!(
+                            "plugin provider returned {} request_id={} provider={}, trying next provider",
+                            status, ctx.req_id, provider.name
+                        );
+                        last_error =
+                            Some(format!("provider {} returned {}", provider.name, status));
+                        attempt += 1;
+                        continue;
+                    }
+                    return response;
+                }
+                PluginOutcome::Failed { error } => {
+                    warn!(
+                        "plugin forward failed request_id={} provider={} error={error}",
+                        ctx.req_id, provider.name
+                    );
+                    last_error = Some(error);
+                    attempt += 1;
+                    continue;
+                }
+            }
+        }
 
         if ctx.streaming {
             match crate::proxy::forward_streaming(
@@ -976,6 +1115,178 @@ async fn process_request(
     }
 
     upstream_error_response(&last_error.unwrap_or_else(|| "all providers failed".into()))
+}
+
+/// Outcome of one plugin-transport attempt in the failover loop.
+enum PluginOutcome {
+    /// The plugin answered; the shared retryable-status rule applies.
+    Answered(Response, StatusCode),
+    /// The plugin transport failed; move to the next provider.
+    Failed { error: String },
+}
+
+/// Send the already-converted request through the plugin's `fetch` hook.
+///
+/// URL construction mirrors magpie `pluginFetch`: the loader's base URL
+/// (trailing slash trimmed, falling back to the matched model's own `url`)
+/// plus [`UpstreamApi::path`]. A same-host guard keeps the plugin from
+/// steering credentialed requests anywhere but its own base host.
+#[allow(clippy::too_many_arguments)] // provider-branch boundary: state, config, and converted request parts
+async fn forward_via_plugin(
+    state: &AppState,
+    plugin_ref: &PluginRef,
+    provider: &crate::config::ProviderConfig,
+    api: UpstreamApi,
+    upstream_headers: Vec<(String, String)>,
+    converted_body: Vec<u8>,
+    ctx: &mut RequestContext,
+    route_info: RouteInfo,
+) -> PluginOutcome {
+    let account = provider.account.clone().unwrap_or_default();
+
+    // Lazily start (and reuse) the plugin subprocess; `host_for` restarts
+    // a dead process once.
+    let host = match state.hosts.host_for(plugin_ref).await {
+        Ok(host) => host,
+        Err(err) => {
+            error!("plugin start failed provider={} error={err}", provider.name);
+            return PluginOutcome::Failed {
+                error: format!("plugin {}: {err}", provider.name),
+            };
+        }
+    };
+    let provider_id = host.info().id.clone();
+
+    // The loader decides where and how the request is sent. The host never
+    // injects a local Authorization header for plugin providers — the
+    // plugin signs its own requests.
+    let loader = match ProviderPlugin::load(
+        &*host,
+        LoadParams {
+            provider: provider_id.clone(),
+            account: account.clone(),
+            proxy: None,
+        },
+    )
+    .await
+    {
+        Ok(options) => options,
+        Err(err) => {
+            error!("plugin load failed provider={} error={err}", provider.name);
+            return PluginOutcome::Failed {
+                error: format!("plugin {} load: {err}", provider.name),
+            };
+        }
+    };
+
+    // Model list: `npm` travels in the fetch params and identifies the wire
+    // the body was shaped as (`resolve_upstream_api` used the same list).
+    let models = match state.hosts.models_for(plugin_ref, &account).await {
+        Ok(models) => models,
+        Err(err) => {
+            error!(
+                "plugin models failed provider={} error={err}",
+                provider.name
+            );
+            return PluginOutcome::Failed {
+                error: format!("plugin {} models: {err}", provider.name),
+            };
+        }
+    };
+    let matched = models.iter().find(|m| {
+        m.id == ctx.upstream_model || (!m.api_id.is_empty() && m.api_id == ctx.upstream_model)
+    });
+
+    // base = loader.base_url (trailing slash trimmed), else the model's own
+    // `url`; an empty base means the plugin cannot send requests at all.
+    let mut base = loader.base_url.trim_end_matches('/').to_string();
+    if base.is_empty() {
+        base = matched
+            .map(|m| m.url.trim_end_matches('/').to_string())
+            .unwrap_or_default();
+    }
+    if base.is_empty() {
+        error!(
+            "plugin provider={} has nowhere to send its requests",
+            provider.name
+        );
+        return PluginOutcome::Answered(
+            api_error_response(
+                StatusCode::BAD_GATEWAY,
+                "plugin_error",
+                format!(
+                    "plugin says nowhere to send its requests (provider {})",
+                    provider.name
+                ),
+            ),
+            StatusCode::BAD_GATEWAY,
+        );
+    }
+
+    let url = format!("{base}{}", api.path(&ctx.upstream_model, ctx.streaming));
+    // Same-host guard (magpie pluginFetch): credentialed requests must stay
+    // on the loader's host; relative/hostless bases fail it outright.
+    if !crate::proxy::assert_same_host(&base, &url) {
+        error!(
+            "plugin provider={} tried to send a request outside its base host",
+            provider.name
+        );
+        return PluginOutcome::Answered(
+            api_error_response(
+                StatusCode::BAD_GATEWAY,
+                "plugin_error",
+                "plugin tried to send a request to a different host than its base URL",
+            ),
+            StatusCode::BAD_GATEWAY,
+        );
+    }
+
+    if let Some(ref mut log_ctx) = ctx.log_ctx {
+        log_ctx.upstream_url = url.clone();
+    }
+
+    let params = PluginFetchParams {
+        url,
+        method: "POST".to_string(),
+        headers: upstream_headers,
+        body: String::from_utf8_lossy(&converted_body).into_owned(),
+        provider: provider_id,
+        account,
+        model: ctx.upstream_model.clone(),
+        npm: matched.map(|m| m.npm.clone()).unwrap_or_default(),
+    };
+
+    let from_format = api.to_format();
+    let to_format = route_info.client_format;
+    if ctx.streaming {
+        match crate::proxy::forward_plugin_streaming(
+            &*host,
+            params,
+            from_format,
+            to_format,
+            api,
+            &ctx.ns_map,
+        )
+        .await
+        {
+            Ok(pair) => PluginOutcome::Answered(pair.0, pair.1),
+            Err(err) => PluginOutcome::Failed { error: err },
+        }
+    } else {
+        match crate::proxy::forward_plugin_non_streaming(
+            &*host,
+            params,
+            from_format,
+            to_format,
+            api,
+            &ctx.ns_map,
+        )
+        .await
+        {
+            Ok(pair) => PluginOutcome::Answered(pair.0, pair.1),
+            Err(err) => PluginOutcome::Failed { error: err },
+        }
+    }
 }
 
 /// Failover-loop action for one provider attempt after an account-aware
@@ -1278,6 +1589,7 @@ mod tests {
                     model_map: [("*".into(), "gpt-4.1".into())].into(),
                     endpoints: Default::default(),
                     auth: Default::default(),
+                    plugin: None,
                 }],
                 model_routes: vec![],
                 routes: vec![RouteConfig {
@@ -1291,6 +1603,11 @@ mod tests {
             accounts: AccountResolver::with_default_store(Client::new()),
             usage_logger: None,
             request_logger: None,
+            hosts: Arc::new(crate::plugins::ManagedHosts::with_store(Arc::new(
+                crate::plugins::PluginAuthStore::new(
+                    tempfile::tempdir().unwrap().path().join("auth.json"),
+                ),
+            ))),
         }
     }
 
@@ -1387,6 +1704,11 @@ mod tests {
             accounts: AccountResolver::with_default_store(Client::new()),
             usage_logger: None,
             request_logger: None,
+            hosts: Arc::new(crate::plugins::ManagedHosts::with_store(Arc::new(
+                crate::plugins::PluginAuthStore::new(
+                    tempfile::tempdir().unwrap().path().join("auth.json"),
+                ),
+            ))),
         });
 
         let route_info = RouteInfo {

@@ -34,6 +34,7 @@ fn provider(name: &str, format: Format, base_url: &str) -> ProviderConfig {
         model_map: [("*".into(), "claude-3-upstream".into())].into(),
         endpoints: Default::default(),
         auth: Default::default(),
+        plugin: None,
     }
 }
 
@@ -65,6 +66,11 @@ fn make_app(providers: Vec<ProviderConfig>, route_provider: &str, api_key: Optio
         ),
         usage_logger: None,
         request_logger: None,
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     }))
 }
 

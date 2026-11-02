@@ -33,6 +33,7 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         model_map: [("*".into(), "gpt-4".into())].into(),
         endpoints: Default::default(),
         auth: Default::default(),
+        plugin: None,
     }
 }
 
@@ -133,6 +134,11 @@ async fn request_log_non_streaming_captures_body_usage_latency() {
                 trace_max_preview_bytes: 2048,
             },
         ),
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
@@ -237,6 +243,11 @@ async fn request_log_streaming_captures_ttfb_and_sse_lines() {
                 trace_max_preview_bytes: 2048,
             },
         ),
+        hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
+            Arc::new(any_converter_server::plugins::PluginAuthStore::new(
+                std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
+            )),
+        )),
     });
     let app = create_router_with_state(state);
 
