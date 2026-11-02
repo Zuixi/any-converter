@@ -1,0 +1,9 @@
+name = "responses_over_claude"
+tool = "codex"
+client_format = "openai_responses"
+upstream_format = "claude"
+path = "/v1/responses"
+method = "POST"
+mode = "convert"
+stream = false
+normalize = ["id", "created_at"]

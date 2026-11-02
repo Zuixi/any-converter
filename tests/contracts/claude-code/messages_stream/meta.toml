@@ -1,0 +1,9 @@
+name = "messages_stream"
+tool = "claude-code"
+client_format = "claude"
+upstream_format = "claude"
+path = "/v1/messages"
+method = "POST"
+mode = "identity"
+stream = true
+normalize = ["message.id"]
