@@ -75,6 +75,46 @@ any-converter serve --config config.toml
 
 Your local gateway is now available at `http://127.0.0.1:8080`.
 
+## Subscription accounts (OAuth)
+
+Besides plain API keys, a provider can be served by a signed-in subscription
+account. The account signs its own requests, its tokens are refreshed
+automatically, and the wire it speaks is the vendor's own:
+
+| Account | Wire |
+|---|---|
+| `gemini:<email>` | Google Code Assist — `POST {base}/v1internal:generateContent`, body wrapped as `{"model":…,"request":<gemini body>}` |
+
+```bash
+# 1. Sign in (runs the browser PKCE flow; paste the callback address if the
+#    browser can't reach this machine)
+any-converter accounts add gemini
+
+# 2. See what is stored — ids and kinds only, never token material
+any-converter accounts list
+
+# 3. Point a provider at the account (the CLI prints this snippet for you)
+```
+
+```toml
+[[providers]]
+name = "gemini"
+format = "gemini"
+base_url = "https://cloudcode-pa.googleapis.com"
+api_key = ""                            # unused: the account signs
+account = "gemini:you@example.com"
+```
+
+An account replaces `api_key` entirely. A `401` that says the token expired
+refreshes and retries once; one that says the sign-in was revoked marks the
+account (in `revoked.json`, next to `secrets.json`) and fails over, and
+`any-converter accounts add` clears the mark on a fresh sign-in. Refreshes
+are serialized across processes by a lock file, so the CLI and the server
+never spend the same refresh token twice.
+
+Credentials live in `secrets.json` (mode `0600`, atomic writes, last-good
+backup); `ANY_CONVERTER_SECRETS` overrides the path.
+
 ## Common client setups
 
 ### Claude Code
