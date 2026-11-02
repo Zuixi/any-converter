@@ -1,6 +1,7 @@
 pub(crate) mod agent_id;
 pub mod auth;
 pub mod config;
+pub mod credentials;
 pub mod disk_quota;
 pub mod handlers;
 pub mod logging;
