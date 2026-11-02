@@ -17,11 +17,13 @@
 //! [`CopilotAccount`] (e.g. as a `Credential::OAuth`) is the caller's job.
 
 use std::{
-    sync::Arc,
-    time::{Duration, Instant},
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures_util::future::BoxFuture;
+use thiserror::Error;
 
 pub use super::gemini::SignInError;
 
@@ -433,6 +435,205 @@ fn user_code_hint(user_code: &str) -> String {
         Some((idx, _)) => format!("{}****", &lower[..idx]),
         None => lower,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Session exchange (magpie copilotToken → copilotSession)
+// ---------------------------------------------------------------------------
+
+/// GitHub endpoint that exchanges an OAuth token for a Copilot session
+/// token (magpie `CopilotTokenURL`).
+pub const COPILOT_SESSION_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+/// API base used when the exchange response omits `endpoints.api`.
+pub const COPILOT_DEFAULT_API_BASE: &str = "https://api.githubcopilot.com";
+/// `X-GitHub-Api-Version` attached to Copilot API calls (magpie
+/// `copilotAPIHeaders`).
+pub const COPILOT_API_VERSION: &str = "2026-01-09";
+
+/// Copilot client metadata headers (magpie `copilotHeaders`, account.go).
+const COPILOT_EDITOR_VERSION: &str = "vscode/1.140.0";
+const COPILOT_EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.68.0";
+const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
+const COPILOT_USER_AGENT: &str = "GitHubCopilotChat/0.68.0";
+
+/// Cached sessions with at most this many seconds of life left are
+/// re-exchanged (magpie re-exchanges once under two minutes remain).
+const SESSION_MIN_REMAINING_SECS: i64 = 120;
+
+/// A short-lived Copilot session token (magpie `copilotSession`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopilotSession {
+    /// Bearer token for Copilot API calls.
+    pub token: String,
+    /// Unix timestamp when the session expires.
+    pub expires_at: i64,
+    /// API base URL (`endpoints.api`); empty when the exchange response
+    /// omitted it (callers fall back to [`COPILOT_DEFAULT_API_BASE`]).
+    pub api_base: String,
+}
+
+/// Failures of the GitHub OAuth token → Copilot session exchange.
+#[derive(Debug, Error)]
+pub enum CopilotError {
+    /// GitHub rejected the OAuth token with 401/403: the sign-in is stale.
+    #[error("copilot refused the github token: {0}")]
+    Refused(String),
+    /// Transport or payload failure.
+    #[error("copilot session exchange failed: {0}")]
+    Exchange(String),
+}
+
+/// GitHub OAuth token → Copilot session token, cached per GitHub token
+/// (magpie `copilotToken`). Cached sessions with more than two minutes of
+/// life left are reused as-is; anything else triggers a fresh exchange that
+/// overwrites the cache entry.
+pub struct CopilotSessions {
+    cache: Mutex<HashMap<String, CopilotSession>>,
+    client: reqwest::Client,
+    token_url: String,
+}
+
+impl CopilotSessions {
+    /// Create the production session cache (public GitHub exchange URL).
+    pub fn new(client: reqwest::Client) -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
+            client,
+            token_url: COPILOT_SESSION_URL.to_string(),
+        }
+    }
+
+    /// Test hook: point the exchange at another URL.
+    pub fn with_token_url(mut self, url: &str) -> Self {
+        self.token_url = url.to_string();
+        self
+    }
+
+    /// Resolve `github_token` to a usable Copilot session.
+    ///
+    /// The cache is keyed by the GitHub token; entries with more than two
+    /// minutes of life left are served without an exchange.
+    pub async fn session(&self, github_token: &str) -> Result<CopilotSession, CopilotError> {
+        if let Some(session) = self.cached(github_token) {
+            return Ok(session);
+        }
+        let session = self.exchange(github_token).await?;
+        self.cache
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(github_token.to_string(), session.clone());
+        Ok(session)
+    }
+
+    /// The cached session when it has more than two minutes of life left.
+    fn cached(&self, github_token: &str) -> Option<CopilotSession> {
+        let cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        let session = cache.get(github_token)?;
+        let time_left = session.expires_at - unix_now();
+        (time_left > SESSION_MIN_REMAINING_SECS).then(|| session.clone())
+    }
+
+    /// One exchange: `GET {token_url}` with `Authorization: token <github>`
+    /// (magpie sends the literal `token` prefix, not `Bearer`).
+    async fn exchange(&self, github_token: &str) -> Result<CopilotSession, CopilotError> {
+        let response = self
+            .client
+            .get(&self.token_url)
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("token {github_token}"),
+            )
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header("Editor-Version", COPILOT_EDITOR_VERSION)
+            .header("Editor-Plugin-Version", COPILOT_EDITOR_PLUGIN_VERSION)
+            .header("Copilot-Integration-Id", COPILOT_INTEGRATION_ID)
+            .header(reqwest::header::USER_AGENT, COPILOT_USER_AGENT)
+            .send()
+            .await
+            .map_err(|error| {
+                CopilotError::Exchange(format!("token exchange request failed: {error}"))
+            })?;
+
+        let status = response.status();
+        let text = response.text().await.map_err(|error| {
+            CopilotError::Exchange(format!("token exchange read failed: {error}"))
+        })?;
+
+        // 401/403 mean the GitHub OAuth token itself is stale (magpie
+        // treats both as sign-in refusals); every other non-200 is a
+        // transport-level exchange failure.
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(CopilotError::Refused(format!(
+                "token exchange returned {status}: {text}"
+            )));
+        }
+        if !status.is_success() {
+            return Err(CopilotError::Exchange(format!(
+                "token exchange returned {status}: {text}"
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SessionPayload {
+            token: String,
+            #[serde(default)]
+            expires_at: i64,
+            #[serde(default)]
+            endpoints: SessionEndpoints,
+        }
+        #[derive(Default, serde::Deserialize)]
+        struct SessionEndpoints {
+            #[serde(default)]
+            api: String,
+        }
+        let payload: SessionPayload = serde_json::from_str(&text).map_err(|error| {
+            CopilotError::Exchange(format!(
+                "token exchange returned malformed payload: {error}"
+            ))
+        })?;
+
+        Ok(CopilotSession {
+            token: payload.token,
+            expires_at: payload.expires_at,
+            api_base: payload.endpoints.api,
+        })
+    }
+}
+
+/// Headers attached to Copilot API calls (magpie `copilotAPIHeaders`): the
+/// session token as `Authorization: Bearer`, the `X-GitHub-Api-Version`,
+/// and the Copilot client headers.
+pub fn copilot_api_headers(session_token: &str) -> Vec<(String, String)> {
+    vec![
+        (
+            "Authorization".to_string(),
+            format!("Bearer {session_token}"),
+        ),
+        (
+            "X-GitHub-Api-Version".to_string(),
+            COPILOT_API_VERSION.to_string(),
+        ),
+        (
+            "Editor-Version".to_string(),
+            COPILOT_EDITOR_VERSION.to_string(),
+        ),
+        (
+            "Editor-Plugin-Version".to_string(),
+            COPILOT_EDITOR_PLUGIN_VERSION.to_string(),
+        ),
+        (
+            "Copilot-Integration-Id".to_string(),
+            COPILOT_INTEGRATION_ID.to_string(),
+        ),
+        ("User-Agent".to_string(), COPILOT_USER_AGENT.to_string()),
+    ]
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -927,5 +1128,85 @@ mod tests {
 
         let back: super::super::Credential = serde_json::from_value(json).unwrap();
         assert_eq!(back, cred);
+    }
+
+    // ------------------------------------------------------------------
+    // Copilot session exchange (P7)
+    // ------------------------------------------------------------------
+
+    /// The cached session is reused only while more than two minutes of
+    /// life remain (magpie re-exchanges under the two-minute margin).
+    #[test]
+    fn cached_copilot_session_requires_two_minutes_of_life() {
+        let sessions = CopilotSessions::new(reqwest::Client::new());
+        let put = |session: CopilotSession| {
+            sessions
+                .cache
+                .lock()
+                .unwrap()
+                .insert("gho_cache".to_string(), session);
+        };
+
+        put(CopilotSession {
+            token: "fresh".to_string(),
+            expires_at: unix_now() + 3600,
+            api_base: String::new(),
+        });
+        assert_eq!(
+            sessions.cached("gho_cache").map(|s| s.token),
+            Some("fresh".to_string())
+        );
+
+        // Exactly two minutes left is not "more than two minutes".
+        put(CopilotSession {
+            token: "borderline".to_string(),
+            expires_at: unix_now() + SESSION_MIN_REMAINING_SECS,
+            api_base: String::new(),
+        });
+        assert_eq!(sessions.cached("gho_cache"), None);
+
+        // Under two minutes left, and already expired, also miss.
+        put(CopilotSession {
+            token: "stale".to_string(),
+            expires_at: unix_now() + 60,
+            api_base: String::new(),
+        });
+        assert_eq!(sessions.cached("gho_cache"), None);
+        put(CopilotSession {
+            token: "expired".to_string(),
+            expires_at: unix_now() - 1,
+            api_base: String::new(),
+        });
+        assert_eq!(sessions.cached("gho_cache"), None);
+
+        // Unknown GitHub tokens never hit the cache.
+        assert_eq!(sessions.cached("gho_other"), None);
+    }
+
+    #[test]
+    fn copilot_api_headers_match_magpie_copilot_api_headers() {
+        let headers = copilot_api_headers("cpt-session");
+        let get = |name: &str| {
+            headers
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("Authorization"), Some("Bearer cpt-session"));
+        assert_eq!(get("X-GitHub-Api-Version"), Some("2026-01-09"));
+        assert_eq!(get("Copilot-Integration-Id"), Some("vscode-chat"));
+        assert_eq!(get("Editor-Version"), Some("vscode/1.140.0"));
+        assert_eq!(get("Editor-Plugin-Version"), Some("copilot-chat/0.68.0"));
+        assert_eq!(get("User-Agent"), Some("GitHubCopilotChat/0.68.0"));
+    }
+
+    #[test]
+    fn defaults_match_magpie_copilot_wire() {
+        assert_eq!(
+            COPILOT_SESSION_URL,
+            "https://api.github.com/copilot_internal/v2/token"
+        );
+        assert_eq!(COPILOT_DEFAULT_API_BASE, "https://api.githubcopilot.com");
+        assert_eq!(COPILOT_API_VERSION, "2026-01-09");
     }
 }

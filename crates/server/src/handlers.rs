@@ -17,6 +17,9 @@ use serde_json::Value;
 use crate::agent_id::agent_of;
 use crate::auth::{self, AuthError};
 use crate::config::{PluginRef, RouteStrategy, ServerConfig, UpstreamApi};
+use crate::credentials::copilot::{
+    COPILOT_DEFAULT_API_BASE, CopilotError, CopilotSessions, copilot_api_headers,
+};
 use crate::credentials::token::{AuthErr401, classify_401};
 use crate::credentials::{AccountResolver, ApiKeySource, TokenSource};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
@@ -35,6 +38,9 @@ pub struct AppState {
     pub client: Client,
     /// First-class OAuth accounts (e.g. Gemini Code Assist sign-ins).
     pub accounts: Arc<AccountResolver>,
+    /// Copilot session cache (GitHub OAuth token → short-lived Copilot
+    /// session token) for `copilot:` account providers (P7).
+    pub copilot: Arc<CopilotSessions>,
     pub usage_logger: Option<Arc<UsageLogger>>,
     pub request_logger: Option<Arc<RequestLogger>>,
     /// Plugin subprocess hosts for providers with a `plugin` entry (P6.2).
@@ -587,14 +593,15 @@ fn path_for_route(route_info: RouteInfo, model: &str) -> String {
 /// Plugin providers resolve per model: the plugin's model list is consulted
 /// and the matched model's `npm` package selects the wire protocol
 /// ([`UpstreamApi::from_npm`]); a model the plugin does not list falls back
-/// to Chat. Every other provider uses its static [`ProviderConfig::effective_api`].
+/// to Chat. Every other provider resolves through [`ProviderConfig::api_for`]
+/// (per-model dispatch for Copilot accounts, P7).
 async fn resolve_upstream_api(
     state: &AppState,
     provider: &crate::config::ProviderConfig,
     model: &str,
 ) -> Result<UpstreamApi, Response> {
     let Some(plugin_ref) = &provider.plugin else {
-        return Ok(provider.effective_api());
+        return Ok(provider.api_for(model));
     };
     let account = provider.account.clone().unwrap_or_default();
     let models = state
@@ -684,7 +691,68 @@ async fn convert_and_build_upstream(
         }
     };
 
-    let url = if provider.plugin.is_some() {
+    // Copilot accounts (copilot:...) resolve the GitHub OAuth token and
+    // exchange it for a short-lived Copilot session (magpie copilotToken)
+    // before building the request: the session supplies both the API base
+    // URL and the auth headers.
+    let copilot_session = if provider.is_copilot_account() {
+        let account_id = provider.account.clone().unwrap_or_default();
+        let github = match state.accounts.resolve(&account_id).await {
+            Ok(account) => account,
+            Err(err) => {
+                error!(
+                    "account resolution failed request_id={} account={} error={err}",
+                    ctx.req_id, account_id
+                );
+                return Err(Box::new(api_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "account_error",
+                    format!("account {account_id}: {err}"),
+                )));
+            }
+        };
+        match state.copilot.session(&github.access_token).await {
+            Ok(session) => Some(session),
+            Err(CopilotError::Refused(message)) => {
+                error!(
+                    "copilot session refused request_id={} account={} error={message}",
+                    ctx.req_id, account_id
+                );
+                return Err(Box::new(api_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "account_error",
+                    format!("Copilot account {account_id}: {message}; please re-login (重新登录)"),
+                )));
+            }
+            Err(CopilotError::Exchange(message)) => {
+                error!(
+                    "copilot session exchange failed request_id={} account={} error={message}",
+                    ctx.req_id, account_id
+                );
+                return Err(Box::new(api_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "account_error",
+                    format!("Copilot account {account_id}: {message}"),
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
+    let url = if let Some(session) = &copilot_session {
+        // The session's `endpoints.api` overrides `provider.base_url`
+        // (defaulting to the public Copilot base); the path follows the
+        // P6.3 rule of stripping the leading `/v1` (magpie api.path()).
+        let base = if session.api_base.is_empty() {
+            COPILOT_DEFAULT_API_BASE
+        } else {
+            session.api_base.as_str()
+        };
+        let path = api.path(&ctx.upstream_model, ctx.streaming);
+        let path = path.strip_prefix("/v1").unwrap_or(&path);
+        format!("{}{path}", base.trim_end_matches('/'))
+    } else if provider.plugin.is_some() {
         // Plugin transport: the URL is `loader.base_url + api.path(...)`,
         // computed on the plugin branch of `process_request` where the
         // loader options are known. The CodeAssist envelope above still
@@ -707,7 +775,11 @@ async fn convert_and_build_upstream(
     // Plugin providers sign their own requests (the loader owns the base
     // URL, API key and headers), so the host never builds an Authorization
     // header for them; provider-level extra headers still ride along.
-    let auth_headers: Vec<(String, String)> = if provider.plugin.is_some() {
+    let auth_headers: Vec<(String, String)> = if let Some(session) = &copilot_session {
+        // Copilot wire: Bearer session token plus the Copilot client
+        // headers and API version (magpie copilotAPIHeaders).
+        copilot_api_headers(&session.token)
+    } else if provider.plugin.is_some() {
         provider
             .auth
             .headers
@@ -1610,6 +1682,7 @@ mod tests {
             accounts: AccountResolver::with_default_store(Client::new()),
             usage_logger: None,
             request_logger: None,
+            copilot: Arc::new(CopilotSessions::new(Client::new())),
             hosts: Arc::new(crate::plugins::ManagedHosts::with_store(Arc::new(
                 crate::plugins::PluginAuthStore::new(
                     tempfile::tempdir().unwrap().path().join("auth.json"),
@@ -1711,6 +1784,7 @@ mod tests {
             accounts: AccountResolver::with_default_store(Client::new()),
             usage_logger: None,
             request_logger: None,
+            copilot: Arc::new(CopilotSessions::new(Client::new())),
             hosts: Arc::new(crate::plugins::ManagedHosts::with_store(Arc::new(
                 crate::plugins::PluginAuthStore::new(
                     tempfile::tempdir().unwrap().path().join("auth.json"),
