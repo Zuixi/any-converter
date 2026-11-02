@@ -4,6 +4,7 @@
 
 ### Added
 
+- **`POST /v1/messages/count_tokens` endpoint**: Claude Code's token counting now returns `{"input_tokens": N}` instead of a 404 — requests are forwarded verbatim to Claude-native upstreams (with model mapping applied), and answered with a local UTF-8 byte-length estimate when the provider is not Claude or the upstream fails.
 - **English/Chinese UI language support**: Web and Desktop frontends now share a lightweight i18n provider with a persisted language toggle and automatic first-run language detection.
 - **Guided Desktop setup forms**: Desktop Providers and Routes now include provider presets, field labels, examples, strategy explanations, disabled invalid submits, and empty-state next steps; Playground now makes clear it converts payload format only and includes per-format examples.
 - **Structured request trace summaries**: Request logs can now include `trace.client`, `trace.upstream`, and `trace.response` summaries with message previews, tool definitions, tool calls, and tool results across OpenAI Responses, OpenAI Chat, Claude Messages, Gemini, and captured SSE output.
