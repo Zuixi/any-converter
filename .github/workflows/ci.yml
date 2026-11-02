@@ -27,6 +27,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: test
         run: cargo test --workspace
+      - name: contract fixtures hold no raw secrets
+        run: "! grep -rEn 'sk-(ant|proj|svc)-[A-Za-z0-9_-]{16,}' tests/contracts/"
 
   js:
     runs-on: ubuntu-latest
