@@ -1223,7 +1223,14 @@ async fn forward_via_plugin(
         );
     }
 
-    let url = format!("{base}{}", api.path(&ctx.upstream_model, ctx.streaming));
+    // The AI SDK's base ends where magpie's `/v1` does: magpie sends
+    // `base + TrimPrefix(rest, "/v1")` (plugins.go pluginFetch), so a
+    // loader base of https://api.githubcopilot.com asks for
+    // /chat/completions, and one of https://api.anthropic.com/v1 must not
+    // become /v1/v1/messages.
+    let path = api.path(&ctx.upstream_model, ctx.streaming);
+    let path = path.strip_prefix("/v1").unwrap_or(&path);
+    let url = format!("{base}{path}");
     // Same-host guard (magpie pluginFetch): credentialed requests must stay
     // on the loader's host; relative/hostless bases fail it outright.
     if !crate::proxy::assert_same_host(&base, &url) {
