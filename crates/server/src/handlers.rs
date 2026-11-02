@@ -249,6 +249,141 @@ fn parse_gemini_model_action(model_action: &str) -> Option<(String, bool)> {
     }
 }
 
+/// Handle Anthropic `count_tokens`: forward to Claude-native upstreams,
+/// otherwise answer with a local byte-length estimate.
+pub async fn handle_count_tokens(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+
+    let value: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(err) => {
+            return api_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                format!("invalid JSON body: {err}"),
+            );
+        }
+    };
+
+    let client_model = extract_model_from_body(&body).unwrap_or_default();
+
+    if let Some(response) = forward_count_tokens(&state, &body, &client_model).await {
+        return response;
+    }
+
+    Json(serde_json::json!({ "input_tokens": estimate_input_tokens(&value) })).into_response()
+}
+
+/// Forward `count_tokens` to the resolved provider when it natively speaks Claude.
+///
+/// Returns `None` when the caller should fall back to the local estimate.
+async fn forward_count_tokens(
+    state: &AppState,
+    body: &[u8],
+    client_model: &str,
+) -> Option<Response> {
+    let resolved = state.config.resolve_provider(client_model)?;
+    let provider = resolved
+        .provider_names
+        .first()
+        .and_then(|name| state.config.find_provider(name))?;
+    if provider.format != Format::Claude {
+        return None;
+    }
+
+    let mut forward_body = body.to_vec();
+    if resolved.upstream_model != client_model {
+        if let Err(err) =
+            patch_model_in_body(&mut forward_body, Format::Claude, &resolved.upstream_model)
+        {
+            warn!(
+                "failed to patch model for count_tokens provider={} error={err}",
+                provider.name
+            );
+        }
+    }
+
+    let url = format!(
+        "{}/v1/messages/count_tokens",
+        provider.base_url.trim_end_matches('/')
+    );
+
+    let mut upstream_headers = auth::build_upstream_auth_headers_for_provider(provider);
+    if !upstream_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("anthropic-version"))
+    {
+        upstream_headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
+    }
+    upstream_headers.push(("content-type".to_string(), "application/json".to_string()));
+
+    let mut request = state.client.post(&url);
+    for (name, value) in upstream_headers {
+        request = request.header(name, value);
+    }
+
+    match request.body(forward_body).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::OK);
+            match resp.bytes().await {
+                Ok(bytes) => Some(
+                    Response::builder()
+                        .status(status)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(bytes))
+                        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+                ),
+                Err(err) => {
+                    warn!(
+                        "count_tokens upstream body read failed provider={} error={err}, using local estimate",
+                        provider.name
+                    );
+                    None
+                }
+            }
+        }
+        Ok(resp) => {
+            warn!(
+                "count_tokens upstream returned {} provider={}, using local estimate",
+                resp.status(),
+                provider.name
+            );
+            None
+        }
+        Err(err) => {
+            warn!(
+                "count_tokens upstream request failed provider={} error={err}, using local estimate",
+                provider.name
+            );
+            None
+        }
+    }
+}
+
+/// Rough input-token estimate: total UTF-8 bytes of every string in the body / 4.
+fn estimate_input_tokens(body: &Value) -> u64 {
+    fn string_bytes(value: &Value) -> u64 {
+        match value {
+            Value::String(s) => s.len() as u64,
+            Value::Array(items) => items.iter().map(string_bytes).sum(),
+            Value::Object(map) => map.values().map(string_bytes).sum(),
+            _ => 0,
+        }
+    }
+    string_bytes(body) / 4
+}
+
 struct RequestContext {
     req_id: uuid::Uuid,
     start_time: std::time::Instant,
@@ -896,6 +1031,23 @@ mod tests {
         );
 
         assert_eq!(extract_session_id(&headers), None);
+    }
+
+    #[test]
+    fn estimate_input_tokens_sums_nested_string_bytes() {
+        let body = serde_json::json!({
+            "model": "claude-3",
+            "system": "abcd",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "abcdefgh"}]}],
+            "tools": [{"name": "tool", "description": "desc", "parameters": {"k": "vvvv"}}],
+        });
+        // strings: claude-3(8) + abcd(4) + user(4) + text(4) + abcdefgh(8) + tool(4) + desc(4) + k(1) + vvvv(4) = 41
+        assert_eq!(estimate_input_tokens(&body), 41 / 4);
+    }
+
+    #[test]
+    fn estimate_input_tokens_of_empty_body_is_zero() {
+        assert_eq!(estimate_input_tokens(&serde_json::json!({})), 0);
     }
 
     #[tokio::test]

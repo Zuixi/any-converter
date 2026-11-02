@@ -11,8 +11,8 @@ use reqwest::Client;
 
 use crate::config::ServerConfig;
 use crate::handlers::{
-    AppState, handle_claude, handle_gemini, handle_health, handle_model_retrieve, handle_models,
-    handle_openai_chat, handle_responses,
+    AppState, handle_claude, handle_count_tokens, handle_gemini, handle_health,
+    handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
 };
 
 /// Route metadata detected from the request path.
@@ -120,10 +120,12 @@ pub fn create_router_with_state(state: Arc<AppState>) -> Router {
         .route("/v1/chat/completions", post(handle_openai_chat))
         .route("/v1/messages", post(handle_claude))
         .route("/v1/responses", post(handle_responses))
+        .route("/v1/messages/count_tokens", post(handle_count_tokens))
         // Without /v1/ prefix (Codex CLI and some clients)
         .route("/chat/completions", post(handle_openai_chat))
         .route("/messages", post(handle_claude))
         .route("/responses", post(handle_responses))
+        .route("/messages/count_tokens", post(handle_count_tokens))
         .route("/v1beta/models/{*model_action}", post(handle_gemini))
         .fallback(handle_not_found)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
