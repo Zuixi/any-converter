@@ -91,6 +91,11 @@ impl PluginAuthStore {
         }
     }
 
+    /// The file path this store persists to.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The provider part of an `<provider>:<account>` account key
     /// (everything before the first `:`; keys without a colon map to
     /// themselves, mirroring OpenCode's `providerOf`).
