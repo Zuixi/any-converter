@@ -47,25 +47,16 @@ pub fn build_upstream_auth_headers(format: Format, api_key: &str) -> Vec<(String
 }
 
 /// Build upstream authentication headers from provider-level config.
+///
+/// Kept for backwards compatibility; delegates to the credentials module's
+/// [`ApiKeySource`](crate::credentials::ApiKeySource).
 pub fn build_upstream_auth_headers_for_provider(
     provider: &ProviderConfig,
 ) -> Vec<(String, String)> {
-    let scheme = provider
-        .auth
-        .scheme
-        .unwrap_or_else(|| default_auth_scheme(provider.format));
-    let mut headers = build_headers_for_scheme(scheme, &provider.api_key);
-    headers.extend(
-        provider
-            .auth
-            .headers
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone())),
-    );
-    headers
+    crate::credentials::ApiKeySource::for_provider(provider).materialize_headers()
 }
 
-fn default_auth_scheme(format: Format) -> AuthScheme {
+pub(crate) fn default_auth_scheme(format: Format) -> AuthScheme {
     match format {
         Format::OpenAIChat | Format::OpenAIResponses => AuthScheme::Bearer,
         Format::Claude => AuthScheme::Anthropic,
@@ -73,7 +64,7 @@ fn default_auth_scheme(format: Format) -> AuthScheme {
     }
 }
 
-fn build_headers_for_scheme(scheme: AuthScheme, api_key: &str) -> Vec<(String, String)> {
+pub(crate) fn build_headers_for_scheme(scheme: AuthScheme, api_key: &str) -> Vec<(String, String)> {
     match scheme {
         AuthScheme::Bearer => vec![("Authorization".to_string(), format!("Bearer {api_key}"))],
         AuthScheme::ApiKeyHeader => vec![("api-key".to_string(), api_key.to_string())],

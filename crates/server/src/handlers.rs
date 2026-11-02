@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::agent_id::agent_of;
 use crate::auth::{self, AuthError};
 use crate::config::{RouteStrategy, ServerConfig};
+use crate::credentials::{ApiKeySource, TokenSource};
 use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
 use crate::namespace::{extract_namespace_map, patch_response_namespaces};
 use crate::observability::utf8_prefix;
@@ -320,7 +321,10 @@ async fn forward_count_tokens(
         provider.base_url.trim_end_matches('/')
     );
 
-    let mut upstream_headers = auth::build_upstream_auth_headers_for_provider(provider);
+    let mut upstream_headers = ApiKeySource::for_provider(provider)
+        .auth_headers()
+        .await
+        .unwrap_or_default();
     if !upstream_headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("anthropic-version"))
@@ -543,7 +547,7 @@ fn path_for_route(route_info: RouteInfo, model: &str) -> String {
     }
 }
 
-fn convert_and_build_upstream(
+async fn convert_and_build_upstream(
     state: &AppState,
     headers: &HeaderMap,
     body: &[u8],
@@ -586,7 +590,10 @@ fn convert_and_build_upstream(
 
     let url = build_upstream_url_for_provider(provider, &ctx.upstream_model, ctx.streaming);
 
-    let auth_headers = auth::build_upstream_auth_headers_for_provider(provider);
+    let auth_headers = ApiKeySource::for_provider(provider)
+        .auth_headers()
+        .await
+        .unwrap_or_default();
     let upstream_headers = crate::proxy::build_upstream_headers(
         headers,
         &auth_headers,
@@ -710,6 +717,7 @@ async fn process_request(
 
         let (converted_body, url, upstream_headers) =
             match convert_and_build_upstream(state, headers, &body, route_info, &mut ctx, provider)
+                .await
             {
                 Ok(v) => v,
                 Err(response) => return *response,
