@@ -137,7 +137,8 @@ pub enum UpstreamApi {
     Gemini,
     #[serde(rename = "code_assist")]
     CodeAssist,
-    /// Reserved for P7 deserialization only; [`Self::api_for`] never returns it.
+    /// Deserialization-only shim for legacy `api = "copilot"` configs;
+    /// neither [`Self::api_for`] nor [`copilot_api`] ever returns it.
     #[serde(rename = "copilot")]
     Copilot,
 }
@@ -196,6 +197,27 @@ impl UpstreamApi {
             // OpenAI Chat.
             _ => UpstreamApi::Chat,
         }
+    }
+}
+
+/// The wire a Copilot model is served on (magpie `copilotAPI`): gpt-5 and
+/// up — except `gpt-5-mini` — answer `/responses`; everything else
+/// (`claude-*`, earlier gpts) answers `/chat/completions`.
+///
+/// Parsed by hand instead of adding a regex dependency: magpie's `^gpt-(\d+)`
+/// is `strip_prefix("gpt-")` followed by the leading digit run.
+pub fn copilot_api(model: &str) -> UpstreamApi {
+    let Some(rest) = model.strip_prefix("gpt-") else {
+        return UpstreamApi::Chat;
+    };
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let Ok(version) = digits.parse::<u32>() else {
+        return UpstreamApi::Chat;
+    };
+    if version >= 5 && !model.starts_with("gpt-5-mini") {
+        UpstreamApi::Responses
+    } else {
+        UpstreamApi::Chat
     }
 }
 
@@ -533,10 +555,23 @@ impl ProviderConfig {
 
     /// Resolve the API for a specific upstream model.
     ///
-    /// Per-model protocol dispatch arrives with the plugin model (P6.1);
-    /// today every model of a provider speaks [`Self::effective_api`].
-    pub fn api_for(&self, _model: &str) -> UpstreamApi {
-        self.effective_api()
+    /// Copilot accounts dispatch per model (P7, magpie `copilotAPI` via
+    /// [`copilot_api`]); every other provider speaks [`Self::effective_api`].
+    pub fn api_for(&self, model: &str) -> UpstreamApi {
+        if self.is_copilot_account() {
+            copilot_api(model)
+        } else {
+            self.effective_api()
+        }
+    }
+
+    /// Whether this provider signs in through a Copilot account
+    /// (`account` id starts with `copilot:`).
+    pub fn is_copilot_account(&self) -> bool {
+        self.account
+            .as_deref()
+            .and_then(|account| account.split(':').next())
+            == Some("copilot")
     }
 
     /// Resolve a client model name to the upstream model using model_map.
@@ -1027,6 +1062,45 @@ wire = "code_assist"
         assert_eq!(provider.account.as_deref(), Some("gemini:me@example.com"));
         assert_eq!(provider.wire, Some(WireCompat::CodeAssist));
         assert_eq!(provider.effective_api(), UpstreamApi::CodeAssist);
+    }
+
+    #[test]
+    fn test_copilot_api_per_model_dispatch() {
+        for (model, expected) in [
+            ("gpt-5", UpstreamApi::Responses),
+            ("gpt-5.6-luna", UpstreamApi::Responses),
+            ("gpt-50", UpstreamApi::Responses),
+            ("gpt-5-mini", UpstreamApi::Chat),
+            // magpie's check is a HasPrefix on the whole model name.
+            ("gpt-5-mini-2", UpstreamApi::Chat),
+            ("gpt-4.1", UpstreamApi::Chat),
+            ("claude-sonnet-4-5", UpstreamApi::Chat),
+            ("gpt-", UpstreamApi::Chat),
+            ("claude-opus-4-1", UpstreamApi::Chat),
+            ("gemini-pro", UpstreamApi::Chat),
+        ] {
+            assert_eq!(copilot_api(model), expected, "model = {model:?}");
+        }
+    }
+
+    #[test]
+    fn test_api_for_copilot_account_dispatches_per_model() {
+        let mut provider = sample_provider(HashMap::new());
+        assert!(!provider.is_copilot_account());
+        assert_eq!(provider.api_for("gpt-5"), UpstreamApi::Chat);
+
+        provider.account = Some("copilot:octocat".into());
+        assert!(provider.is_copilot_account());
+        assert_eq!(provider.api_for("gpt-5.6-luna"), UpstreamApi::Responses);
+        assert_eq!(provider.api_for("claude-sonnet-4-5"), UpstreamApi::Chat);
+
+        // Non-Copilot accounts keep effective_api() regardless of model.
+        provider.account = Some("gemini:me@example.com".into());
+        assert!(!provider.is_copilot_account());
+        assert_eq!(provider.api_for("gpt-5"), UpstreamApi::CodeAssist);
+        provider.account = None;
+        assert!(!provider.is_copilot_account());
+        assert_eq!(provider.api_for("gpt-5"), provider.effective_api());
     }
 
     #[test]

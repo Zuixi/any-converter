@@ -142,6 +142,9 @@ impl Harness {
             accounts: AccountResolver::with_default_store(Client::new()),
             usage_logger: None,
             request_logger: None,
+            copilot: Arc::new(
+                any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+            ),
             hosts: Arc::clone(&hosts),
         });
         let app = create_router_with_state(state);

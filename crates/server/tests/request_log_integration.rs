@@ -134,6 +134,9 @@ async fn request_log_non_streaming_captures_body_usage_latency() {
                 trace_max_preview_bytes: 2048,
             },
         ),
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -242,6 +245,9 @@ async fn request_log_streaming_captures_ttfb_and_sse_lines() {
                 trace_enabled: true,
                 trace_max_preview_bytes: 2048,
             },
+        ),
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(

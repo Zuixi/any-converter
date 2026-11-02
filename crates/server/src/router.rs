@@ -11,6 +11,7 @@ use reqwest::Client;
 
 use crate::config::ServerConfig;
 use crate::credentials::AccountResolver;
+use crate::credentials::copilot::CopilotSessions;
 use crate::handlers::{
     AppState, handle_claude, handle_count_tokens, handle_gemini, handle_health,
     handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
@@ -112,6 +113,7 @@ pub fn create_router(config: ServerConfig) -> Router {
 
     let client = Client::new();
     let accounts = AccountResolver::with_default_store(client.clone());
+    let copilot = Arc::new(CopilotSessions::new(client.clone()));
     let hosts = Arc::new(ManagedHosts::with_store(Arc::new(PluginAuthStore::new(
         plugin_auth_path(),
     ))));
@@ -119,6 +121,7 @@ pub fn create_router(config: ServerConfig) -> Router {
         config,
         client,
         accounts,
+        copilot,
         usage_logger,
         request_logger,
         hosts,

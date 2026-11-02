@@ -71,6 +71,9 @@ async fn non_streaming_proxy() {
         client,
         usage_logger: None,
         request_logger: None,
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -172,6 +175,9 @@ async fn client_headers_passthrough_to_upstream() {
         client,
         usage_logger: None,
         request_logger: None,
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -257,6 +263,9 @@ async fn streaming_proxy_text() {
         client,
         usage_logger: None,
         request_logger: None,
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -327,6 +336,9 @@ async fn provider_failover_priority() {
         client,
         usage_logger: None,
         request_logger: None,
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -380,6 +392,9 @@ async fn auth_missing_returns_401() {
         client,
         usage_logger: None,
         request_logger: None,
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -428,6 +443,9 @@ async fn auth_invalid_returns_401() {
         client,
         usage_logger: None,
         request_logger: None,
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -486,6 +504,9 @@ async fn upstream_error_returns_502() {
         client,
         usage_logger: None,
         request_logger: None,
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -528,6 +549,9 @@ async fn health_returns_ok() {
         client,
         usage_logger: None,
         request_logger: None,
+        copilot: Arc::new(
+            any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
+        ),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
