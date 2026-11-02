@@ -80,6 +80,40 @@ pub async fn handle_models(
         }
     }
 
+    // Code Assist accounts offer their models dynamically (P8): ask the
+    // account the way Gemini CLI does and fold the result in after the
+    // static catalog. `list_models` itself falls back to the full static
+    // table when Code Assist can't be asked; the Err arm only guards
+    // against a future strictness change and keeps the static catalog.
+    for provider in &state.config.providers {
+        if provider.effective_api() != UpstreamApi::CodeAssist {
+            continue;
+        }
+        let Some(account_id) = provider.account.as_deref() else {
+            continue;
+        };
+        let base = if provider.base_url.is_empty() {
+            "https://cloudcode-pa.googleapis.com".to_string()
+        } else {
+            provider.base_url.clone()
+        };
+        match state.accounts.list_models(account_id, &base).await {
+            Ok(models) => {
+                for (id, _name) in models {
+                    if !available.contains(&id) {
+                        available.push(id);
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "code assist models unavailable provider={} error={err}, keeping the static catalog",
+                    provider.name
+                );
+            }
+        }
+    }
+
     let is_codex = params.contains_key("client_version");
 
     if is_codex {

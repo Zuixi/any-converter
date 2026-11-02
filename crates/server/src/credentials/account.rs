@@ -7,8 +7,14 @@
 //! magpie's refresh margin), and single-flights concurrent refreshes so a
 //! rotated refresh token is never spent twice.
 //!
-//! Model discovery (`loadCodeAssist`) deliberately lives in a later task:
-//! the model inventory comes from config / `model_map`, not from the account.
+//! Model discovery ([`AccountResolver::project`] /
+//! [`AccountResolver::list_models`]) asks Code Assist's `loadCodeAssist` the
+//! way Gemini CLI does: it finds the Google Cloud project the account's
+//! requests go to (onboarding the account the first time), reads the
+//! experiment flags, and offers the models those experiments select from the
+//! static Gemini table. The project and flags are cached per account for an
+//! hour; when Code Assist can't be asked, the full static table stands in
+//! (magpie's fallback semantics).
 //!
 //! Refreshes are additionally serialized **across processes** through a
 //! [`crate::lockfile::FileLock`] next to the secrets file (the CLI and the
@@ -28,6 +34,7 @@ use thiserror::Error;
 
 use super::Credential;
 use super::gemini::GeminiEndpoints;
+use super::gemini_models::{self, GeminiFlags};
 use super::store::{self, FileSecretStore, SecretStore, SecretStoreError};
 use crate::lockfile::FileLock;
 
@@ -36,6 +43,14 @@ use crate::lockfile::FileLock;
 pub struct ResolvedAccount {
     pub id: String,
     pub access_token: String,
+}
+
+/// The Code Assist project the account's requests go to, and the plan the
+/// account is on (magpie `googleProject`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeAssistProject {
+    pub id: String,
+    pub plan: String,
 }
 
 /// Failures of account resolution / refresh.
@@ -57,6 +72,13 @@ pub enum AccountError {
     /// `invalid_grant` / `refresh_token_reused`; sign in again.
     #[error("account {0} is revoked ({1}); please sign in again (`any-converter accounts add`)")]
     Revoked(String, String),
+    /// Code Assist's project/model endpoints failed (HTTP or parse).
+    #[error("code assist: {0}")]
+    CodeAssist(String),
+    /// The account's sign-in is served to Code Assist Standard/Enterprise,
+    /// which bill a Google Cloud project the user must name.
+    #[error("{0}")]
+    NeedsProject(String),
     /// The cross-process refresh lock could not be acquired.
     #[error("refresh lock error: {0}")]
     Lock(#[from] crate::lockfile::LockError),
@@ -70,6 +92,14 @@ pub enum AccountError {
 
 /// How early before `expires_at_unix` a token counts as expired.
 pub const REFRESH_MARGIN_SECS: i64 = 300;
+
+/// How long a found Code Assist project (and its experiment flags) stays
+/// cached per account (magpie caches the flags for an hour).
+pub const PROJECT_CACHE_SECS: i64 = 3600;
+
+/// How long onboarding waits between `onboardUser` asks (magpie
+/// `onboardPoll`).
+const ONBOARD_POLL: Duration = Duration::from_secs(2);
 
 /// How long [`AccountResolver::resolve`] waits for the cross-process
 /// refresh lock before failing the request.
@@ -117,6 +147,8 @@ pub struct AccountResolver {
     lock_timeout: Duration,
     /// Cached `revoked.json` state (see [`RevokedCache`]).
     revoked: Mutex<RevokedCache>,
+    /// In-memory project cache: account id → (project, flags, at).
+    projects: Mutex<HashMap<String, (CodeAssistProject, GeminiFlags, i64)>>,
 }
 
 impl AccountResolver {
@@ -140,6 +172,7 @@ impl AccountResolver {
             flight_locks: Mutex::new(HashMap::new()),
             lock_timeout: LOCK_TIMEOUT,
             revoked: Mutex::new(RevokedCache::default()),
+            projects: Mutex::new(HashMap::new()),
         }
     }
 
@@ -351,15 +384,202 @@ impl AccountResolver {
         })
     }
 
-    /// Code Assist model discovery is not part of this task: the model list
-    /// is configured via `config.toml` / `model_map`, not fetched from the
-    /// account. Always returns an empty list.
-    pub async fn load_models(
+    /// The Code Assist project the account's requests go to, found the way
+    /// Gemini CLI does it (magpie `googleAccount.project`). Cached per
+    /// account for an hour.
+    ///
+    /// `project_override` is the GCP project the user named; it wins when
+    /// Code Assist asks the user for one. It is meant to come from the
+    /// provider's `project` config field, which is not wired up yet (out of
+    /// scope for this change), so callers currently pass `None`.
+    pub async fn project(
         &self,
-        _account_id: &str,
-        _base: &str,
-    ) -> Result<Vec<String>, AccountError> {
-        Ok(Vec::new())
+        account_id: &str,
+        base: &str,
+        project_override: Option<&str>,
+    ) -> Result<CodeAssistProject, AccountError> {
+        Ok(self
+            .project_and_flags(account_id, base, project_override)
+            .await?
+            .0)
+    }
+
+    /// The models Code Assist offers the account (magpie `models()`).
+    ///
+    /// The project and the experiment flags come from one `loadCodeAssist`
+    /// reply and are cached together (see [`Self::project`]);
+    /// [`gemini_models::offered`] then applies Gemini CLI's skip table.
+    /// Preview models need quota evidence (`listModels`), which this
+    /// project doesn't read, so `preview` stays `false` until a quota
+    /// source exists. When Code Assist can't be asked — any failure — the
+    /// full static table stands in (magpie's fallback semantics), with one
+    /// warning.
+    pub async fn list_models(
+        &self,
+        account_id: &str,
+        base: &str,
+    ) -> Result<Vec<(String, String)>, AccountError> {
+        match self.project_and_flags(account_id, base, None).await {
+            Ok((_, flags)) => Ok(gemini_models::offered(flags, false)),
+            Err(err) => {
+                log::warn!(
+                    "code assist model discovery failed for account {account_id}: {err}; \
+                     falling back to the full static table"
+                );
+                Ok(gemini_models::GEMINI_MODELS
+                    .iter()
+                    .map(|(id, name)| ((*id).to_string(), (*name).to_string()))
+                    .collect())
+            }
+        }
+    }
+
+    /// [`Self::project`] plus the experiment flags from the same reply;
+    /// both cached for an hour under the account id.
+    async fn project_and_flags(
+        &self,
+        account_id: &str,
+        base: &str,
+        project_override: Option<&str>,
+    ) -> Result<(CodeAssistProject, GeminiFlags), AccountError> {
+        if let Some((project, flags, at)) = self.projects_get(account_id) {
+            if unix_now() - at < PROJECT_CACHE_SECS {
+                return Ok((project, flags));
+            }
+        }
+
+        let account = self.resolve(account_id).await?;
+        let base = base.trim_end_matches('/');
+
+        let mut metadata = serde_json::json!({
+            "ideType": "IDE_UNSPECIFIED",
+            "platform": "PLATFORM_UNSPECIFIED",
+            "pluginType": "GEMINI",
+        });
+        let mut body = serde_json::json!({});
+        if let Some(want) = project_override {
+            metadata["duetProject"] = serde_json::json!(want);
+            body["cloudaicompanionProject"] = serde_json::json!(want);
+        }
+        body["metadata"] = metadata.clone();
+
+        let url = format!("{base}/v1internal:loadCodeAssist");
+        let reply = self
+            .code_assist_post(&url, &account.access_token, &body)
+            .await?;
+
+        let flags = gemini_models::flags_from_experiments(&reply);
+        let project = companion_project(reply.get("cloudaicompanionProject"));
+        let plan = plan_of(&reply);
+
+        // The account is already set up: its project rides in the reply,
+        // or the one the user named stands in when Code Assist asks for
+        // one.
+        if reply
+            .get("currentTier")
+            .is_some_and(serde_json::Value::is_object)
+        {
+            if !project.is_empty() {
+                let found = CodeAssistProject { id: project, plan };
+                self.projects_put(account_id, found.clone(), flags);
+                return Ok((found, flags));
+            }
+            if let Some(want) = project_override {
+                let found = CodeAssistProject {
+                    id: want.to_string(),
+                    plan,
+                };
+                self.projects_put(account_id, found.clone(), flags);
+                return Ok((found, flags));
+            }
+            return Err(needs_project(account_id, ""));
+        }
+
+        // No tier: take the default one and onboard the account, unless
+        // that tier bills a project the user must name first.
+        let tier = default_tier(&reply);
+        if tier.user_defined && project_override.is_none() {
+            return Err(needs_project(account_id, &ineligible_reason(&reply)));
+        }
+
+        let mut req = serde_json::json!({ "tierId": tier.id, "metadata": metadata });
+        if tier.id != "free-tier" {
+            req["cloudaicompanionProject"] = serde_json::json!(project_override.unwrap_or(""));
+        }
+        let mut id = self.onboard(base, &account.access_token, &req).await?;
+        if id.is_empty() {
+            id = project_override.unwrap_or("").to_string();
+        }
+        if id.is_empty() {
+            return Err(needs_project(account_id, ""));
+        }
+        let found = CodeAssistProject {
+            id,
+            plan: tier.name,
+        };
+        self.projects_put(account_id, found.clone(), flags);
+        Ok((found, flags))
+    }
+
+    /// Ask Code Assist to set the account up (`onboardUser`), polling the
+    /// long-running reply the way magpie does.
+    async fn onboard(
+        &self,
+        base: &str,
+        access_token: &str,
+        req: &serde_json::Value,
+    ) -> Result<String, AccountError> {
+        let url = format!("{base}/v1internal:onboardUser");
+        for _ in 0..5 {
+            let reply = self.code_assist_post(&url, access_token, req).await?;
+            let project = reply
+                .get("response")
+                .and_then(|r| r.get("cloudaicompanionProject"))
+                .map(|p| companion_project(Some(p)))
+                .unwrap_or_default();
+            let done = reply
+                .get("done")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if done || !project.is_empty() {
+                return Ok(project);
+            }
+            tokio::time::sleep(ONBOARD_POLL).await;
+        }
+        Err(AccountError::CodeAssist(
+            "setting the account up for Code Assist is taking long; try again in a minute"
+                .to_string(),
+        ))
+    }
+
+    /// POST one of Code Assist's methods, signed with the account's access
+    /// token (magpie `googleAccount.call`).
+    async fn code_assist_post(
+        &self,
+        url: &str,
+        access_token: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, AccountError> {
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(access_token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| AccountError::CodeAssist(format!("{url} request failed: {e}")))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|e| AccountError::CodeAssist(format!("{url} read failed: {e}")))?;
+        if !status.is_success() {
+            return Err(AccountError::CodeAssist(format!(
+                "{url} returned {status}: {text}"
+            )));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| AccountError::CodeAssist(format!("{url} returned malformed payload: {e}")))
     }
 
     /// Mark `account_id` revoked with reason `why`, persisting the marker
@@ -468,6 +688,21 @@ impl AccountResolver {
             .insert(account_id.to_string(), (access_token, expires_at_unix));
     }
 
+    fn projects_get(&self, account_id: &str) -> Option<(CodeAssistProject, GeminiFlags, i64)> {
+        self.projects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(account_id)
+            .cloned()
+    }
+
+    fn projects_put(&self, account_id: &str, project: CodeAssistProject, flags: GeminiFlags) {
+        self.projects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(account_id.to_string(), (project, flags, unix_now()));
+    }
+
     /// Get-or-create the per-account single-flight refresh lock.
     fn flight_lock(&self, account_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self.flight_locks.lock().unwrap_or_else(|e| e.into_inner());
@@ -485,6 +720,148 @@ fn expired(expires_at_unix: Option<i64>) -> bool {
         None => false,
         Some(at) => unix_now() + REFRESH_MARGIN_SECS >= at,
     }
+}
+
+/// Code Assist's project arrives as a bare id string or as `{id, name}`
+/// (magpie `companionProject`).
+fn companion_project(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(id)) => id.clone(),
+        Some(serde_json::Value::Object(obj)) => obj
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// One tier of a `loadCodeAssist` reply, as project discovery reads it.
+struct CodeAssistTier {
+    id: String,
+    name: String,
+    user_defined: bool,
+}
+
+fn tier_view(tier: &serde_json::Value) -> CodeAssistTier {
+    CodeAssistTier {
+        id: tier
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        name: tier
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        user_defined: tier
+            .get("userDefinedCloudaicompanionProject")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+/// The tier to onboard to: the default one, the first, or a legacy tier
+/// that always wants a user project (magpie `defaultTier`).
+fn default_tier(reply: &serde_json::Value) -> CodeAssistTier {
+    let tiers: &[serde_json::Value] = reply
+        .get("allowedTiers")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for tier in tiers {
+        if tier
+            .get("isDefault")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return tier_view(tier);
+        }
+    }
+    match tiers.first() {
+        Some(tier) => tier_view(tier),
+        None => CodeAssistTier {
+            id: "legacy-tier".to_string(),
+            name: String::new(),
+            user_defined: true,
+        },
+    }
+}
+
+/// The plan the account is on: the paid tier's name, else the current
+/// tier's name or id (magpie `plan`).
+fn plan_of(reply: &serde_json::Value) -> String {
+    let paid = reply.get("paidTier").filter(|tier| tier.is_object());
+    if let Some(tier) = paid {
+        if tier
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+        {
+            if let Some(plan) = tier_plan(tier) {
+                return plan;
+            }
+        }
+    }
+    reply
+        .get("currentTier")
+        .filter(|tier| tier.is_object())
+        .and_then(tier_plan)
+        .unwrap_or_default()
+}
+
+/// A tier's name, or its id when unnamed.
+fn tier_plan(tier: &serde_json::Value) -> Option<String> {
+    let name = tier
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !name.is_empty() {
+        return Some(name.to_string());
+    }
+    let id = tier
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !id.is_empty() {
+        return Some(id.to_string());
+    }
+    None
+}
+
+/// Google's reason the account is ineligible, when it gave one (magpie
+/// `needsProject`'s why).
+fn ineligible_reason(reply: &serde_json::Value) -> String {
+    reply
+        .get("ineligibleTiers")
+        .and_then(serde_json::Value::as_array)
+        .map(|tiers| {
+            tiers
+                .iter()
+                .filter_map(|tier| {
+                    tier.get("reasonMessage")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .find(|message| !message.is_empty())
+                .unwrap_or("")
+        })
+        .unwrap_or("")
+        .to_string()
+}
+
+/// A Standard/Enterprise account needs a Google Cloud project named
+/// (magpie `needsProject`).
+fn needs_project(account_id: &str, why: &str) -> AccountError {
+    let mut msg = format!(
+        "Google serves this sign-in only to Gemini Code Assist Standard and Enterprise, \
+         which bill a Google Cloud project: name one with the provider's `project` field \
+         in config.toml for account {account_id}"
+    );
+    if !why.is_empty() {
+        msg = format!("{why} — {msg}");
+    }
+    AccountError::NeedsProject(msg)
 }
 
 fn unix_now() -> i64 {
