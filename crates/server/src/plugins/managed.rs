@@ -107,6 +107,17 @@ impl ManagedHosts {
         Ok(host)
     }
 
+    /// Start (or reuse) the host for `r` and return the providers it serves.
+    ///
+    /// Each host process loads one spec, so this is the host's `info()` —
+    /// the init reply's provider entry carrying `id`, `name`, and `methods`.
+    /// Plugins that would serve several providers would need the full init
+    /// reply surfaced by the host.
+    pub async fn providers(&self, r: &PluginRef) -> Result<Vec<PluginProviderInfo>, PluginError> {
+        let host = self.host_for(r).await?;
+        Ok(vec![host.info().clone()])
+    }
+
     /// The models the plugin lists for `account`, cached for 60 seconds.
     pub async fn models_for(
         &self,

@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use any_converter_core::convert::{
     Format, convert_request, convert_response, convert_stream_event,
@@ -9,13 +10,17 @@ use any_converter_core::convert::{
 use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
-    LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
-    secrets_path, warn_if_world_readable,
+    LoggingConfig, ModelRouteConfig, PluginRef, ProviderConfig, RouteStrategy, ServerConfig,
+    ServerSettings, secrets_path, warn_if_world_readable,
 };
 use any_converter_server::credentials::account::clear_revoked_default_store;
 use any_converter_server::credentials::{
     CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, GeminiAccount, GeminiEndpoints,
     GeminiSignIn, SecretStore, gemini::DEFAULT_SIGN_IN_TIMEOUT,
+};
+use any_converter_server::plugins::{
+    AuthMethodKind, Authorization, AuthorizeParams, CallbackParams, ManagedHosts, PluginAuthStore,
+    PluginProviderInfo, ProviderPlugin,
 };
 use any_converter_server::{logging::init_logging, run};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -95,14 +100,28 @@ enum Commands {
         #[command(subcommand)]
         command: AccountsCommand,
     },
+    /// Manage installed OpenCode plugin packages
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
 }
 
 #[derive(Subcommand)]
 enum AccountsCommand {
     /// Sign in with a provider and store the account
     Add {
-        /// Provider to sign in with
-        provider: AccountsProvider,
+        /// Provider to sign in with (built-ins: gemini, copilot)
+        provider: String,
+        /// Plugin spec; signs in to the plugin's provider instead of a built-in
+        #[arg(long)]
+        plugin: Option<String>,
+        /// Provider id the plugin serves (defaults to the plugin's only provider)
+        #[arg(long)]
+        provider_id: Option<String>,
+        /// Method index (defaults to 0)
+        #[arg(long)]
+        method: Option<usize>,
     },
     /// List stored accounts (never prints tokens)
     List,
@@ -113,10 +132,15 @@ enum AccountsCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum AccountsProvider {
-    Gemini,
-    Copilot,
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Install a plugin package into any-converter's plugin directory
+    Install {
+        /// npm package spec, e.g. @magpie-community/opencode-cursor-auth
+        spec: String,
+    },
+    /// List installed plugins and the providers/methods they serve
+    List,
 }
 
 #[tokio::main]
@@ -250,6 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run(server_config).await?;
         }
         Commands::Accounts { command } => accounts(command).await?,
+        Commands::Plugin { command } => plugin(command).await?,
     }
 
     Ok(())
@@ -260,17 +285,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[allow(clippy::print_stdout)]
 async fn accounts(command: AccountsCommand) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        AccountsCommand::Add { provider } => accounts_add(provider).await,
+        AccountsCommand::Add {
+            provider,
+            plugin,
+            provider_id,
+            method,
+        } => accounts_add(&provider, plugin.as_deref(), provider_id.as_deref(), method).await,
         AccountsCommand::List => accounts_list(),
         AccountsCommand::Remove { account_id } => accounts_remove(&account_id),
     }
 }
 
 #[allow(clippy::print_stdout)]
-async fn accounts_add(provider: AccountsProvider) -> Result<(), Box<dyn std::error::Error>> {
+async fn accounts_add(
+    provider: &str,
+    plugin: Option<&str>,
+    provider_id: Option<&str>,
+    method: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(spec) = plugin {
+        if spec.is_empty() {
+            return Err("empty --plugin spec".into());
+        }
+        return accounts_add_plugin(spec, provider, provider_id, method).await;
+    }
     let store = open_secret_store()?;
-    match provider {
-        AccountsProvider::Gemini => {
+    match provider.to_ascii_lowercase().as_str() {
+        "gemini" => {
             let sign_in = GeminiSignIn::new(GeminiEndpoints::default());
             let started = sign_in.start().await?;
             println!("Open this URL in your browser to sign in:");
@@ -294,7 +335,7 @@ async fn accounts_add(provider: AccountsProvider) -> Result<(), Box<dyn std::err
             println!("  api_key = \"\"            # unused: the account signs the requests");
             println!("  account = \"{account_id}\"");
         }
-        AccountsProvider::Copilot => {
+        "copilot" => {
             let sign_in = CopilotSignIn::new(CopilotEndpoints::default());
             let started = sign_in.start().await?;
             println!("Open {} and enter this code:", started.verification_uri);
@@ -322,8 +363,387 @@ async fn accounts_add(provider: AccountsProvider) -> Result<(), Box<dyn std::err
             println!("any-converter provider with `account = \"{account_id}\"` in config.toml");
             println!("once a Copilot wire is available.");
         }
+        _ => {
+            return Err(format!(
+                "invalid value '{provider}': unknown provider: {provider} \
+                 (built-in ones are gemini, copilot; use --plugin for a plugin provider)"
+            )
+            .into());
+        }
     }
     Ok(())
+}
+
+/// How long `accounts add --plugin` waits for an "auto" sign-in flow.
+const PLUGIN_SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
+/// Pause between "auto" sign-in retries.
+const PLUGIN_SIGN_IN_RETRY: Duration = Duration::from_secs(2);
+
+#[allow(clippy::print_stdout)]
+async fn accounts_add_plugin(
+    spec: &str,
+    provider: &str,
+    provider_id: Option<&str>,
+    method: Option<usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = plugins_dir();
+    let r = plugin_ref(spec, &dir);
+    let hosts = managed_hosts();
+    let host = hosts.host_for(&r).await?;
+    let providers = hosts.providers(&r).await?;
+    if providers.is_empty() {
+        return Err(format!("plugin `{spec}` serves no providers").into());
+    }
+    let info = pick_provider(&providers, provider_id, provider)?;
+    let method = method.unwrap_or(0);
+    if info.methods.is_empty() {
+        return Err(format!("plugin `{spec}` provider `{}` has no auth methods", info.id).into());
+    }
+    if method >= info.methods.len() {
+        return Err(format!(
+            "plugin `{spec}` provider `{}` has no auth method {method} (available: 0..{})",
+            info.id,
+            info.methods.len()
+        )
+        .into());
+    }
+    let params = AuthorizeParams {
+        provider: info.id.clone(),
+        method,
+        inputs: Some(BTreeMap::new()),
+        account: "new".to_string(),
+        proxy: None,
+    };
+    let authorization = ProviderPlugin::authorize(&*host, params.clone()).await?;
+    print_authorization(&authorization);
+    let result = if authorization.method == "code" {
+        // The plugin wants the code the user got from the provider.
+        println!("Paste the code and press Enter:");
+        let mut code = String::new();
+        io::stdin().read_line(&mut code)?;
+        ProviderPlugin::callback(
+            &*host,
+            CallbackParams {
+                session: authorization.session,
+                code: code.trim().to_string(),
+            },
+        )
+        .await?
+    } else {
+        // "auto" (and anything else): the plugin itself waits inside its
+        // callback. Each callback consumes the host session, so a failed
+        // attempt is retried on a freshly started flow, every 2s, for up
+        // to 5 minutes.
+        let deadline = Instant::now() + PLUGIN_SIGN_IN_TIMEOUT;
+        let mut authorization = authorization;
+        loop {
+            match ProviderPlugin::callback(
+                &*host,
+                CallbackParams {
+                    session: authorization.session.clone(),
+                    code: String::new(),
+                },
+            )
+            .await
+            {
+                Ok(result) => break result,
+                Err(err) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "sign-in did not complete within {}s (last error: {err})",
+                            PLUGIN_SIGN_IN_TIMEOUT.as_secs()
+                        )
+                        .into());
+                    }
+                    tokio::time::sleep(PLUGIN_SIGN_IN_RETRY).await;
+                    authorization = ProviderPlugin::authorize(&*host, params.clone()).await?;
+                }
+            }
+        }
+    };
+    println!("Signed in to {} as {}", result.provider, result.account);
+    println!();
+    println!("Add this to config.toml to serve it:");
+    println!();
+    println!("  [[providers]]");
+    println!("  name = \"{}\"", result.provider);
+    println!(
+        "  plugin = {{ spec = \"{spec}\", target = \"{}\" }}",
+        dir.display()
+    );
+    println!("  account = \"{}:{}\"", result.provider, result.account);
+    Ok(())
+}
+
+/// Pick the provider `accounts add --plugin` signs in to: `requested`
+/// (`--provider-id`) wins, then a single served provider, then one matching
+/// the positional argument; otherwise the caller must disambiguate.
+fn pick_provider<'a>(
+    providers: &'a [PluginProviderInfo],
+    requested: Option<&str>,
+    positional: &str,
+) -> Result<&'a PluginProviderInfo, Box<dyn std::error::Error>> {
+    if let Some(id) = requested {
+        return providers.iter().find(|p| p.id == id).ok_or_else(|| {
+            format!(
+                "the plugin serves no provider `{id}`; available: {}",
+                provider_ids(providers)
+            )
+            .into()
+        });
+    }
+    if providers.len() == 1 {
+        return Ok(&providers[0]);
+    }
+    if let Some(matched) = providers.iter().find(|p| p.id == positional) {
+        return Ok(matched);
+    }
+    Err(format!(
+        "the plugin serves multiple providers; pick one with --provider-id: {}",
+        provider_ids(providers)
+    )
+    .into())
+}
+
+fn provider_ids(providers: &[PluginProviderInfo]) -> String {
+    providers
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Show the details of a plugin authorization flow (the protocol has no
+/// `code` field of its own, so url/instructions are all there is to print).
+#[allow(clippy::print_stdout)]
+fn print_authorization(authorization: &Authorization) {
+    if let Some(url) = authorization.url.as_deref().filter(|url| !url.is_empty()) {
+        println!("Open this URL to sign in:");
+        println!("  {url}");
+    }
+    if let Some(instructions) = authorization
+        .instructions
+        .as_deref()
+        .filter(|instructions| !instructions.is_empty())
+    {
+        println!("{instructions}");
+    }
+}
+
+// ── plugin ──────────────────────────────────────────────────────────
+
+async fn plugin(command: PluginCommand) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        PluginCommand::Install { spec } => plugin_install(&spec).await,
+        PluginCommand::List => plugin_list().await,
+    }
+}
+
+/// Directory plugin packages are installed into: `$ANY_CONVERTER_PLUGINS`
+/// when set, otherwise `<config_dir>/plugins` (mirrors the server's
+/// `config_dir`: `$APPDATA/any-converter` on Windows, `~/.config/any-converter`
+/// elsewhere).
+fn plugins_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("ANY_CONVERTER_PLUGINS") {
+        return PathBuf::from(path);
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("any-converter").join("plugins");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".config")
+        .join("any-converter")
+        .join("plugins")
+}
+
+/// The [`ManagedHosts`] the CLI drives: plugin credentials go to the same
+/// `plugin-auth.json` file the server runtime uses.
+fn managed_hosts() -> ManagedHosts {
+    ManagedHosts::with_store(Arc::new(PluginAuthStore::new(plugin_auth_path())))
+}
+
+/// Where plugin credentials live: `plugin-auth.json` next to the account
+/// store (mirrors the server's `plugin_auth_path`).
+fn plugin_auth_path() -> PathBuf {
+    secrets_path().with_file_name("plugin-auth.json")
+}
+
+/// [`PluginRef`] for a plugin installed into `dir`.
+fn plugin_ref(spec: &str, dir: &Path) -> PluginRef {
+    PluginRef {
+        spec: spec.to_string(),
+        target: dir.to_string_lossy().into_owned(),
+    }
+}
+
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+async fn plugin_install(spec: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = plugins_dir();
+    ensure_plugins_dir(&dir)?;
+    ensure_plugins_package_json(&dir)?;
+
+    let output = std::process::Command::new("npm")
+        .args(["install", spec, "--prefix"])
+        .arg(&dir)
+        .args(["--no-audit", "--no-fund"])
+        .output();
+    match output {
+        Err(err) => {
+            return Err(format!(
+                "npm install could not be run: {err}\n\
+                 Manual alternative: cd {} && npm install {spec}",
+                dir.display()
+            )
+            .into());
+        }
+        Ok(output) if !output.status.success() => {
+            let code = output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| output.status.to_string());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "npm install {spec} failed (exit code {code}):\n\
+                 {}\n\
+                 Manual alternative: cd {} && npm install {spec}",
+                last_lines(&stderr, 20),
+                dir.display()
+            )
+            .into());
+        }
+        Ok(_) => {}
+    }
+
+    // Success: start the host once and report what the plugin serves. A
+    // plugin that cannot be loaded is not an install failure.
+    let hosts = managed_hosts();
+    let r = plugin_ref(spec, &dir);
+    match hosts.providers(&r).await {
+        Ok(providers) => {
+            println!("{spec} → {}", provider_ids(&providers));
+        }
+        Err(err) => {
+            eprintln!("warning: {spec} is installed but could not be loaded: {err}");
+        }
+    }
+    Ok(())
+}
+
+/// Create `dir` when missing, with `0700` permissions.
+fn ensure_plugins_dir(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// A minimal root package so `npm install --prefix` has a project to add
+/// to. Written `0600` non-executable; the content is not sensitive, the
+/// mode just keeps the plugins dir uniform.
+fn ensure_plugins_package_json(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let package_json = dir.join("package.json");
+    if package_json.exists() {
+        return Ok(());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&package_json)?;
+    file.write_all(b"{\"name\":\"any-converter-plugins\",\"private\":true}\n")?;
+    Ok(())
+}
+
+/// The last `count` lines of `text` (all of them when there are fewer).
+fn last_lines(text: &str, count: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let skip = lines.len().saturating_sub(count);
+    lines.into_iter().skip(skip).collect::<Vec<_>>().join("\n")
+}
+
+#[allow(clippy::print_stdout)]
+async fn plugin_list() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = plugins_dir();
+    let specs = installed_specs(&dir);
+    if specs.is_empty() {
+        println!("No plugins installed. Try: any-converter plugin install <spec>");
+        return Ok(());
+    }
+    let hosts = managed_hosts();
+    for spec in &specs {
+        println!("{spec}");
+        match hosts.providers(&plugin_ref(spec, &dir)).await {
+            Ok(providers) => {
+                for provider in &providers {
+                    let methods = provider
+                        .methods
+                        .iter()
+                        .map(|method| {
+                            let kind = match method.kind {
+                                AuthMethodKind::Oauth => "oauth",
+                                AuthMethodKind::Api => "api",
+                            };
+                            // The plugin's own label, when it names one.
+                            if method.label.is_empty() {
+                                kind.to_string()
+                            } else {
+                                format!("{kind}({})", method.label)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    println!("  provider: {}  methods: {}", provider.id, methods);
+                }
+            }
+            Err(err) => println!("  (failed to load: {err})"),
+        }
+    }
+    Ok(())
+}
+
+/// Package names under `<dir>/node_modules` (scoped packages expanded one
+/// level; `.bin` and non-directories skipped).
+fn installed_specs(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir.join("node_modules")) else {
+        return Vec::new();
+    };
+    let mut specs = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy().into_owned();
+        if name == ".bin" {
+            continue;
+        }
+        if name.starts_with('@') {
+            let Ok(scoped) = std::fs::read_dir(entry.path()) else {
+                continue;
+            };
+            for package in scoped.flatten() {
+                if package
+                    .file_type()
+                    .map(|kind| kind.is_dir())
+                    .unwrap_or(false)
+                {
+                    specs.push(format!("{name}/{}", package.file_name().to_string_lossy()));
+                }
+            }
+        } else {
+            specs.push(name);
+        }
+    }
+    specs.sort();
+    specs
 }
 
 fn gemini_credential(account: &GeminiAccount) -> Credential {
