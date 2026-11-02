@@ -5,36 +5,18 @@
 //! envelope and responses arrive wrapped in `{"response": ...}`; these
 //! helpers build the endpoint URLs and (un)wrap the envelopes.
 
-use any_converter_core::convert::Format;
+use crate::config::UpstreamApi;
 
-use crate::config::Wire;
-
-/// Build the upstream URL for a provider request on the given wire.
+/// Build the upstream URL for a provider request on the given API.
 ///
-/// - [`Wire::GeminiApi`] mirrors [`crate::proxy::build_upstream_url`] exactly
-///   (OpenAI chat / Claude / Responses / Gemini paths).
-/// - [`Wire::CodeAssist`] uses the Code Assist internal endpoints
-///   (`{base}/v1internal:generateContent` or, streaming,
-///   `{base}/v1internal:streamGenerateContent?alt=sse`); the model id lives in
-///   the request envelope, not in the URL.
-pub fn build_url(
-    wire: Wire,
-    format: Format,
-    base_url: &str,
-    model: &str,
-    streaming: bool,
-) -> String {
-    match wire {
-        Wire::GeminiApi => crate::proxy::build_upstream_url(format, base_url, model, streaming),
-        Wire::CodeAssist => {
-            let base = base_url.trim_end_matches('/');
-            if streaming {
-                format!("{base}/v1internal:streamGenerateContent?alt=sse")
-            } else {
-                format!("{base}/v1internal:generateContent")
-            }
-        }
-    }
+/// Paths come from [`UpstreamApi::path`]; for every non-`CodeAssist` API the
+/// output matches [`crate::proxy::build_upstream_url`] byte-for-byte for the
+/// corresponding [`any_converter_core::convert::Format`]. The model id only
+/// appears in the URL for [`UpstreamApi::Gemini`]; Code Assist keeps the
+/// model inside the request envelope.
+pub fn build_url(api: UpstreamApi, base_url: &str, model: &str, streaming: bool) -> String {
+    let base = base_url.trim_end_matches('/');
+    format!("{base}{}", api.path(model, streaming))
 }
 
 /// Wrap a Gemini `generateContent` body in the Code Assist request envelope:
@@ -65,6 +47,8 @@ pub fn unwrap_code_assist(payload: &[u8]) -> Result<Vec<u8>, String> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use any_converter_core::convert::Format;
+
     use super::*;
 
     const BASE: &str = "https://cloudcode-pa.googleapis.com";
@@ -72,34 +56,76 @@ mod tests {
     #[test]
     fn test_code_assist_urls_trim_trailing_slash() {
         assert_eq!(
-            build_url(
-                Wire::CodeAssist,
-                Format::Gemini,
-                &format!("{BASE}/"),
-                "m",
-                false
-            ),
+            build_url(UpstreamApi::CodeAssist, &format!("{BASE}/"), "m", false),
             "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
         );
         assert_eq!(
-            build_url(Wire::CodeAssist, Format::OpenAIChat, BASE, "m", true),
+            build_url(UpstreamApi::CodeAssist, BASE, "m", true),
             "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
         );
     }
 
     #[test]
     fn test_gemini_api_urls_match_proxy_behavior() {
+        // Each non-CodeAssist API's path must match proxy::build_upstream_url
+        // byte-for-byte for the Format it corresponds to.
         assert_eq!(
-            build_url(Wire::GeminiApi, Format::OpenAIChat, BASE, "gpt-4", false),
+            build_url(UpstreamApi::Chat, BASE, "gpt-4", false),
             crate::proxy::build_upstream_url(Format::OpenAIChat, BASE, "gpt-4", false)
         );
         assert_eq!(
-            build_url(Wire::GeminiApi, Format::Claude, BASE, "claude-3", true),
+            build_url(UpstreamApi::Claude, BASE, "claude-3", true),
             crate::proxy::build_upstream_url(Format::Claude, BASE, "claude-3", true)
         );
         assert_eq!(
-            build_url(Wire::GeminiApi, Format::Gemini, BASE, "gemini-pro", true),
-            format!("{BASE}/v1beta/models/gemini-pro:streamGenerateContent")
+            build_url(UpstreamApi::Responses, BASE, "gpt-4o", false),
+            crate::proxy::build_upstream_url(Format::OpenAIResponses, BASE, "gpt-4o", false)
+        );
+        assert_eq!(
+            build_url(UpstreamApi::Gemini, BASE, "gemini-pro", false),
+            crate::proxy::build_upstream_url(Format::Gemini, BASE, "gemini-pro", false)
+        );
+        assert_eq!(
+            build_url(UpstreamApi::Gemini, BASE, "gemini-pro", true),
+            crate::proxy::build_upstream_url(Format::Gemini, BASE, "gemini-pro", true)
+        );
+    }
+
+    #[test]
+    fn test_path_table_all_apis_streaming_and_non_streaming() {
+        const MODEL: &str = "gemini-2.5-pro";
+
+        // Chat, Claude and Responses use the same path for both modes.
+        for streaming in [false, true] {
+            assert_eq!(
+                UpstreamApi::Chat.path(MODEL, streaming),
+                "/v1/chat/completions"
+            );
+            assert_eq!(UpstreamApi::Claude.path(MODEL, streaming), "/v1/messages");
+            assert_eq!(
+                UpstreamApi::Responses.path(MODEL, streaming),
+                "/v1/responses"
+            );
+        }
+
+        // Gemini carries the model in the URL and splits on streaming.
+        assert_eq!(
+            UpstreamApi::Gemini.path(MODEL, false),
+            "/v1beta/models/gemini-2.5-pro:generateContent"
+        );
+        assert_eq!(
+            UpstreamApi::Gemini.path(MODEL, true),
+            "/v1beta/models/gemini-2.5-pro:streamGenerateContent"
+        );
+
+        // CodeAssist has no model in the URL.
+        assert_eq!(
+            UpstreamApi::CodeAssist.path(MODEL, false),
+            "/v1internal:generateContent"
+        );
+        assert_eq!(
+            UpstreamApi::CodeAssist.path(MODEL, true),
+            "/v1internal:streamGenerateContent?alt=sse"
         );
     }
 

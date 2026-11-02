@@ -198,6 +198,7 @@ fn code_assist_provider(
         base_url: base.into(),
         api_key: String::new(),
         account: account.map(String::from),
+        api: None,
         wire: None,
         model_map: Default::default(),
         endpoints: Default::default(),

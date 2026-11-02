@@ -121,6 +121,7 @@ mod tests {
             base_url: "https://example.com".into(),
             api_key: "sk-test".into(),
             account: None,
+            api: None,
             wire: None,
             model_map: HashMap::new(),
             endpoints: crate::config::ProviderEndpointConfig::default(),

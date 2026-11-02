@@ -12,7 +12,7 @@ use log::{debug, error, info, warn};
 use reqwest::Client;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::config::{PassThroughHeadersConfig, ProviderConfig, Wire, glob_match};
+use crate::config::{PassThroughHeadersConfig, ProviderConfig, UpstreamApi, glob_match};
 use crate::observability::utf8_prefix;
 use crate::request_log::{RequestLogContext, RequestLogger, log_streaming};
 
@@ -134,7 +134,7 @@ pub fn build_upstream_headers(
 
 /// Forward a non-streaming request to the upstream provider.
 ///
-/// On the [`Wire::CodeAssist`] transport the response envelope is unwrapped
+/// On the [`UpstreamApi::CodeAssist`] transport the response envelope is unwrapped
 /// (before any format conversion, which happens in the caller) so downstream
 /// conversion sees a plain Gemini payload.
 pub async fn forward_non_streaming(
@@ -144,7 +144,7 @@ pub async fn forward_non_streaming(
     auth_headers: &[(String, String)],
     client_headers: &HeaderMap,
     pass_through_config: &PassThroughHeadersConfig,
-    wire: Wire,
+    api: UpstreamApi,
 ) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
     let upstream_headers =
         build_upstream_headers(client_headers, auth_headers, pass_through_config);
@@ -173,7 +173,7 @@ pub async fn forward_non_streaming(
     // Code Assist wraps every payload in a `{"response": ...}` envelope;
     // unwrap before the caller converts. Anything without the envelope
     // passes through byte-for-byte.
-    let bytes = if wire == Wire::CodeAssist {
+    let bytes = if api == UpstreamApi::CodeAssist {
         crate::wire::unwrap_code_assist(&bytes).unwrap_or(bytes)
     } else {
         bytes
@@ -192,7 +192,7 @@ pub async fn forward_streaming(
     pass_through_config: &PassThroughHeadersConfig,
     from_format: Format,
     to_format: Format,
-    wire: Wire,
+    api: UpstreamApi,
     ns_map: &HashMap<String, (String, String)>,
     log_ctx: Option<RequestLogContext>,
     logger: Option<Arc<RequestLogger>>,
@@ -285,7 +285,7 @@ pub async fn forward_streaming(
                             to_format,
                             &mut state_in,
                             &mut state_out,
-                            wire,
+                            api,
                         );
                         if event_count <= 5 {
                             let block_preview = utf8_prefix(&block, 200);
@@ -333,7 +333,7 @@ pub async fn forward_streaming(
                 to_format,
                 &mut state_in,
                 &mut state_out,
-                wire,
+                api,
             ) {
                 let line = patch_sse_namespaces(&line, &ns_map_owned);
                 if should_log && !response_truncated {
@@ -497,7 +497,7 @@ fn convert_sse_block(
     to_format: Format,
     state_in: &mut StreamState,
     state_out: &mut StreamState,
-    wire: Wire,
+    api: UpstreamApi,
 ) -> Vec<String> {
     let Some(mut event) = parse_sse_block(block) else {
         return Vec::new();
@@ -507,7 +507,7 @@ fn convert_sse_block(
     // wrapper. Unwrap the `data:` payload before conversion while keeping the
     // SSE framing (`data: ` prefix and blank-line separator) intact; anything
     // that is not an enveloped JSON payload passes through byte-for-byte.
-    if wire == Wire::CodeAssist {
+    if api == UpstreamApi::CodeAssist {
         if let Ok(unwrapped) = crate::wire::unwrap_code_assist(event.data.as_bytes()) {
             event.data = String::from_utf8_lossy(&unwrapped).into_owned();
         }
@@ -596,6 +596,7 @@ mod tests {
             base_url: "https://api.minimax.io".into(),
             api_key: "sk-test".into(),
             account: None,
+            api: None,
             wire: None,
             model_map: std::collections::HashMap::new(),
             endpoints: crate::config::ProviderEndpointConfig {
