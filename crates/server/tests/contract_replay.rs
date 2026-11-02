@@ -236,6 +236,8 @@ fn gateway(format: Format, base_url: String) -> Router {
             format,
             base_url,
             api_key: "contract-fixture-key".into(),
+            account: None,
+            wire: None,
             // empty model_map = passthrough of the client's model name
             model_map: Default::default(),
             endpoints: Default::default(),
@@ -255,6 +257,9 @@ fn gateway(format: Format, base_url: String) -> Router {
     create_router_with_state(Arc::new(AppState {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
+        accounts: any_converter_server::credentials::AccountResolver::with_default_store(
+            Client::new(),
+        ),
         usage_logger: None,
         request_logger: None,
     }))

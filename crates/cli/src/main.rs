@@ -10,6 +10,7 @@ use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
     LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
+    secrets_path,
 };
 use any_converter_server::credentials::{
     CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, GeminiAccount, GeminiEndpoints,
@@ -201,6 +202,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         format: provider_format,
                         base_url: base,
                         api_key: key,
+                        account: None,
+                        wire: None,
                         model_map: HashMap::new(),
                         endpoints: Default::default(),
                         auth: Default::default(),
@@ -358,24 +361,6 @@ fn accounts_remove(account_id: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 fn open_secret_store() -> Result<FileSecretStore, Box<dyn std::error::Error>> {
     Ok(FileSecretStore::new(secrets_path()))
-}
-
-/// `$ANY_CONVERTER_SECRETS` overrides the store location; otherwise it is
-/// `<config_dir>/secrets.json` where `config_dir` is
-/// `$HOME/.config/any-converter` (or `$APPDATA/any-converter` on Windows).
-fn secrets_path() -> PathBuf {
-    if let Ok(path) = std::env::var("ANY_CONVERTER_SECRETS") {
-        return PathBuf::from(path);
-    }
-    config_dir().join("secrets.json")
-}
-
-fn config_dir() -> PathBuf {
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        return PathBuf::from(appdata).join("any-converter");
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config").join("any-converter")
 }
 
 fn read_input(

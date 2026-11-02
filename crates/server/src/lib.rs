@@ -15,6 +15,7 @@ pub(crate) mod route_strategy;
 pub mod router;
 pub mod storage;
 pub mod usage;
+pub mod wire;
 
 use log::info;
 

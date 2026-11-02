@@ -28,6 +28,8 @@ fn provider(name: &str, format: Format, base_url: &str) -> ProviderConfig {
         format,
         base_url: base_url.into(),
         api_key: "upstream-key".into(),
+        account: None,
+        wire: None,
         model_map: [("*".into(), "claude-3-upstream".into())].into(),
         endpoints: Default::default(),
         auth: Default::default(),
@@ -57,6 +59,9 @@ fn make_app(providers: Vec<ProviderConfig>, route_provider: &str, api_key: Optio
     create_router_with_state(Arc::new(AppState {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
+        accounts: any_converter_server::credentials::AccountResolver::with_default_store(
+            Client::new(),
+        ),
         usage_logger: None,
         request_logger: None,
     }))

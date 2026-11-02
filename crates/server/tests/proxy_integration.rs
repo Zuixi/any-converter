@@ -5,6 +5,7 @@ use std::sync::Arc;
 use any_converter_server::config::{
     PassThroughHeadersConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
 };
+use any_converter_server::credentials::AccountResolver;
 use any_converter_server::handlers::AppState;
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
@@ -20,6 +21,8 @@ fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
         format: any_converter_core::convert::Format::OpenAIChat,
         base_url: base_url.into(),
         api_key: "upstream-key".into(),
+        account: None,
+        wire: None,
         model_map: [("*".into(), "gpt-4".into())].into(),
         endpoints: Default::default(),
         auth: Default::default(),
@@ -62,6 +65,7 @@ async fn non_streaming_proxy() {
     };
     let state = Arc::new(AppState {
         config,
+        accounts: AccountResolver::with_default_store(client.clone()),
         client,
         usage_logger: None,
         request_logger: None,
@@ -157,6 +161,7 @@ async fn client_headers_passthrough_to_upstream() {
     };
     let state = Arc::new(AppState {
         config,
+        accounts: AccountResolver::with_default_store(client.clone()),
         client,
         usage_logger: None,
         request_logger: None,
@@ -236,6 +241,7 @@ async fn streaming_proxy_text() {
     };
     let state = Arc::new(AppState {
         config,
+        accounts: AccountResolver::with_default_store(client.clone()),
         client,
         usage_logger: None,
         request_logger: None,
@@ -300,6 +306,7 @@ async fn provider_failover_priority() {
     };
     let state = Arc::new(AppState {
         config,
+        accounts: AccountResolver::with_default_store(client.clone()),
         client,
         usage_logger: None,
         request_logger: None,
@@ -347,6 +354,7 @@ async fn auth_missing_returns_401() {
     };
     let state = Arc::new(AppState {
         config,
+        accounts: AccountResolver::with_default_store(client.clone()),
         client,
         usage_logger: None,
         request_logger: None,
@@ -389,6 +397,7 @@ async fn auth_invalid_returns_401() {
     };
     let state = Arc::new(AppState {
         config,
+        accounts: AccountResolver::with_default_store(client.clone()),
         client,
         usage_logger: None,
         request_logger: None,
@@ -441,6 +450,7 @@ async fn upstream_error_returns_502() {
     };
     let state = Arc::new(AppState {
         config,
+        accounts: AccountResolver::with_default_store(client.clone()),
         client,
         usage_logger: None,
         request_logger: None,
@@ -477,6 +487,7 @@ async fn health_returns_ok() {
     };
     let state = Arc::new(AppState {
         config,
+        accounts: AccountResolver::with_default_store(client.clone()),
         client,
         usage_logger: None,
         request_logger: None,
