@@ -32,6 +32,10 @@
 - `round_robin` model route strategy now rotates the first provider attempted while retaining configured failover order.
 - Server handler responsibilities were split into focused `model`, `namespace`, and `route_strategy` modules.
 
+### Removed
+
+- **Legacy `[[routes]]` routing**: format-based `[[routes]]` entries no longer route requests and their provider references are no longer validated. Configs still parse (so old `config.toml` files load), but the server prints one startup warning and ignores them — migrate to `[[model_routes]]` (e.g. `pattern = "*"`, `provider = "openai"`). `resolve_provider` now resolves via `[[model_routes]]` globs only.
+
 ### Fixed
 
 - **Desktop log durability and Windows release startup**: Request audit JSONL files rotate at 10 MiB, request/usage mirrors share an SQLite connection pool, disk quota cleanup preserves SQLite/WAL files, Desktop persists WARN/ERROR runtime logs, and the Windows subsystem attribute now applies to the release executable instead of the library crate.

@@ -118,7 +118,7 @@ pub enum RouteStrategy {
     RoundRobin,
 }
 
-/// Legacy format-based route (backward compatibility).
+/// Legacy format-based route. Not used for routing any more; kept so old configs still parse.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RouteConfig {
     pub client_format: Format,
@@ -338,14 +338,10 @@ impl ServerConfig {
         toml::from_str(content)
     }
 
-    /// Resolve a provider for the given client format and model name.
+    /// Resolve a provider for the given model name via `[[model_routes]]` globs.
     ///
-    /// Priority: model_routes (first glob match) → legacy routes (format match) → None.
-    pub fn resolve_provider(
-        &self,
-        client_format: Format,
-        client_model: &str,
-    ) -> Option<ResolvedRoute> {
+    /// Legacy `[[routes]]` are ignored (see the CLI startup warning).
+    pub fn resolve_provider(&self, client_model: &str) -> Option<ResolvedRoute> {
         if !self.model_routes.is_empty() {
             for mr in &self.model_routes {
                 if glob_match(&mr.pattern, client_model) {
@@ -368,20 +364,7 @@ impl ServerConfig {
                 }
             }
         }
-        let route = self.find_route(client_format)?;
-        let provider = self.find_provider(&route.provider)?;
-        let upstream = provider.resolve_model(client_model);
-        Some(ResolvedRoute {
-            provider_names: vec![route.provider.clone()],
-            upstream_model: upstream,
-            strategy: RouteStrategy::Priority,
-        })
-    }
-
-    pub fn find_route(&self, client_format: Format) -> Option<&RouteConfig> {
-        self.routes
-            .iter()
-            .find(|r| r.client_format == client_format)
+        None
     }
 
     pub fn find_provider(&self, name: &str) -> Option<&ProviderConfig> {
@@ -406,14 +389,6 @@ impl ServerConfig {
                 errors.push(format!(
                     "model_routes[{}] (pattern=\"{}\"): no provider specified",
                     i, mr.pattern
-                ));
-            }
-        }
-        for (i, route) in self.routes.iter().enumerate() {
-            if !provider_names.contains(&route.provider.as_str()) {
-                errors.push(format!(
-                    "routes[{}] (format={}): provider \"{}\" not found",
-                    i, route.client_format, route.provider
                 ));
             }
         }
@@ -533,28 +508,6 @@ provider = "openai"
         assert_eq!(config.providers[0].name, "openai");
         assert_eq!(config.routes.len(), 1);
         assert_eq!(config.routes[0].client_format, Format::Claude);
-    }
-
-    #[test]
-    fn test_find_route() {
-        let config = ServerConfig {
-            server: ServerSettings {
-                host: "127.0.0.1".into(),
-                port: 8080,
-                api_key: None,
-                pass_through_headers: PassThroughHeadersConfig::default(),
-            },
-            providers: vec![],
-            model_routes: vec![],
-            routes: vec![RouteConfig {
-                client_format: Format::Claude,
-                provider: "openai".into(),
-            }],
-            model_metadata: HashMap::new(),
-            logging: LoggingConfig::default(),
-        };
-        assert!(config.find_route(Format::Claude).is_some());
-        assert!(config.find_route(Format::Gemini).is_none());
     }
 
     #[test]
@@ -818,45 +771,49 @@ headers = { "x-ms-client-request-id" = "test-client" }
             logging: LoggingConfig::default(),
         };
 
-        let r = config
-            .resolve_provider(Format::Claude, "claude-sonnet-4")
-            .unwrap();
+        let r = config.resolve_provider("claude-sonnet-4").unwrap();
         assert_eq!(r.provider_names, vec!["anthropic"]);
         assert_eq!(r.upstream_model, "claude-sonnet-4");
 
-        let r = config
-            .resolve_provider(Format::OpenAIChat, "gpt-4.1")
-            .unwrap();
+        let r = config.resolve_provider("gpt-4.1").unwrap();
         assert_eq!(r.provider_names, vec!["openai"]);
         assert_eq!(r.upstream_model, "gpt-4.1");
 
         // Wildcard fallback with upstream_model override
-        let r = config
-            .resolve_provider(Format::Claude, "unknown-model")
-            .unwrap();
+        let r = config.resolve_provider("unknown-model").unwrap();
         assert_eq!(r.provider_names, vec!["openai"]);
         assert_eq!(r.upstream_model, "gpt-4.1-mini");
     }
 
     #[test]
-    fn test_resolve_provider_fallback_to_legacy_routes() {
+    fn test_legacy_routes_ignored() {
+        let provider = ProviderConfig {
+            name: "openai".into(),
+            format: Format::OpenAIChat,
+            base_url: "https://api.openai.com".into(),
+            api_key: "sk-proj".into(),
+            model_map: [("*".into(), "gpt-4.1".into())].into(),
+            endpoints: Default::default(),
+            auth: Default::default(),
+        };
+        let server = ServerSettings {
+            host: "127.0.0.1".into(),
+            port: 8080,
+            api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
+        };
+
+        // Both present: model_routes wins.
         let config = ServerConfig {
-            server: ServerSettings {
-                host: "127.0.0.1".into(),
-                port: 8080,
-                api_key: None,
-                pass_through_headers: PassThroughHeadersConfig::default(),
-            },
-            providers: vec![ProviderConfig {
-                name: "openai".into(),
-                format: Format::OpenAIChat,
-                base_url: "https://api.openai.com".into(),
-                api_key: "sk-proj".into(),
-                model_map: [("*".into(), "gpt-4.1".into())].into(),
-                endpoints: Default::default(),
-                auth: Default::default(),
+            server: server.clone(),
+            providers: vec![provider.clone()],
+            model_routes: vec![ModelRouteConfig {
+                pattern: "claude-*".into(),
+                provider: Some("openai".into()),
+                providers: vec![],
+                upstream_model: None,
+                strategy: RouteStrategy::Priority,
             }],
-            model_routes: vec![],
             routes: vec![RouteConfig {
                 client_format: Format::Claude,
                 provider: "openai".into(),
@@ -864,12 +821,16 @@ headers = { "x-ms-client-request-id" = "test-client" }
             model_metadata: HashMap::new(),
             logging: LoggingConfig::default(),
         };
-
-        let r = config
-            .resolve_provider(Format::Claude, "claude-sonnet-4")
-            .unwrap();
+        let r = config.resolve_provider("claude-sonnet-4").unwrap();
         assert_eq!(r.provider_names, vec!["openai"]);
         assert_eq!(r.upstream_model, "gpt-4.1");
+
+        // Only legacy routes: no resolution at all.
+        let config = ServerConfig {
+            model_routes: vec![],
+            ..config
+        };
+        assert!(config.resolve_provider("claude-sonnet-4").is_none());
     }
 
     #[test]
@@ -913,9 +874,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
             logging: LoggingConfig::default(),
         };
 
-        let r = config
-            .resolve_provider(Format::OpenAIChat, "gpt-4.1")
-            .unwrap();
+        let r = config.resolve_provider("gpt-4.1").unwrap();
         assert_eq!(r.provider_names, vec!["primary", "backup"]);
         assert_eq!(r.strategy, RouteStrategy::Priority);
     }
@@ -946,9 +905,9 @@ headers = { "x-ms-client-request-id" = "test-client" }
         };
 
         let errors = config.validate();
-        assert_eq!(errors.len(), 2);
+        // Legacy routes are not validated any more: only the model_routes error remains.
+        assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("nonexistent"));
-        assert!(errors[1].contains("also-nonexistent"));
     }
 
     #[test]

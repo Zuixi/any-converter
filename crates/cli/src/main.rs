@@ -8,7 +8,7 @@ use any_converter_core::convert::{
 use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
-    LoggingConfig, ProviderConfig, RouteConfig, ServerConfig, ServerSettings,
+    LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
 };
 use any_converter_server::{logging::init_logging, run};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -173,11 +173,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         endpoints: Default::default(),
                         auth: Default::default(),
                     }],
-                    model_routes: vec![],
-                    routes: vec![RouteConfig {
-                        client_format: provider_format,
-                        provider,
+                    model_routes: vec![ModelRouteConfig {
+                        pattern: "*".into(),
+                        provider: Some(provider),
+                        providers: vec![],
+                        upstream_model: None,
+                        strategy: RouteStrategy::Priority,
                     }],
+                    routes: vec![],
                     model_metadata: HashMap::new(),
                     logging: LoggingConfig::default(),
                 }
@@ -191,6 +194,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 return Err(
                     format!("{} config validation error(s)", validation_errors.len()).into(),
+                );
+            }
+
+            #[allow(clippy::print_stderr)]
+            if !server_config.routes.is_empty() {
+                eprintln!(
+                    "warning: legacy [[routes]] entries are ignored; migrate them to [[model_routes]]"
                 );
             }
 

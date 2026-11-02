@@ -19,8 +19,8 @@ format = "openai_chat"
 base_url = "https://api.openai.com"
 api_key = "test-key"
 
-[[routes]]
-client_format = "openai_chat"
+[[model_routes]]
+pattern = "*"
 provider = "openai"
 "#;
 
@@ -139,8 +139,8 @@ format = "openai_chat"
 base_url = "https://api.openai.com"
 api_key = "test-key"
 
-[[routes]]
-client_format = "openai_chat"
+[[model_routes]]
+pattern = "*"
 provider = "openai"
 "#;
     let app = create_router(load_config(toml));
