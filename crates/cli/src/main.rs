@@ -15,8 +15,9 @@ use any_converter_server::config::{
 };
 use any_converter_server::credentials::account::clear_revoked_default_store;
 use any_converter_server::credentials::{
-    CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, GeminiAccount, GeminiEndpoints,
-    GeminiSignIn, SecretStore, gemini::DEFAULT_SIGN_IN_TIMEOUT,
+    CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, FoundAccount, GeminiAccount,
+    GeminiEndpoints, GeminiSignIn, ImportStatus, SecretStore, discover,
+    gemini::DEFAULT_SIGN_IN_TIMEOUT, import_path, to_credential,
 };
 use any_converter_server::plugins::{
     AuthMethodKind, Authorization, AuthorizeParams, CallbackParams, ManagedHosts, PluginAuthStore,
@@ -41,6 +42,24 @@ impl CliFormat {
             CliFormat::Claude => Format::Claude,
             CliFormat::OpenaiResponses => Format::OpenAIResponses,
             CliFormat::Gemini => Format::Gemini,
+        }
+    }
+}
+
+/// Which tool's accounts `accounts import-agent` takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum AgentProvider {
+    Codex,
+    Claude,
+    All,
+}
+
+impl AgentProvider {
+    fn matches(self, provider: &str) -> bool {
+        match self {
+            AgentProvider::Codex => provider == "codex",
+            AgentProvider::Claude => provider == "claude",
+            AgentProvider::All => true,
         }
     }
 }
@@ -143,6 +162,27 @@ enum AccountsCommand {
     },
     /// Query a running server for every account's quota windows
     Quotas,
+    /// Discover accounts other tools keep on this machine (Codex, Claude) —
+    /// prints them, never writes anything
+    Discover,
+    /// Import accounts found in other tools' stores into secrets.json
+    ImportAgent {
+        /// Which provider's accounts to import (default: all)
+        #[arg(long, value_enum, default_value_t = AgentProvider::All)]
+        provider: AgentProvider,
+        /// Print what would be written without writing anything
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
+    /// Import accounts from another tool's export (claude-swap cswap /
+    /// Sub2API / CLIProxyAPI)
+    Import {
+        /// Export file, or a directory of *.json export files
+        path: PathBuf,
+        /// Report what would be imported without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -315,6 +355,11 @@ async fn accounts(command: AccountsCommand) -> Result<(), Box<dyn std::error::Er
             config,
         } => accounts_order(config.as_deref(), &provider, &account_ids),
         AccountsCommand::Quotas => accounts_quotas().await,
+        AccountsCommand::Discover => accounts_discover(),
+        AccountsCommand::Import { path, dry_run } => accounts_import(&path, dry_run),
+        AccountsCommand::ImportAgent { provider, dry_run } => {
+            accounts_import_agent(provider, dry_run)
+        }
     }
 }
 
@@ -768,6 +813,67 @@ fn installed_specs(dir: &Path) -> Vec<String> {
     specs
 }
 
+/// `accounts import`: bring accounts in from another tool's export files
+/// (claude-swap cswap / Sub2API / CLIProxyAPI), one line per account and a
+/// summary of the counts last.
+///
+/// `--dry-run` imports into a throwaway copy of the secret store instead,
+/// so "already stored" verdicts are real but nothing is written.
+#[allow(clippy::print_stdout)]
+fn accounts_import(path: &Path, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if dry_run {
+        println!("(dry run: nothing will be written)");
+    }
+    let store = open_secret_store()?;
+    let results = if dry_run {
+        let dir = std::env::temp_dir().join(format!(
+            "any-converter-import-dry-run-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let copy = dir.join("secrets.json");
+        if let Ok(bytes) = std::fs::read(store.path()) {
+            std::fs::write(&copy, bytes)?;
+        }
+        let results = import_path(&FileSecretStore::new(copy), path);
+        let _ = std::fs::remove_dir_all(&dir);
+        results
+    } else {
+        import_path(&store, path)
+    };
+
+    let mut added = 0usize;
+    let mut existing = 0usize;
+    let mut refused = 0usize;
+    for result in &results {
+        let label = match &result.status {
+            ImportStatus::Added => {
+                added += 1;
+                "Added".to_string()
+            }
+            ImportStatus::Exists(why) => {
+                existing += 1;
+                format!("Exists({why})")
+            }
+            ImportStatus::Refused(why) => {
+                refused += 1;
+                format!("Refused({why})")
+            }
+        };
+        if result.account.is_empty() {
+            println!("{label}  <- {}", result.file);
+        } else {
+            println!("{label}  {}  <- {}", result.account, result.file);
+        }
+    }
+    println!(
+        "Summary: {added} added, {existing} already stored, {refused} refused \
+         ({} account row(s) in total)",
+        results.len()
+    );
+    Ok(())
+}
+
 fn gemini_credential(account: &GeminiAccount) -> Credential {
     Credential::OAuth {
         provider: "gemini".to_string(),
@@ -813,6 +919,68 @@ fn kind_label(cred: &Credential) -> &'static str {
         Credential::ApiKey { .. } => "api_key",
         Credential::OAuth { .. } => "oauth",
     }
+}
+
+/// `accounts discover`: print every account other tools keep on this
+/// machine (id/provider/email/plan/source). Read-only: never writes the
+/// tools' files, never prints a token.
+#[allow(clippy::print_stdout)]
+fn accounts_discover() -> Result<(), Box<dyn std::error::Error>> {
+    let found = discover(&home_dir());
+    if found.is_empty() {
+        println!("No accounts found in other tools' stores.");
+        return Ok(());
+    }
+    for account in found {
+        println!(
+            "{}  provider={}  email={}  plan={}  source={}",
+            account.account, account.provider, account.email, account.plan, account.source
+        );
+    }
+    Ok(())
+}
+
+/// `accounts import-agent`: store the found accounts as OAuth credentials
+/// in secrets.json (`0600`, via [`FileSecretStore`]). The tools' own files
+/// are only ever read — writing them back is P11b.
+#[allow(clippy::print_stdout)]
+fn accounts_import_agent(
+    provider: AgentProvider,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let found: Vec<FoundAccount> = discover(&home_dir())
+        .into_iter()
+        .filter(|account| provider.matches(&account.provider))
+        .collect();
+    if found.is_empty() {
+        println!("No accounts found in other tools' stores.");
+        return Ok(());
+    }
+    if dry_run {
+        println!("Would import (--dry-run, nothing written):");
+        for account in &found {
+            println!("  {}  from {}", account.account, account.source);
+        }
+        return Ok(());
+    }
+    let store = open_secret_store()?;
+    for account in &found {
+        store.put(&account.account, &to_credential(account))?;
+        println!(
+            "Imported {} ({}) from {}",
+            account.account, account.email, account.source
+        );
+    }
+    Ok(())
+}
+
+/// The home folder agent stores live under: `$HOME`, else `$USERPROFILE`,
+/// else the current directory.
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 #[allow(clippy::print_stdout)]

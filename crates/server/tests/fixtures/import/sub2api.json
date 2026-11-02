@@ -1,0 +1,27 @@
+[
+  {
+    "platform": "claude",
+    "type": "oauth",
+    "credentials": {
+      "claudeAiOauth": {
+        "accessToken": "test-token-1-claude-access",
+        "refreshToken": "test-token-1-claude-refresh",
+        "expiresAt": 1900000000000,
+        "scopes": ["user:inference", "user:profile", "user:sessions:claude_code"]
+      },
+      "email_address": "claude@example.com"
+    },
+    "extra": {
+      "email_address": "claude@example.com"
+    }
+  },
+  {
+    "platform": "openai",
+    "type": "oauth",
+    "credentials": {
+      "access_token": "test-token-1-codex-access",
+      "refresh_token": "test-token-1-codex-refresh",
+      "email": "codex@example.com"
+    }
+  }
+]

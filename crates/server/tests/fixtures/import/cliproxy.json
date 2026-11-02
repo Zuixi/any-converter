@@ -1,0 +1,8 @@
+{
+  "map@example.com": {
+    "type": "claude",
+    "access_token": "test-token-2-claude-access",
+    "refresh_token": "test-token-2-claude-refresh",
+    "expires": 1890000000000
+  }
+}
