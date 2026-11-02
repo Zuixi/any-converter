@@ -20,7 +20,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub use authstore::{AuthStoreError, PluginAuth, PluginAuthStore};
-pub use host::{PluginLaunch, PluginTransport};
+pub use host::{
+    HostedPlugin, PluginFetchRequest, PluginFetchResponse, PluginLaunch, PluginTransport,
+};
 
 /// Host → plugin RPC method names (magpie host.js `handlers`).
 pub mod methods {
