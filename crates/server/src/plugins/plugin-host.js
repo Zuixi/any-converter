@@ -77,6 +77,8 @@ const state = {
   sessions: new Map(),
   /** Monotonic sign-in counter. */
   seq: 0,
+  /** accountKey → normalized loader options (`load` cache). */
+  loaders: new Map(),
 };
 
 /** Plugins baked into argv by `default_launch` (fallback for `init`). */
@@ -254,6 +256,12 @@ function updateAuth(fn) {
 /** Current auth entries (`{}` when the file is missing or unreadable). */
 function readAuth() {
   return readAuthFile(requireAuthPath()).map;
+}
+
+/** Deep copy of the stored auth entry for `key` (`{}` when absent). */
+function authCopy(key) {
+  const stored = readAuth()[key];
+  return stored === undefined ? {} : JSON.parse(JSON.stringify(stored));
 }
 
 /**
@@ -443,6 +451,79 @@ function credentialOf(result) {
   return { type: "oauth", ...rest };
 }
 
+/**
+ * Declared provider metadata of a plugin (magpie `infoOf`): the second
+ * argument of `auth.loader` and the `npm` fallback for `models`.
+ *
+ * OpenCode plugins declare the provider either as a plain id string or as
+ * an object `{id, name, npm, url}`; the string form has no npm to offer.
+ */
+function providerInfo(provider) {
+  const auth = findAuth(provider);
+  const declared =
+    auth?.provider && typeof auth.provider === "object" ? auth.provider : {};
+  return {
+    id: provider,
+    name: auth?.name ?? declared.name ?? provider,
+    npm: typeof declared.npm === "string" ? declared.npm : "",
+    url: typeof declared.url === "string" ? declared.url : "",
+  };
+}
+
+/**
+ * The auth methods of a provider as reported by `init`:
+ * `[{type, label, prompts}]` (magpie host.js `methodsOf`).
+ */
+function methodsOf(auth) {
+  const methods = Array.isArray(auth.methods) ? auth.methods : [];
+  return methods.map((method) => ({
+    type: method?.type ?? "oauth",
+    label: method?.label ?? "",
+    prompts: (Array.isArray(method?.prompts) ? method.prompts : []).map((p) => {
+      const prompt = {
+        key: String(p?.key ?? ""),
+        label: String(p?.label ?? ""),
+        type: p?.type ?? "text",
+      };
+      if (prompt.type === "select") {
+        prompt.options = Array.isArray(p?.options) ? p.options.map(String) : [];
+      }
+      return prompt;
+    }),
+  }));
+}
+
+/** First non-empty string among the arguments (else the last one). */
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value) return value;
+  }
+  return "";
+}
+
+/** Non-negative integer from `m.<field>` or `m.limit.<field>`, else 0. */
+function numberOf(...values) {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value);
+    }
+  }
+  return 0;
+}
+
+/** Drop cached loader options for one account (or the whole provider). */
+function clearLoaderCache(provider, account) {
+  if (!account) {
+    for (const key of [...state.loaders.keys()]) {
+      if (key === provider || key.startsWith(`${provider}:`)) {
+        state.loaders.delete(key);
+      }
+    }
+    return;
+  }
+  state.loaders.delete(accountKey(provider, account));
+}
+
 // ---------------------------------------------------------------------------
 // RPC handlers (mirror magpie host.js `handlers`)
 // ---------------------------------------------------------------------------
@@ -460,6 +541,7 @@ async function handleInit(params) {
   }
   state.providers.clear();
   state.sessions.clear();
+  state.loaders.clear();
   state.seq = 0;
 
   const specs =
@@ -495,21 +577,35 @@ async function handleInit(params) {
         loaded.push({ spec });
         continue;
       }
-      if (!auth.provider) {
+      // `auth.provider` is a plain id string or an object
+      // `{id, name, npm, url}`; the map key is always the id string.
+      const providerId = String(
+        auth.provider && typeof auth.provider === "object"
+          ? auth.provider.id ?? ""
+          : auth.provider ?? "",
+      );
+      if (!providerId) {
         throw new Error(`plugin "${spec}" auth hooks have no provider id`);
       }
-      if (state.providers.has(auth.provider)) {
-        log(`plugin "${spec}" replaces the auth hooks of ${auth.provider}`);
+      if (state.providers.has(providerId)) {
+        log(`plugin "${spec}" replaces the auth hooks of ${providerId}`);
       }
-      state.providers.set(auth.provider, auth);
+      state.providers.set(providerId, auth);
       loaded.push({ spec });
-      log(`loaded plugin "${spec}" (provider ${auth.provider})`);
+      log(`loaded plugin "${spec}" (provider ${providerId})`);
     } catch (err) {
       log(`failed to load plugin "${spec}":`, describe(err));
       loaded.push({ spec, error: errorMessage(err) });
     }
   }
-  return { plugins: loaded };
+  return {
+    plugins: loaded,
+    providers: [...state.providers.entries()].map(([id, auth]) => ({
+      id,
+      name: auth.name ?? id,
+      methods: methodsOf(auth),
+    })),
+  };
 }
 
 /** `authorize`: start an OAuth flow for `provider` / `account`. */
@@ -587,6 +683,8 @@ async function handleApiKey(params) {
     key: String(params.key ?? ""),
     metadata: params.inputs ?? {},
   });
+  // The stored credential changed: cached loader options are stale.
+  clearLoaderCache(provider, account);
   return { ok: true, provider, account };
 }
 
@@ -596,6 +694,8 @@ async function handleSignOut(params) {
   const account = String(params.account ?? "");
   if (account) removeAuthEntry(accountKey(provider, account));
   else removeProviderEntries(provider);
+  // The stored credentials changed: cached loader options are stale.
+  clearLoaderCache(provider, account);
   return null;
 }
 
@@ -611,16 +711,88 @@ async function handleUsage(params) {
   return value ?? null;
 }
 
-/** `models`: plugin-provided model list, `null` when unavailable. */
+/**
+ * `load`: options the host needs to speak to an account, from the plugin's
+ * `auth.loader` hook (magpie host.js `options()`).
+ *
+ * The loader runs at most once per `<provider>:<account>` and the result is
+ * cached (dropped by `init`, `apiKey`, and `signOut`). It is called with
+ * `(getAuth, providerInfo)`; when it returns no apiKey and the stored
+ * credential is a plain api key, `stored.key` is the fallback. Without a
+ * loader — or without a signed-in account — the reply is all defaults.
+ */
+async function handleLoad(params) {
+  const provider = String(params.provider ?? "");
+  const account = String(params.account ?? "");
+  const key = accountKey(provider, account);
+  if (state.loaders.has(key)) return state.loaders.get(key);
+
+  const auth = findAuth(provider);
+  const stored = readAuth()[key];
+  let opts = {};
+  if (auth && typeof auth.loader === "function" && stored !== undefined) {
+    const info = providerInfo(provider);
+    opts =
+      (await auth.loader(
+        async () => authCopy(key),
+        JSON.parse(JSON.stringify(info)),
+      )) ?? {};
+    if (!opts || typeof opts !== "object") opts = {};
+  }
+  if (!opts.apiKey && stored?.type === "api") {
+    opts = { ...opts, apiKey: stored.key };
+  }
+  const normalized = {
+    baseURL: typeof opts.baseURL === "string" ? opts.baseURL : "",
+    apiKey: typeof opts.apiKey === "string" ? opts.apiKey : "",
+    headers:
+      opts.headers && typeof opts.headers === "object" && !Array.isArray(opts.headers)
+        ? opts.headers
+        : {},
+    fetch: typeof opts.fetch === "function",
+  };
+  state.loaders.set(key, normalized);
+  return normalized;
+}
+
+/**
+ * `models`: plugin-provided model list, normalized to the host shape
+ * `{id, name, npm, url, apiId, context, output, reasoning, image, free}`.
+ * A missing hook, `null`, or a non-array reply yields `[]`.
+ */
 async function handleModels(params) {
-  const auth = providerAuth(String(params.provider ?? ""));
-  if (typeof auth.models !== "function") return null;
-  const value = await auth.models({
-    provider: params.provider,
-    account: params.account,
-    proxy: params.proxy,
-  });
-  return value ?? null;
+  const provider = String(params.provider ?? "");
+  const auth = providerAuth(provider);
+  let value = [];
+  if (typeof auth.models === "function") {
+    value = await auth.models({
+      provider,
+      account: params.account,
+      proxy: params.proxy,
+    });
+  }
+  if (!Array.isArray(value)) return [];
+  const p = providerInfo(provider);
+  return value
+    .filter((m) => m && typeof m === "object" && m.id !== undefined && m.id !== null)
+    .map((m) => {
+      const api = m.api && typeof m.api === "object" ? m.api : {};
+      const limit = m.limit && typeof m.limit === "object" ? m.limit : {};
+      return {
+        id: String(m.id),
+        name: String(m.name ?? ""),
+        // magpie: `m.api?.npm ?? p.npm ?? ""`, with the openai-compatible
+        // package as the final default when the provider declares nothing.
+        npm: firstString(api.npm, p.npm, "@ai-sdk/openai-compatible"),
+        url: String(api.url ?? ""),
+        apiId: String(api.id ?? m.id),
+        context: numberOf(m.context, limit.context),
+        output: numberOf(m.output, limit.output),
+        reasoning: m.reasoning === true,
+        image: m.image === true || m.attachment === true,
+        free: m.free === true || m.cost === "free",
+      };
+    });
 }
 
 /**
@@ -651,6 +823,8 @@ async function handleFetch(params) {
       body,
       provider: params.provider,
       account: params.account,
+      model: params.model,
+      npm: params.npm,
     });
   }
 
@@ -676,6 +850,7 @@ const handlers = {
   apiKey: handleApiKey,
   signOut: handleSignOut,
   usage: handleUsage,
+  load: handleLoad,
   models: handleModels,
   fetch: handleFetch,
 };

@@ -44,8 +44,8 @@ use tokio::time::timeout;
 use super::methods;
 use super::{
     ApiKeyParams, ApiKeyResult, AuthResult, Authorization, AuthorizeParams, CallbackParams,
-    CallbackResult, PluginAuthStore, PluginError, PluginFuture, PluginProviderInfo, ProviderPlugin,
-    SignOutParams, UsageParams,
+    CallbackResult, LoadParams, LoaderOptions, ModelsParams, PluginAuthStore, PluginError,
+    PluginFuture, PluginModel, PluginProviderInfo, ProviderPlugin, SignOutParams, UsageParams,
 };
 
 /// Error message used whenever the plugin process is gone.
@@ -368,8 +368,10 @@ impl PluginTransport {
 ///
 /// The plugin runs the HTTP request against the upstream provider (its own
 /// web API or auth endpoints) where the host's HTTP stack must not be
-/// involved, and returns the raw status/headers/body.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// involved, and returns the raw status/headers/body. `provider`/`account`/
+/// `model`/`npm` mirror magpie's `plugin.FetchRequest`: plugins that sign
+/// requests need the identity, and per-package routing needs the rest.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PluginFetchRequest {
     /// Full request URL.
     pub url: String,
@@ -379,7 +381,23 @@ pub struct PluginFetchRequest {
     pub headers: Vec<(String, String)>,
     /// Raw request body, already a string; empty when there is none.
     pub body: String,
+    /// Provider id the request belongs to (defaults to the plugin's own).
+    #[serde(default)]
+    pub provider: String,
+    /// Account name the request belongs to.
+    #[serde(default)]
+    pub account: String,
+    /// Model id the request is for, when the caller knows it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// AI SDK package of the model, when the caller knows it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub npm: String,
 }
+
+/// The [`ProviderPlugin::fetch`] parameter (alias; same shape as
+/// [`PluginFetchRequest`]).
+pub type PluginFetchParams = PluginFetchRequest;
 
 /// `fetch` response returned by the plugin.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -430,7 +448,9 @@ impl HostedPlugin {
     /// credentials there itself, so both sides share one auth file) plus the
     /// plugin list taken from a [`default_launch`] argv. It must answer within
     /// 60 seconds with a `plugins` array; the array must be non-empty (the JS
-    /// host reports failed loads as `{spec, error}` entries).
+    /// host reports failed loads as `{spec, error}` entries). When the reply
+    /// also carries a `providers` array (the JS host always does), the
+    /// plugin's own metadata replaces the caller-supplied `info`.
     pub async fn start(
         launch: PluginLaunch,
         info: PluginProviderInfo,
@@ -444,7 +464,7 @@ impl HostedPlugin {
             transport.call("init", json!({ "authPath": auth_path, "plugins": plugins })),
         )
         .await;
-        match handshake {
+        let value = match handshake {
             Err(_elapsed) => {
                 let _ = transport.try_shutdown();
                 return Err(PluginError::Protocol(
@@ -459,14 +479,18 @@ impl HostedPlugin {
                 if value
                     .get("plugins")
                     .and_then(Value::as_array)
-                    .is_some_and(|plugins| !plugins.is_empty()) => {}
+                    .is_some_and(|plugins| !plugins.is_empty()) =>
+            {
+                value
+            }
             Ok(Ok(_)) => {
                 let _ = transport.try_shutdown();
                 return Err(PluginError::Protocol(
                     "init response must include a non-empty `plugins` array".into(),
                 ));
             }
-        }
+        };
+        let info = init_provider_info(&value, &info);
         Ok(Self {
             info,
             transport,
@@ -474,36 +498,6 @@ impl HostedPlugin {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             next_session: AtomicU64::new(0),
         })
-    }
-
-    /// Forward an HTTP request to the plugin (`fetch` RPC) and return its
-    /// raw response.
-    pub async fn fetch(
-        &self,
-        account: &str,
-        req: PluginFetchRequest,
-    ) -> Result<PluginFetchResponse, PluginError> {
-        let PluginFetchRequest {
-            url,
-            method,
-            headers,
-            body,
-        } = req;
-        let headers: Map<String, Value> = headers
-            .into_iter()
-            .map(|(name, value)| (name, Value::String(value)))
-            .collect();
-        let params = json!({
-            "url": url,
-            "method": method,
-            "headers": headers,
-            "body": body,
-            "provider": self.info.id,
-            "account": account,
-        });
-        let value = self.transport.call("fetch", params).await?;
-        serde_json::from_value(value)
-            .map_err(|e| PluginError::Protocol(format!("invalid `fetch` response: {e}")))
     }
 
     /// Call one RPC and decode the reply, mapping decode failures to
@@ -516,6 +510,33 @@ impl HostedPlugin {
         let value = transport.call(method, params).await?;
         serde_json::from_value(value)
             .map_err(|e| PluginError::Protocol(format!("invalid `{method}` response: {e}")))
+    }
+}
+
+/// Provider metadata from the init reply's `providers` array, if any.
+///
+/// The JS host reports the plugin's real `{id, name, methods}` metadata. The
+/// entry matching `fallback.id` wins when present, otherwise the first valid
+/// entry. When the reply carries no (parsable) providers — non-JS plugin
+/// processes — the caller-supplied `info` is kept so those handshakes keep
+/// working.
+fn init_provider_info(value: &Value, fallback: &PluginProviderInfo) -> PluginProviderInfo {
+    let Some(entries) = value.get("providers").and_then(Value::as_array) else {
+        return fallback.clone();
+    };
+    let chosen = entries
+        .iter()
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(fallback.id.as_str()))
+        .or_else(|| entries.iter().find(|entry| entry.is_object()));
+    let Some(entry) = chosen else {
+        return fallback.clone();
+    };
+    match serde_json::from_value::<PluginProviderInfo>(entry.clone()) {
+        Ok(info) => info,
+        Err(e) => {
+            log::warn!("unparsable provider metadata in init reply: {e}");
+            fallback.clone()
+        }
     }
 }
 
@@ -644,6 +665,57 @@ impl ProviderPlugin for HostedPlugin {
             Ok((!value.is_null()).then_some(value))
         })
     }
+
+    fn load(&self, params: LoadParams) -> PluginFuture<LoaderOptions> {
+        let transport = Arc::clone(&self.transport);
+        Box::pin(async move {
+            let request = serde_json::to_value(&params)
+                .map_err(|e| PluginError::Rpc(format!("failed to encode load params: {e}")))?;
+            Self::rpc::<LoaderOptions>(&transport, methods::LOAD, request).await
+        })
+    }
+
+    fn models(&self, params: ModelsParams) -> PluginFuture<Vec<PluginModel>> {
+        let transport = Arc::clone(&self.transport);
+        Box::pin(async move {
+            let request = serde_json::to_value(&params)
+                .map_err(|e| PluginError::Rpc(format!("failed to encode models params: {e}")))?;
+            Self::rpc::<Vec<PluginModel>>(&transport, methods::MODELS, request).await
+        })
+    }
+
+    fn fetch(&self, params: PluginFetchParams) -> PluginFuture<PluginFetchResponse> {
+        let transport = Arc::clone(&self.transport);
+        // The provider defaults to the plugin's own id when the caller does
+        // not say: the host always knows which plugin it is talking to.
+        let provider = if params.provider.is_empty() {
+            self.info.id.clone()
+        } else {
+            params.provider.clone()
+        };
+        Box::pin(async move {
+            let headers: Map<String, Value> = params
+                .headers
+                .into_iter()
+                .map(|(name, value)| (name, Value::String(value)))
+                .collect();
+            let mut request = json!({
+                "url": params.url,
+                "method": params.method,
+                "headers": headers,
+                "body": params.body,
+                "provider": provider,
+                "account": params.account,
+            });
+            if !params.model.is_empty() {
+                request["model"] = Value::String(params.model);
+            }
+            if !params.npm.is_empty() {
+                request["npm"] = Value::String(params.npm);
+            }
+            Self::rpc::<PluginFetchResponse>(&transport, methods::FETCH, request).await
+        })
+    }
 }
 
 /// Reader-thread body: parse each stdout line as JSON and hand responses to
@@ -714,7 +786,7 @@ mod tests {
 
     use super::*;
     // Only the tests build/read concrete credential entries.
-    use super::super::PluginAuth;
+    use super::super::{AuthMethod, AuthMethodKind, PluginAuth};
 
     /// Echoes every request back: `result` = params, or `error` for "fail".
     const ECHO_SCRIPT: &str = r#"
@@ -1190,21 +1262,24 @@ for line in sys.stdin:
         )
         .await;
 
-        let response = plugin
-            .fetch(
-                "me",
-                PluginFetchRequest {
-                    url: "https://api.example.com/v1/chat".into(),
-                    method: "POST".into(),
-                    headers: vec![
-                        ("authorization".into(), "Bearer t".into()),
-                        ("content-type".into(), "application/json".into()),
-                    ],
-                    body: "{\"q\":1}".into(),
-                },
-            )
-            .await
-            .unwrap();
+        // The trait method (not an inherent one): provider falls back to
+        // the plugin's own id, account rides in the params.
+        let response = ProviderPlugin::fetch(
+            &plugin,
+            PluginFetchRequest {
+                url: "https://api.example.com/v1/chat".into(),
+                method: "POST".into(),
+                headers: vec![
+                    ("authorization".into(), "Bearer t".into()),
+                    ("content-type".into(), "application/json".into()),
+                ],
+                body: "{\"q\":1}".into(),
+                account: "me".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(
             response.headers.get("content-type").map(String::as_str),
@@ -1600,6 +1675,194 @@ for line in sys.stdin:
             .await
             .unwrap();
         assert_eq!(usage, None);
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_init_reports_providers() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, _store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        // The metadata comes from the init reply's `providers`, not from the
+        // caller-supplied fallback (`hello_info()` says "Hello fixture").
+        assert_eq!(plugin.info().id, "hello");
+        assert_eq!(plugin.info().name, "Hello from init");
+        assert_eq!(
+            plugin.info().methods,
+            vec![AuthMethod {
+                kind: AuthMethodKind::Oauth,
+                prompts: vec![],
+            }]
+        );
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_load_runs_the_loader_once_per_account() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, _store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        // The loader only runs for signed-in accounts: sign in first.
+        let result = hello_sign_in(&plugin, "new").await;
+        assert!(result.ok);
+
+        let params = LoadParams {
+            provider: "hello".into(),
+            account: "new".into(),
+            proxy: None,
+        };
+        let first = plugin.load(params.clone()).await.unwrap();
+        assert_eq!(first.base_url, "https://hello.example.test");
+        assert_eq!(first.api_key, "k-1");
+        assert_eq!(
+            first.headers,
+            BTreeMap::from([("X-Hello".to_string(), "1".to_string())])
+        );
+        assert!(!first.fetch);
+
+        // Second load: cached — the loader did not run again (another run
+        // would have bumped the fixture counter to "k-2").
+        let second = plugin.load(params).await.unwrap();
+        assert_eq!(second, first);
+        assert_eq!(second.api_key, "k-1");
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_load_falls_back_to_the_stored_api_key() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        // Written before `init`, into the very auth file the plugin host reads.
+        let store = Arc::new(PluginAuthStore::new(root.path().join("auth.json")));
+        store
+            .set(
+                "hello:bot",
+                PluginAuth::ApiKey {
+                    key: "k-stored".into(),
+                    extra: BTreeMap::new(),
+                },
+            )
+            .unwrap();
+        let plugin = HostedPlugin::start(
+            default_launch(vec![hello_spec()]),
+            hello_info(),
+            Arc::clone(&store),
+        )
+        .await
+        .unwrap();
+
+        // The fixture loader omits apiKey when the stored credential is an
+        // api key: magpie options() falls back to `stored.key`.
+        let options = plugin
+            .load(LoadParams {
+                provider: "hello".into(),
+                account: "bot".into(),
+                proxy: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(options.api_key, "k-stored");
+        assert_eq!(options.base_url, "https://hello.example.test");
+        assert!(!options.fetch);
+
+        // No stored credentials: the loader is not called and the reply is
+        // the all-defaults shape.
+        let anonymous = plugin
+            .load(LoadParams {
+                provider: "hello".into(),
+                account: "ghost".into(),
+                proxy: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(anonymous, LoaderOptions::default());
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_models_reports_npm_and_api_id() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, _store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        let models = plugin
+            .models(ModelsParams {
+                provider: "hello".into(),
+                account: "new".into(),
+                proxy: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(models.len(), 1);
+        let model = &models[0];
+        assert_eq!(model.id, "hello-chat");
+        assert_eq!(model.name, "Hello Chat");
+        assert_eq!(model.npm, "@ai-sdk/openai-compatible");
+        assert_eq!(model.api_id, "hello-chat");
+        assert_eq!(model.url, "");
+        assert_eq!(model.context, 0);
+        assert!(!model.reasoning);
+
+        // A `null` reply from the plugin normalizes to an empty list.
+        let none = plugin
+            .models(ModelsParams {
+                provider: "hello".into(),
+                account: "none".into(),
+                proxy: None,
+            })
+            .await
+            .unwrap();
+        assert!(none.is_empty());
+        plugin.transport.try_shutdown().unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_host_fetch_is_reachable_through_the_trait() {
+        if !node_available() {
+            eprintln!("skipping: node not available");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (plugin, _store) = start_node_plugin(root.path(), vec![hello_spec()]).await;
+
+        // Called through the trait — HostedPlugin has no inherent `fetch`.
+        let response = ProviderPlugin::fetch(
+            &plugin,
+            PluginFetchParams {
+                url: "https://api.hello.example.test/v1/chat".into(),
+                method: "POST".into(),
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: "{\"q\":1}".into(),
+                provider: "hello".into(),
+                account: "new".into(),
+                model: "hello-chat".into(),
+                npm: "@ai-sdk/openai-compatible".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status, 200);
+        // The fixture's fetch hook echoes the request identity back.
+        let body: Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(body["url"], "https://api.hello.example.test/v1/chat");
+        assert_eq!(body["provider"], "hello");
+        assert_eq!(body["account"], "new");
+        assert_eq!(body["model"], "hello-chat");
+        assert_eq!(body["npm"], "@ai-sdk/openai-compatible");
         plugin.transport.try_shutdown().unwrap();
     }
 }

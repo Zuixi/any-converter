@@ -22,8 +22,8 @@ use thiserror::Error;
 
 pub use authstore::{AuthStoreError, PluginAuth, PluginAuthStore};
 pub use host::{
-    HostedPlugin, PluginFetchRequest, PluginFetchResponse, PluginLaunch, PluginSpec,
-    PluginTransport, default_launch,
+    HostedPlugin, PluginFetchParams, PluginFetchRequest, PluginFetchResponse, PluginLaunch,
+    PluginSpec, PluginTransport, default_launch,
 };
 
 /// Host → plugin RPC method names (magpie host.js `handlers`).
@@ -42,6 +42,8 @@ pub mod methods {
     pub const LOAD: &str = "load";
     /// List models available to an account.
     pub const MODELS: &str = "models";
+    /// Forward an HTTP request through the plugin (`fetch`).
+    pub const FETCH: &str = "fetch";
 }
 
 /// Errors surfaced by plugin RPC calls.
@@ -103,7 +105,9 @@ pub struct PromptDef {
 /// One way to authenticate to a provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuthMethod {
-    /// The credential kind this method yields.
+    /// The credential kind this method yields. The JS host reports it as
+    /// `type` (magpie shape); the alias keeps that wire form parseable.
+    #[serde(alias = "type")]
     pub kind: AuthMethodKind,
     /// Inputs the host collects before starting the flow.
     pub prompts: Vec<PromptDef>,
@@ -223,6 +227,68 @@ pub struct UsageParams {
     pub proxy: Option<String>,
 }
 
+/// What the plugin's `load` returns for an account (magpie `plugin.Options`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoaderOptions {
+    #[serde(rename = "baseURL", default)]
+    pub base_url: String,
+    #[serde(rename = "apiKey", default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// The plugin brings its own fetch (magpie: `typeof o.fetch === "function"`).
+    #[serde(default)]
+    pub fetch: bool,
+}
+
+/// One model a plugin lists (magpie `plugin.Model` subset).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PluginModel {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub npm: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(rename = "apiId", default)]
+    pub api_id: String,
+    #[serde(default)]
+    pub context: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default)]
+    pub image: bool,
+    #[serde(default)]
+    pub free: bool,
+}
+
+/// `load` request: run the plugin's `loader` hook for an account.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoadParams {
+    /// Provider id.
+    pub provider: String,
+    /// Account name.
+    pub account: String,
+    /// Optional upstream proxy URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+}
+
+/// `models` request: list the models available to an account.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelsParams {
+    /// Provider id.
+    pub provider: String,
+    /// Account name.
+    pub account: String,
+    /// Optional upstream proxy URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+}
+
 /// A provider plugin: metadata plus the host↔plugin RPC surface.
 ///
 /// Methods mirror the magpie host.js `handlers` one-to-one. The trait is
@@ -247,6 +313,15 @@ pub trait ProviderPlugin: Send + Sync {
 
     /// Fetch usage/billing JSON (`usage`); `Ok(None)` when unavailable.
     fn usage(&self, params: UsageParams) -> PluginFuture<Option<Value>>;
+
+    /// Load account options from the plugin's `loader` hook (`load`).
+    fn load(&self, params: LoadParams) -> PluginFuture<LoaderOptions>;
+
+    /// List the models the plugin exposes (`models`).
+    fn models(&self, params: ModelsParams) -> PluginFuture<Vec<PluginModel>>;
+
+    /// Forward an HTTP request through the plugin (`fetch`).
+    fn fetch(&self, params: PluginFetchParams) -> PluginFuture<PluginFetchResponse>;
 }
 
 /// Registry of available plugins keyed by provider id.
@@ -315,6 +390,18 @@ mod tests {
         }
 
         fn usage(&self, _params: UsageParams) -> PluginFuture<Option<Value>> {
+            Box::pin(async { Err(PluginError::NoSuchMethod) })
+        }
+
+        fn load(&self, _params: LoadParams) -> PluginFuture<LoaderOptions> {
+            Box::pin(async { Err(PluginError::NoSuchMethod) })
+        }
+
+        fn models(&self, _params: ModelsParams) -> PluginFuture<Vec<PluginModel>> {
+            Box::pin(async { Err(PluginError::NoSuchMethod) })
+        }
+
+        fn fetch(&self, _params: PluginFetchParams) -> PluginFuture<PluginFetchResponse> {
             Box::pin(async { Err(PluginError::NoSuchMethod) })
         }
     }
@@ -429,6 +516,18 @@ mod tests {
         fn usage(&self, p: UsageParams) -> PluginFuture<Option<Value>> {
             let out = json!({ "provider": p.provider, "account": p.account });
             Box::pin(async move { Ok(Some(out)) })
+        }
+
+        fn load(&self, _p: LoadParams) -> PluginFuture<LoaderOptions> {
+            Box::pin(async { Err(PluginError::NoSuchMethod) })
+        }
+
+        fn models(&self, _p: ModelsParams) -> PluginFuture<Vec<PluginModel>> {
+            Box::pin(async { Err(PluginError::NoSuchMethod) })
+        }
+
+        fn fetch(&self, _p: PluginFetchParams) -> PluginFuture<PluginFetchResponse> {
+            Box::pin(async { Err(PluginError::NoSuchMethod) })
         }
     }
 
