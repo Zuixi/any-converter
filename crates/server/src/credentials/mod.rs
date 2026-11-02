@@ -79,9 +79,11 @@ impl TokenSource for ApiKeySource {
     }
 }
 
+pub mod gemini;
 pub mod store;
 pub mod token;
 
+pub use gemini::{GeminiAccount, GeminiEndpoints, GeminiSignIn, SignInError, SignInStarted};
 pub use store::{FileSecretStore, SecretStore, SecretStoreError};
 pub use token::{AuthErr401, OAuthTokens, RefreshOutcome, TokenManager};
 
