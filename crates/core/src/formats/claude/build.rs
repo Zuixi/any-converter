@@ -42,7 +42,10 @@ pub fn build(ir: IrRequest) -> ClaudeRequest {
     ClaudeRequest {
         model,
         max_tokens,
-        messages: messages.into_iter().map(build_message).collect(),
+        messages: merge_same_role(messages)
+            .into_iter()
+            .map(build_message)
+            .collect(),
         system: build_system(system),
         temperature: sampling
             .temperature
@@ -140,6 +143,25 @@ fn build_message(msg: IrMessage) -> ClaudeMessage {
         role: role.into(),
         content: text_or_blocks(msg.parts, empty),
     }
+}
+
+/// Anthropic's Messages takes consecutive same-role messages as one turn
+/// (and rejects non-alternating roles), and a client can split one turn's
+/// parallel tool calls over two assistant messages: fold same-role runs
+/// into one message, as the old pairwise builders' merge_claude_messages
+/// did (magpie ir.go joinSplitCalls, #1275).
+fn merge_same_role(messages: Vec<IrMessage>) -> Vec<IrMessage> {
+    let mut out: Vec<IrMessage> = Vec::with_capacity(messages.len());
+    for msg in messages {
+        if let Some(last) = out.last_mut() {
+            if last.role == msg.role {
+                last.parts.extend(msg.parts);
+                continue;
+            }
+        }
+        out.push(msg);
+    }
+    out
 }
 
 /// Claude collapses a lone text block to a bare string, as every pairwise
@@ -259,4 +281,49 @@ fn build_response_block(part: IrPart) -> Option<ClaudeContentBlock> {
 
 fn text_block(text: String) -> Value {
     serde_json::json!({ "type": "text", "text": text })
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use crate::ir::{IrMessage, IrPart, Role};
+
+    fn msg(role: Role, parts: Vec<IrPart>) -> IrMessage {
+        IrMessage { role, parts }
+    }
+
+    #[test]
+    fn consecutive_same_role_fold_into_one_turn() {
+        // Anthropic rejects non-alternating roles; a chat client may send
+        // [user, user] or split parallel tool calls over two assistants
+        let merged = merge_same_role(vec![
+            msg(Role::User, vec![IrPart::Text("a".into())]),
+            msg(Role::User, vec![IrPart::Text("b".into())]),
+            msg(Role::Assistant, vec![IrPart::Text("r".into())]),
+            msg(
+                Role::Assistant,
+                vec![IrPart::ToolCall {
+                    id: "t1".into(),
+                    name: "get_weather".into(),
+                    args: serde_json::json!({}),
+                }],
+            ),
+        ]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].role, Role::User);
+        assert_eq!(merged[0].parts.len(), 2);
+        assert_eq!(merged[1].role, Role::Assistant);
+        assert_eq!(merged[1].parts.len(), 2); // text + tool call in one turn
+    }
+
+    #[test]
+    fn alternating_messages_are_untouched() {
+        let ms = vec![
+            msg(Role::User, vec![IrPart::Text("hi".into())]),
+            msg(Role::Assistant, vec![IrPart::Text("hello".into())]),
+            msg(Role::User, vec![IrPart::Text("again".into())]),
+        ];
+        let merged = merge_same_role(ms.clone());
+        assert_eq!(merged, ms);
+    }
 }
