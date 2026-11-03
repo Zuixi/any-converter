@@ -63,7 +63,7 @@ impl ServerManager {
                 status: ServerStatus {
                     state: ServerRunState::Stopped,
                     host: "0.0.0.0".to_string(),
-                    port: 8080,
+                    port: 1228,
                     last_error: None,
                 },
             })),

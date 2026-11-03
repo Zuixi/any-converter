@@ -297,6 +297,7 @@ impl TestEnv {
             copilot: Arc::new(
                 any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
             ),
+            agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
             hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
                 Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                     std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -598,6 +599,7 @@ async fn revoked_401_marks_account_and_fails_over() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),

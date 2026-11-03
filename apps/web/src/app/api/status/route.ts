@@ -14,7 +14,7 @@ function getLogDir(): string {
 }
 
 function getServerUrl(): string {
-  return process.env.SERVER_URL ?? "http://127.0.0.1:8080";
+  return process.env.SERVER_URL ?? "http://127.0.0.1:1228";
 }
 
 async function fetchHealth(): Promise<HealthStatus> {

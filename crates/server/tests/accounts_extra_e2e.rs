@@ -66,6 +66,7 @@ fn app(dir: &std::path::Path, accounts: Vec<String>) -> axum::Router {
         hosts: Arc::new(ManagedHosts::with_store(Arc::new(PluginAuthStore::new(
             dir.join("plugin-auth.json"),
         )))),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         usage_logger: None,
         request_logger: None,
     });
@@ -232,6 +233,7 @@ fn app_with_plugins(dir: &std::path::Path) -> axum::Router {
         copilot: Arc::new(any_converter_server::credentials::CopilotSessions::new(
             Client::new(),
         )),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         copilot_allowances: Arc::new(
             any_converter_server::credentials::CopilotAllowances::default(),
         ),

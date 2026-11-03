@@ -75,6 +75,7 @@ fn make_app(providers: Vec<ProviderConfig>, route_provider: &str, api_key: Optio
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),

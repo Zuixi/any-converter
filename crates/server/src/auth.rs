@@ -41,6 +41,43 @@ pub fn validate_client_key(
     }
 }
 
+/// Validate the client API key against the global key or any agent key.
+///
+/// When no global key is configured the request is allowed (local single-user
+/// mode), preserving the behavior of [`validate_client_key`]. Otherwise the
+/// bearer token must equal the global key or one of the supplied agent keys.
+pub fn validate_client_keys<'a>(
+    client_api_key: Option<&str>,
+    agent_keys: impl Iterator<Item = &'a str>,
+    auth_header: Option<&str>,
+) -> Result<(), AuthError> {
+    match client_api_key {
+        None => Ok(()),
+        Some(expected) => {
+            let provided = auth_header
+                .and_then(|h| h.strip_prefix("Bearer "))
+                .ok_or(AuthError::Missing)?;
+            if provided == expected || agent_keys.into_iter().any(|key| key == provided) {
+                Ok(())
+            } else {
+                Err(AuthError::Invalid)
+            }
+        }
+    }
+}
+
+/// Validate a management/control-plane request.
+///
+/// Management endpoints accept the global server key only; per-agent keys are
+/// inference-only so an agent cannot rewrite its own wiring. When no global key
+/// is configured the endpoint is open (local single-user mode).
+pub fn require_management_key(
+    client_api_key: Option<&str>,
+    auth_header: Option<&str>,
+) -> Result<(), AuthError> {
+    validate_client_key(client_api_key, auth_header)
+}
+
 /// Build upstream authentication headers for the given provider format.
 pub fn build_upstream_auth_headers(format: Format, api_key: &str) -> Vec<(String, String)> {
     build_headers_for_scheme(default_auth_scheme(format), api_key)
@@ -100,6 +137,50 @@ mod tests {
     fn test_skip_validation_when_no_key_configured() {
         assert!(validate_client_key(None, None).is_ok());
         assert!(validate_client_key(None, Some("Bearer anything")).is_ok());
+    }
+
+    #[test]
+    fn test_validate_client_keys_accepts_global_and_agent_keys() {
+        let keys = ["acw_claude-code_abc"];
+        assert!(
+            validate_client_keys(Some("global"), keys.iter().copied(), Some("Bearer global"))
+                .is_ok()
+        );
+        assert!(
+            validate_client_keys(
+                Some("global"),
+                keys.iter().copied(),
+                Some("Bearer acw_claude-code_abc"),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_client_keys(Some("global"), keys.iter().copied(), Some("Bearer wrong")),
+            Err(AuthError::Invalid)
+        );
+        assert_eq!(
+            validate_client_keys(Some("global"), keys.iter().copied(), None),
+            Err(AuthError::Missing)
+        );
+    }
+
+    #[test]
+    fn test_validate_client_keys_open_when_no_global_key() {
+        assert!(validate_client_keys(None, std::iter::empty(), None).is_ok());
+        assert!(
+            validate_client_keys(None, ["acw_x"].iter().copied(), None).is_ok(),
+            "local mode stays open regardless of stored agent keys"
+        );
+    }
+
+    #[test]
+    fn test_require_management_key_rejects_agent_keys() {
+        assert!(require_management_key(Some("global"), Some("Bearer global")).is_ok());
+        assert_eq!(
+            require_management_key(Some("global"), Some("Bearer acw_claude-code_abc")),
+            Err(AuthError::Invalid)
+        );
+        assert!(require_management_key(None, None).is_ok());
     }
 
     #[test]

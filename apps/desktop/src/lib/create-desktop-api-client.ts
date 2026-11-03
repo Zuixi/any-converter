@@ -21,7 +21,7 @@ export function createDesktopApiClient(): ApiClient {
         config: {
           server: {
             host: settings["server.host"],
-            port: Number(settings["server.port"] ?? 8080),
+            port: Number(settings["server.port"] ?? 1228),
           },
         },
         raw: JSON.stringify(settings, null, 2),
