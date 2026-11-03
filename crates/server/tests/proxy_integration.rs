@@ -72,6 +72,9 @@ async fn non_streaming_proxy() {
         config,
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
@@ -177,6 +180,9 @@ async fn client_headers_passthrough_to_upstream() {
         config,
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
@@ -266,6 +272,9 @@ async fn streaming_proxy_text() {
         config,
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
@@ -340,6 +349,9 @@ async fn provider_failover_priority() {
         config,
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
@@ -397,6 +409,9 @@ async fn auth_missing_returns_401() {
         config,
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
@@ -449,6 +464,9 @@ async fn auth_invalid_returns_401() {
         config,
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
@@ -511,6 +529,9 @@ async fn upstream_error_returns_502() {
         config,
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
@@ -557,6 +578,9 @@ async fn health_returns_ok() {
         config,
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(

@@ -17,7 +17,7 @@ use serde_json::Value;
 use crate::agent_id::agent_of;
 use crate::auth::{self, AuthError};
 use crate::config::{PluginRef, RouteStrategy, ServerConfig, UpstreamApi};
-use crate::credentials::allowance::copilot_allowance;
+use crate::credentials::allowance::{CopilotAllowances, copilot_allowance};
 use crate::credentials::copilot::{
     COPILOT_DEFAULT_API_BASE, CopilotError, CopilotSessions, copilot_api_headers,
 };
@@ -47,6 +47,8 @@ pub struct AppState {
     /// Copilot session cache (GitHub OAuth token → short-lived Copilot
     /// session token) for `copilot:` account providers (P7).
     pub copilot: Arc<CopilotSessions>,
+    /// Copilot quota windows, cached so routing never waits on one (P9).
+    pub copilot_allowances: Arc<CopilotAllowances>,
     pub usage_logger: Option<Arc<UsageLogger>>,
     pub request_logger: Option<Arc<RequestLogger>>,
     /// Plugin subprocess hosts for providers with a `plugin` entry (P6.2).
@@ -155,20 +157,29 @@ const QUOTA_SHARE: f64 = 95.0;
 /// windows, one entry per account — accounts with no quota information
 /// report `"windows": []`, never null.
 pub async fn handle_account_quotas(State(state): State<Arc<AppState>>) -> Response {
-    let mut accounts = Vec::new();
+    // The user asked for these, so they are read for real — but side by
+    // side, so a pool of N accounts costs one round trip rather than N.
+    let mut wanted = Vec::new();
     for provider in &state.config.providers {
         for account_id in provider.account_ids() {
-            let allowance = read_account_allowance(&state, provider, account_id).await;
+            wanted.push((provider.clone(), account_id.to_string()));
+        }
+    }
+    let reads = wanted.into_iter().map(|(provider, account_id)| {
+        let state = Arc::clone(&state);
+        async move {
+            let allowance = read_account_allowance(&state, &provider, &account_id).await;
             let windows: Vec<serde_json::Value> = allowance
                 .map(|allowance| allowance.iter().map(quota_window_json).collect())
                 .unwrap_or_default();
-            accounts.push(serde_json::json!({
+            serde_json::json!({
                 "provider": account_id.split(':').next().unwrap_or(""),
                 "account": account_id,
                 "windows": windows,
-            }));
+            })
         }
-    }
+    });
+    let accounts: Vec<serde_json::Value> = futures_util::future::join_all(reads).await;
     Json(serde_json::json!({ "accounts": accounts })).into_response()
 }
 
@@ -388,6 +399,42 @@ pub async fn handle_account_remove(
 /// Antigravity report them through `fetchAvailableModels` (the resolver
 /// caches the reading); Copilot reports one window through the Copilot
 /// user endpoint; every other vendor says nothing → `None`.
+/// The account's allowance as last read, **without any I/O**, kicking off a
+/// background refresh when it is missing or stale.
+///
+/// The request path uses this: a quota read must never delay a request
+/// (magpie reads allowances in the background). `read_account_allowance`
+/// stays for the quotas endpoint and the UI, where the user is asking.
+fn cached_account_allowance(
+    state: &AppState,
+    provider: &crate::config::ProviderConfig,
+    account_id: &str,
+) -> Option<Allowance> {
+    if account_id.split(':').next() == Some("copilot") {
+        return state.copilot_allowances.fresh(account_id).or_else(|| {
+            state.copilot_allowances.refresh_in_background(
+                Arc::clone(&state.accounts),
+                Arc::clone(&state.copilot),
+                state.client.clone(),
+                account_id.to_string(),
+            );
+            None
+        });
+    }
+    if let Some(allowance) = state.accounts.allowance_fresh(account_id) {
+        return Some(allowance);
+    }
+    let base = if provider.base_url.is_empty() {
+        "https://cloudcode-pa.googleapis.com"
+    } else {
+        provider.base_url.as_str()
+    };
+    state
+        .accounts
+        .refresh_allowance_in_background(account_id, base);
+    None
+}
+
 async fn read_account_allowance(
     state: &AppState,
     provider: &crate::config::ProviderConfig,
@@ -1292,8 +1339,13 @@ async fn process_request(
         // exchange): with a single account there is nothing to reorder,
         // so the reading is skipped (magpie reads quotas to rank seats).
         if ids.len() > 1 {
+            // Routing never waits on a quota read (magpie: allowances are
+            // read in the background and "never waited for"). A cached,
+            // fresh value decides the order; a stale one is refreshed off
+            // the request path, and an account with nothing cached counts
+            // as having room, so a cold start keeps the user's order.
             for account_id in &ids {
-                if let Some(allowance) = read_account_allowance(state, provider, account_id).await {
+                if let Some(allowance) = cached_account_allowance(state, provider, account_id) {
                     allowances.insert((*account_id).to_string(), allowance);
                 }
             }
@@ -2102,6 +2154,7 @@ mod tests {
             usage_logger: None,
             request_logger: None,
             copilot: Arc::new(CopilotSessions::new(Client::new())),
+            copilot_allowances: Arc::new(CopilotAllowances::default()),
             hosts: Arc::new(crate::plugins::ManagedHosts::with_store(Arc::new(
                 crate::plugins::PluginAuthStore::new(
                     tempfile::tempdir().unwrap().path().join("auth.json"),
@@ -2205,6 +2258,7 @@ mod tests {
             usage_logger: None,
             request_logger: None,
             copilot: Arc::new(CopilotSessions::new(Client::new())),
+            copilot_allowances: Arc::new(CopilotAllowances::default()),
             hosts: Arc::new(crate::plugins::ManagedHosts::with_store(Arc::new(
                 crate::plugins::PluginAuthStore::new(
                     tempfile::tempdir().unwrap().path().join("auth.json"),

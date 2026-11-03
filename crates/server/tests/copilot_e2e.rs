@@ -337,6 +337,9 @@ impl TestEnv {
             client,
             accounts,
             copilot,
+            copilot_allowances: Arc::new(
+                any_converter_server::credentials::CopilotAllowances::default(),
+            ),
             usage_logger: None,
             request_logger: None,
             hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(

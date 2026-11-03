@@ -127,6 +127,9 @@ async fn request_log_non_streaming_captures_body_usage_latency() {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
         accounts: AccountResolver::with_default_store(Client::new()),
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: any_converter_server::request_log::create_request_logger(
             Some(&log_path.to_string_lossy()),
@@ -239,6 +242,9 @@ async fn request_log_streaming_captures_ttfb_and_sse_lines() {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
         accounts: AccountResolver::with_default_store(Client::new()),
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: any_converter_server::request_log::create_request_logger(
             Some(&log_path.to_string_lossy()),

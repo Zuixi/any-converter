@@ -67,6 +67,9 @@ fn make_app(providers: Vec<ProviderConfig>, route_provider: &str, api_key: Optio
         accounts: any_converter_server::credentials::AccountResolver::with_default_store(
             Client::new(),
         ),
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
