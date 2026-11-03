@@ -11,6 +11,8 @@
 //! those accounts are simply removed ([`RevokeOutcome::NotOffered`]).
 
 use crate::config::build_proxied_client;
+use crate::credentials::siwc_signin::SiwcSignIn;
+use crate::credentials::siwc_store;
 use crate::credentials::{AccountResolver, Credential};
 
 /// How the revocation part of a removal went.
@@ -54,6 +56,34 @@ pub async fn remove(
 
     // Read the token first, revoke, then delete — in that order (magpie).
     let credential = accounts.stored(id).map_err(|error| error.to_string())?;
+
+    // A Sign in with ChatGPT account revokes at the endpoint OpenAI
+    // publishes in its OIDC metadata (magpie `siwcRevoke`), which is the
+    // only place it is named.
+    if provider == "chatgpt-api" {
+        // Through the account's own exit, as every other request is: a
+        // revocation that left from another address reads as a stranger.
+        let client = build_proxied_client(proxy).unwrap_or_default();
+        let refresh_token = credential.as_ref().and_then(|credential| match credential {
+            Credential::OAuth { refresh_token, .. } => refresh_token.clone(),
+            _ => None,
+        });
+        let outcome = match SiwcSignIn::new(client)
+            .with_meta_path(siwc_store::default_path())
+            .revoke(id, refresh_token.as_deref())
+            .await
+        {
+            Ok(true) => RevokeOutcome::Revoked,
+            Ok(false) => RevokeOutcome::NotOffered,
+            Err(err) => RevokeOutcome::Failed(err.to_string()),
+        };
+        accounts
+            .delete_stored(id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = siwc_store::remove(&siwc_store::default_path(), id);
+        return Ok(outcome);
+    }
 
     let outcome = match revocation_endpoint(provider) {
         None => RevokeOutcome::NotOffered,
@@ -141,6 +171,7 @@ mod tests {
             access_token: "ya29.access".to_string(),
             refresh_token: refresh_token.map(String::from),
             expires_at_unix: Some(1_900_000_000),
+            siwc: None,
         }
     }
 

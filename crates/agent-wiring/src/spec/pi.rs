@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use serde_json::{Map, Value, json};
 
 use super::{
-    AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, env_dir, gateway_path,
-    gw_base_match, load_stash, read_config, record_old_values, save_stash, write_config,
+    AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, env_dir, gateway_path, gw_base_match,
+    load_stash, read_config, record_old_values, save_stash, write_config,
 };
 use crate::edit::{KV, json};
 use crate::error::WiringError;

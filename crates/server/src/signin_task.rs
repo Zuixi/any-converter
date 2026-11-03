@@ -28,6 +28,17 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::credentials::Credential;
+use std::time::Duration;
+
+/// How often an "auto" plugin flow is retried before it is started afresh.
+///
+/// Retrying the callback is cheap — the plugin is waiting on its own browser
+/// — while starting the flow again is not: each `authorize` may open a page
+/// or create a vendor-side session. So the first retries only re-ask the
+/// callback; a fresh flow is started once, after the callback has had a
+/// minute to complete.
+const PLUGIN_SIGN_IN_RETRY: Duration = Duration::from_secs(2);
+const PLUGIN_SIGN_IN_RESTART_AFTER: Duration = Duration::from_secs(60);
 use crate::credentials::account::AccountResolver;
 use crate::credentials::claude_signin::CLAUDE_INSTALL_HINT;
 use crate::credentials::claude_signin::ClaudeSignIn;
@@ -38,6 +49,8 @@ use crate::credentials::copilot::{CopilotEndpoints, CopilotSignIn};
 use crate::credentials::gemini::{
     DEFAULT_SIGN_IN_TIMEOUT, GeminiAccount, GeminiEndpoints, GeminiSignIn, GoogleApp, SignInError,
 };
+use crate::credentials::siwc_signin::SiwcSignIn;
+use crate::credentials::siwc_signin::SiwcStarted;
 
 /// The terminal state of a task's flow (`waiting|done|failed|canceled`).
 pub const STATE_WAITING: &str = "waiting";
@@ -103,6 +116,19 @@ enum TaskDriver {
         /// The OAuth `state` `submit` must pass to `finish_pasted`.
         oauth_state: String,
     },
+    /// Sign in with ChatGPT: a pasted callback address finishes it, and the
+    /// started flow carries the PKCE verifier and nonce it must check.
+    Siwc {
+        sign_in: Arc<SiwcSignIn>,
+        started: SiwcStarted,
+    },
+    /// A provider a plugin serves: `submit` hands the pasted code to the
+    /// plugin's `callback` (an "auto" flow is waited out in the background).
+    Plugin {
+        host: Arc<crate::plugins::HostedPlugin>,
+        session: String,
+        provider: String,
+    },
     /// The Claude driver lives in the background task (the `claude auth
     /// login` it waits on); `submit` feeds the CLI's stdin / callback.
     Claude { sign_in: Arc<ClaudeSignIn> },
@@ -142,6 +168,8 @@ pub struct SignInTasks {
     /// The server-level proxy ([`crate::config::ServerSettings::proxy`]);
     /// `start` falls back to it when the provider has none of its own.
     server_proxy: Option<String>,
+    /// Plugin hosts, for a provider a plugin serves (`plugin:<id>`).
+    hosts: Option<Arc<crate::plugins::ManagedHosts>>,
 }
 
 impl Registry {
@@ -164,15 +192,24 @@ impl SignInTasks {
     /// The process-wide registry, initialized lazily with no server proxy
     /// (handlers use this when no router has seeded it yet).
     pub fn global() -> Arc<SignInTasks> {
-        Self::init(None)
+        Self::init(None, None)
     }
 
     /// Get-or-seed the process-wide registry with `server_proxy`. The
     /// router calls this once per process; the first caller's proxy wins.
-    pub fn init(server_proxy: Option<String>) -> Arc<SignInTasks> {
+    pub fn init(
+        server_proxy: Option<String>,
+        hosts: Option<Arc<crate::plugins::ManagedHosts>>,
+    ) -> Arc<SignInTasks> {
         GLOBAL
-            .get_or_init(|| Arc::new(SignInTasks::new(server_proxy)))
+            .get_or_init(|| Arc::new(SignInTasks::new(server_proxy).with_hosts(hosts)))
             .clone()
+    }
+
+    /// Give this registry the plugin hosts it signs in through.
+    pub fn with_hosts(mut self, hosts: Option<Arc<crate::plugins::ManagedHosts>>) -> Self {
+        self.hosts = hosts;
+        self
     }
 
     /// A standalone registry (tests).
@@ -180,6 +217,7 @@ impl SignInTasks {
         Self {
             inner: Arc::new(std::sync::Mutex::new(Registry::default())),
             server_proxy,
+            hosts: None,
         }
     }
 
@@ -204,6 +242,20 @@ impl SignInTasks {
         proxy: Option<String>,
         accounts: Arc<AccountResolver>,
     ) -> Result<SignInTask, String> {
+        self.start_with_proxy_at(provider, None, None, proxy, accounts)
+            .await
+    }
+
+    /// [`Self::start_with_proxy`] naming the plugin a `plugin:<id>` provider
+    /// belongs to, and which of its methods to use.
+    pub async fn start_with_proxy_at(
+        &self,
+        provider: &str,
+        spec: Option<&str>,
+        method: Option<usize>,
+        proxy: Option<String>,
+        accounts: Arc<AccountResolver>,
+    ) -> Result<SignInTask, String> {
         match provider.to_ascii_lowercase().as_str() {
             "gemini" => {
                 self.start_google(GoogleApp::Gemini, "gemini", proxy, accounts)
@@ -215,6 +267,11 @@ impl SignInTasks {
             }
             "codex" => self.start_codex(proxy, accounts).await,
             "copilot" => self.start_copilot(proxy, accounts).await,
+            "chatgpt-api" => self.start_siwc(accounts).await,
+            other if other.starts_with("plugin:") => {
+                self.start_plugin(&other["plugin:".len()..], spec, method, proxy, accounts)
+                    .await
+            }
             "claude" => self.start_claude(accounts).await,
             other => Err(format!(
                 "unknown provider: {other} (supported: gemini, antigravity, codex, copilot, \
@@ -247,6 +304,12 @@ impl SignInTasks {
         enum Action {
             /// A paste that goes into a running CLI (Claude).
             IntoCli(Arc<ClaudeSignIn>),
+            /// A plugin's pasted code finishes the flow.
+            IntoPlugin {
+                host: Arc<crate::plugins::HostedPlugin>,
+                session: String,
+                provider: String,
+            },
             /// A paste that finishes the flow here (gemini/antigravity/codex).
             Finish {
                 driver: TaskDriver,
@@ -276,7 +339,18 @@ impl SignInTasks {
                     // the task when the CLI exits. A refused paste keeps the
                     // flow alive so a corrected one can be submitted.
                     TaskDriver::Claude { sign_in } => Action::IntoCli(Arc::clone(sign_in)),
-                    TaskDriver::Gemini { .. } | TaskDriver::Codex { .. } => Action::Finish {
+                    TaskDriver::Plugin {
+                        host,
+                        session,
+                        provider,
+                    } => Action::IntoPlugin {
+                        host: Arc::clone(host),
+                        session: session.clone(),
+                        provider: provider.clone(),
+                    },
+                    TaskDriver::Gemini { .. }
+                    | TaskDriver::Codex { .. }
+                    | TaskDriver::Siwc { .. } => Action::Finish {
                         driver: handle.driver.clone(),
                         background: handle.background.take(),
                         accounts: Arc::clone(&handle.accounts),
@@ -298,6 +372,41 @@ impl SignInTasks {
                 return self
                     .status(id)
                     .ok_or_else(|| format!("sign-in task {id} vanished during submit"));
+            }
+            Action::IntoPlugin {
+                host,
+                session,
+                provider,
+            } => {
+                let saved = crate::plugins::ProviderPlugin::callback(
+                    &*host,
+                    crate::plugins::CallbackParams {
+                        session,
+                        code: input.trim().to_string(),
+                    },
+                )
+                .await;
+                // The plugin owns the credential: it has already written it
+                // through its own auth store, and what comes back is the
+                // provider and account it was kept under.
+                let (state, user, error) = match saved {
+                    Ok(saved) => (
+                        STATE_DONE.to_string(),
+                        format!("{}:{}", saved.provider, saved.account),
+                        String::new(),
+                    ),
+                    Err(err) => (STATE_FAILED.to_string(), String::new(), err.to_string()),
+                };
+                update_task(&self.inner, id, |task| {
+                    task.state = state;
+                    task.user = user.clone();
+                    task.error = error;
+                })
+                .await;
+                mark_finished(&self.inner, id);
+                return self.status(id).ok_or_else(|| {
+                    format!("sign-in task {id} for plugin {provider} vanished during submit")
+                });
             }
             Action::Finish {
                 driver,
@@ -336,7 +445,14 @@ impl SignInTasks {
                     settle_codex(&accounts, sign_in.finish_pasted(input, &oauth_state).await).await;
                 (state, user, plan, error)
             }
-            TaskDriver::Copilot | TaskDriver::Claude { .. } => unreachable!("refused above"),
+            TaskDriver::Siwc { sign_in, started } => {
+                let (state, user, plan, error) =
+                    settle_siwc(&accounts, sign_in.finish_pasted(input, &started).await).await;
+                (state, user, plan, error)
+            }
+            TaskDriver::Copilot | TaskDriver::Claude { .. } | TaskDriver::Plugin { .. } => {
+                unreachable!("refused above")
+            }
         };
         update_task(&self.inner, id, |task| {
             task.state = state;
@@ -527,6 +643,166 @@ impl SignInTasks {
         Ok(task)
     }
 
+    /// Start a sign-in for a provider a plugin serves (`plugin:<id>`).
+    ///
+    /// A plugin's `code` method finishes when the pasted code reaches its
+    /// `callback`; an `auto` one waits inside `callback` itself, so it is
+    /// driven in the background the way the command line does it: try,
+    /// and on refusal start the flow afresh and try again, until the
+    /// timeout runs out.
+    async fn start_plugin(
+        &self,
+        provider_id: &str,
+        spec: Option<&str>,
+        method: Option<usize>,
+        proxy: Option<String>,
+        _accounts: Arc<AccountResolver>,
+    ) -> Result<SignInTask, String> {
+        let Some(hosts) = self.hosts.clone() else {
+            return Err("plugin sign-in needs the server's plugin hosts".to_string());
+        };
+        let Some(spec) = spec.filter(|s| !s.is_empty()) else {
+            return Err(format!(
+                "signing in to plugin provider {provider_id} needs its spec (`spec` in the request)"
+            ));
+        };
+        let dir = crate::plugins::managed::plugins_dir();
+        let reference = crate::config::PluginRef {
+            spec: spec.to_string(),
+            target: dir.to_string_lossy().into_owned(),
+        };
+        let host = hosts
+            .host_for(&reference)
+            .await
+            .map_err(|e| e.to_string())?;
+        let params = crate::plugins::AuthorizeParams {
+            provider: provider_id.to_string(),
+            method: method.unwrap_or(0),
+            inputs: Some(std::collections::BTreeMap::new()),
+            account: "new".to_string(),
+            proxy: proxy.clone(),
+        };
+        let authorization = crate::plugins::ProviderPlugin::authorize(&*host, params.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let id = format!("signin-{}", Uuid::new_v4());
+        let task = SignInTask {
+            id: id.clone(),
+            provider: format!("plugin:{provider_id}"),
+            state: STATE_WAITING.to_string(),
+            url: authorization.url.clone().unwrap_or_default(),
+            code: String::new(),
+            instructions: authorization.instructions.clone().unwrap_or_default(),
+            paste_callback: false,
+            paste_code: authorization.method == "code",
+            user: String::new(),
+            plan: String::new(),
+            error: String::new(),
+        };
+
+        // A "code" flow waits for the paste; an "auto" one is driven here.
+        let (background, driver) = if authorization.method == "code" {
+            (
+                None,
+                TaskDriver::Plugin {
+                    host: Arc::clone(&host),
+                    session: authorization.session.clone(),
+                    provider: provider_id.to_string(),
+                },
+            )
+        } else {
+            let inner = self.inner.clone();
+            let task_id = id.clone();
+            let host = Arc::clone(&host);
+            (
+                Some(tokio::spawn(async move {
+                    let deadline = std::time::Instant::now() + DEFAULT_SIGN_IN_TIMEOUT;
+                    let mut current = authorization;
+                    // The flow is started again at most once per minute:
+                    // re-asking the callback is free, starting a flow is not.
+                    let mut restarted = std::time::Instant::now();
+                    loop {
+                        let attempt = crate::plugins::ProviderPlugin::callback(
+                            &*host,
+                            crate::plugins::CallbackParams {
+                                session: current.session.clone(),
+                                code: String::new(),
+                            },
+                        )
+                        .await;
+                        match attempt {
+                            Ok(saved) => {
+                                update_task(&inner, &task_id, |task| {
+                                    task.state = STATE_DONE.to_string();
+                                    task.user = format!("{}:{}", saved.provider, saved.account);
+                                })
+                                .await;
+                                break;
+                            }
+                            Err(err) => {
+                                if std::time::Instant::now() >= deadline {
+                                    update_task(&inner, &task_id, |task| {
+                                        task.state = STATE_FAILED.to_string();
+                                        task.error = format!(
+                                            "the sign-in did not complete in time (last: {err})"
+                                        );
+                                    })
+                                    .await;
+                                    break;
+                                }
+                                tokio::time::sleep(PLUGIN_SIGN_IN_RETRY).await;
+                                if restarted.elapsed() < PLUGIN_SIGN_IN_RESTART_AFTER {
+                                    // Still inside the first flow's grace:
+                                    // ask its callback again, don't start a
+                                    // second one at the vendor.
+                                    continue;
+                                }
+                                restarted = std::time::Instant::now();
+                                match crate::plugins::ProviderPlugin::authorize(
+                                    &*host,
+                                    params.clone(),
+                                )
+                                .await
+                                {
+                                    Ok(next) => current = next,
+                                    Err(err) => {
+                                        update_task(&inner, &task_id, |task| {
+                                            task.state = STATE_FAILED.to_string();
+                                            task.error = err.to_string();
+                                        })
+                                        .await;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    mark_finished(&inner, &task_id);
+                })),
+                // The flow is driven in the background; `submit` is a no-op.
+                TaskDriver::Copilot,
+            )
+        };
+
+        let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.prune();
+        registry.tasks.insert(
+            id,
+            TaskHandle {
+                task: task.clone(),
+                background,
+                driver,
+                accounts: Arc::new(AccountResolver::new(
+                    crate::credentials::FileSecretStore::new(crate::config::secrets_path()),
+                    reqwest::Client::new(),
+                )),
+                finished_at: None,
+            },
+        );
+        Ok(task)
+    }
+
     /// Start a Copilot device flow: report `waiting` at once (the device
     /// code arrives from the vendor a moment later, filling `url`/`code`),
     /// then poll in the background until the flow completes.
@@ -606,6 +882,43 @@ impl SignInTasks {
     /// the browser's final address) back to the CLI, and the background
     /// wait settles the task when the CLI exits. A machine without the
     /// `claude` command line fails the start with the install hint.
+    /// Start a Sign in with ChatGPT (P16). The browser comes back to
+    /// 127.0.0.1:1455, or to a free port when that one is busy; either way
+    /// the address can be pasted, which is the only way on a machine the
+    /// browser can't reach.
+    async fn start_siwc(&self, accounts: Arc<AccountResolver>) -> Result<SignInTask, String> {
+        let sign_in = Arc::new(SiwcSignIn::new(reqwest::Client::new()));
+        let started = sign_in.start().map_err(|err| err.to_string())?;
+        let id = format!("signin-{}", Uuid::new_v4());
+        let task = SignInTask {
+            id: id.clone(),
+            provider: SIWC_PROVIDER.to_string(),
+            state: STATE_WAITING.to_string(),
+            url: started.url.clone(),
+            code: String::new(),
+            instructions: SIWC_INSTRUCTIONS.to_string(),
+            paste_callback: started.paste_callback,
+            paste_code: false,
+            user: String::new(),
+            plan: String::new(),
+            error: String::new(),
+        };
+        let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.prune();
+        registry.tasks.insert(
+            task.id.clone(),
+            TaskHandle {
+                task: task.clone(),
+                // No listener of its own: `submit` finishes this flow.
+                background: None,
+                driver: TaskDriver::Siwc { sign_in, started },
+                accounts,
+                finished_at: None,
+            },
+        );
+        Ok(task)
+    }
+
     async fn start_claude(&self, accounts: Arc<AccountResolver>) -> Result<SignInTask, String> {
         let cli = find_claude_cli(|key| std::env::var(key).ok())
             .ok_or_else(|| CLAUDE_INSTALL_HINT.to_string())?;
@@ -683,6 +996,7 @@ async fn settle_google(
                 .as_secs() as i64;
             unix_now() + secs_left
         }),
+        siwc: None,
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (STATE_DONE.to_string(), account_id, String::new()),
@@ -697,6 +1011,58 @@ async fn settle_google(
 /// Persist a completed Codex ChatGPT sign-in and report
 /// `(state, user, plan, error)` (shared by the background `wait`
 /// completion and `submit`).
+/// `chatgpt-api` as the provider id, and what the task's page says.
+const SIWC_PROVIDER: &str = "chatgpt-api";
+const SIWC_INSTRUCTIONS: &str =
+    "Paste the whole address the browser ended on — it carries the code and the client id";
+
+/// Keep a finished Sign in with ChatGPT: the tokens in the secret store,
+/// the client id/host id/ID token beside it (see `siwc_store`).
+async fn settle_siwc(
+    accounts: &AccountResolver,
+    result: Result<crate::credentials::SiwcAccount, SignInError>,
+) -> (String, String, String, String) {
+    let account = match result {
+        Ok(account) => account,
+        Err(err) => {
+            return (
+                STATE_FAILED.to_string(),
+                String::new(),
+                String::new(),
+                err.to_string(),
+            );
+        }
+    };
+    let account_id = account.account_id();
+    let credential = Credential::OAuth {
+        provider: SIWC_PROVIDER.to_string(),
+        account: account.user.clone(),
+        access_token: account.access.clone(),
+        refresh_token: Some(account.refresh.clone()),
+        expires_at_unix: Some(account.expires_at_unix),
+        siwc: Some(crate::credentials::SiwcMeta {
+            client_id: account.client_id.clone(),
+            host_id: account.host_id.clone(),
+            id_token: account.id_token.clone(),
+            scopes: account.scopes.clone(),
+        }),
+    };
+    match accounts.store_sign_in(&account_id, credential).await {
+        Ok(()) => (
+            STATE_DONE.to_string(),
+            account.user,
+            account.plan,
+            String::new(),
+        ),
+        Err(err) => (
+            STATE_FAILED.to_string(),
+            String::new(),
+            String::new(),
+            err.to_string(),
+        ),
+    }
+}
+
 async fn settle_codex(
     accounts: &AccountResolver,
     result: Result<crate::credentials::codex_signin::CodexAccount, SignInError>,
@@ -719,6 +1085,7 @@ async fn settle_codex(
         access_token: account.access_token.clone(),
         refresh_token: Some(account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (
@@ -757,6 +1124,7 @@ async fn settle_copilot(
         access_token: account.access_token,
         refresh_token: None,
         expires_at_unix: None,
+        siwc: None,
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (STATE_DONE.to_string(), account_id, String::new()),
@@ -792,6 +1160,7 @@ async fn settle_claude(
         access_token: account.access_token.clone(),
         refresh_token: (!account.refresh_token.is_empty()).then(|| account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (

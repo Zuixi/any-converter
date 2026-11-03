@@ -241,6 +241,7 @@ mod tests {
             access_token: "ya29.test-access".into(),
             refresh_token: Some("1//test-refresh".into()),
             expires_at_unix: Some(1_900_000_000),
+            siwc: None,
         }
     }
 
@@ -273,6 +274,7 @@ mod tests {
                 access_token,
                 refresh_token,
                 expires_at_unix,
+                siwc: None,
             } => {
                 assert_eq!(provider, "gemini");
                 assert_eq!(account, "me@example.com");

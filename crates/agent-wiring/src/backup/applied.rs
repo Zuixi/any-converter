@@ -92,11 +92,7 @@ impl Applied {
     }
 
     /// Returns recorded keys whose current value differs from ours or vanished.
-    pub fn drifted_keys(
-        &self,
-        agent: &str,
-        current: &BTreeMap<String, String>,
-    ) -> Vec<String> {
+    pub fn drifted_keys(&self, agent: &str, current: &BTreeMap<String, String>) -> Vec<String> {
         let Some(namespace) = self.agents.get(agent) else {
             return Vec::new();
         };

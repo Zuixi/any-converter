@@ -24,10 +24,7 @@ fn take_copies_exact_bytes() {
     snapshot.take().unwrap();
 
     assert!(snapshot.has_backup(&file));
-    assert_eq!(
-        fs::read(backup_path(&file)).unwrap(),
-        b"{\"keep\": true}\n"
-    );
+    assert_eq!(fs::read(backup_path(&file)).unwrap(), b"{\"keep\": true}\n");
     assert_eq!(
         snapshot.read_backup(&file).unwrap(),
         Some(b"{\"keep\": true}\n".to_vec())

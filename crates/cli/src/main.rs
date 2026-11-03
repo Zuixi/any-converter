@@ -20,7 +20,7 @@ use any_converter_server::credentials::claude_signin::{
 use any_converter_server::credentials::{
     ANTIGRAVITY_RISK, CodexSignIn, CodexStore, CopilotEndpoints, CopilotSignIn, Credential,
     FileSecretStore, FoundAccount, GeminiAccount, GeminiEndpoints, GeminiSignIn, GoogleApp,
-    ImportStatus, SecretStore, TokenUpdate, codex_homes, codex_store, discover,
+    ImportStatus, SecretStore, SiwcSignIn, TokenUpdate, codex_homes, codex_store, discover,
     gemini::DEFAULT_SIGN_IN_TIMEOUT, import_path, mark_adopted, release_adopted, to_credential,
     write_tokens,
 };
@@ -611,6 +611,7 @@ async fn accounts_add(
                     access_token: account.access_token,
                     refresh_token: None,
                     expires_at_unix: None,
+                    siwc: None,
                 },
             )?;
             // A fresh sign-in restores a previously revoked account.
@@ -619,9 +620,66 @@ async fn accounts_add(
             }
             println!("Signed in (stored as {account_id})");
             println!();
-            println!("Copilot accounts are served by their plugin host; bind one to an");
-            println!("any-converter provider with `account = \"{account_id}\"` in config.toml");
-            println!("once a Copilot wire is available.");
+            println!();
+            println!("Add this to config.toml to serve it:");
+            println!();
+            println!("  [[providers]]");
+            println!("  name = \"copilot\"");
+            println!("  format = \"openai_chat\"");
+            println!("  base_url = \"\"          # the session names its own API host");
+            println!("  api_key = \"\"");
+            println!("  account = \"{account_id}\"");
+        }
+        "chatgpt-api" => {
+            // Sign in with ChatGPT (P16): OpenAI registers this app as it
+            // signs in, so the address the browser ends on carries the code
+            // AND the client id — pasting it is the only way to finish.
+            let sign_in = SiwcSignIn::new(
+                any_converter_server::config::build_proxied_client(None)
+                    .map_err(|err| err.to_string())?,
+            );
+            let started = sign_in.start().map_err(|err| err.to_string())?;
+            println!("Open this URL in your browser to sign in:");
+            println!("  {}", started.url);
+            println!();
+            println!("When the browser is done, paste the whole address it ended on:");
+            let pasted = match code {
+                Some(text) => text.to_string(),
+                None => {
+                    let mut line = String::new();
+                    io::stdin().read_line(&mut line)?;
+                    line
+                }
+            };
+            let account = sign_in
+                .finish_pasted(pasted.trim(), &started)
+                .await
+                .map_err(|err| err.to_string())?;
+            let account_id = account.account_id();
+            store.put(
+                &account_id,
+                &Credential::OAuth {
+                    provider: "chatgpt-api".to_string(),
+                    account: account.user.clone(),
+                    access_token: account.access.clone(),
+                    refresh_token: Some(account.refresh.clone()),
+                    expires_at_unix: Some(account.expires_at_unix),
+                    siwc: None,
+                },
+            )?;
+            if let Err(err) = clear_revoked_default_store(&account_id).await {
+                log::warn!("failed to clear revoked marker for {account_id}: {err}");
+            }
+            println!("Signed in as {} (stored as {account_id})", account.user);
+            println!();
+            println!("Add this to config.toml to serve it:");
+            println!();
+            println!("  [[providers]]");
+            println!("  name = \"chatgpt-api\"");
+            println!("  format = \"openai_responses\"");
+            println!("  base_url = \"https://api.openai.com\"");
+            println!("  api_key = \"\"");
+            println!("  account = \"{account_id}\"");
         }
         "claude" => {
             // Claude Code's own sign-in, run by the `claude` CLI (magpie
@@ -1115,6 +1173,7 @@ fn gemini_credential(provider: &str, account: &GeminiAccount) -> Credential {
         access_token: account.tokens.access_token.clone(),
         refresh_token: account.tokens.refresh_token.clone(),
         expires_at_unix: account.tokens.expires_at.and_then(instant_to_unix),
+        siwc: None,
     }
 }
 
@@ -1127,6 +1186,7 @@ fn codex_credential(account: &any_converter_server::credentials::CodexAccount) -
         access_token: account.access_token.clone(),
         refresh_token: Some(account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     }
 }
 
@@ -1139,6 +1199,7 @@ fn claude_credential(account: &any_converter_server::credentials::ClaudeAccount)
         access_token: account.access_token.clone(),
         refresh_token: (!account.refresh_token.is_empty()).then(|| account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     }
 }
 

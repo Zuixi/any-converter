@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_wiring::{
     AgentSpec, CatalogModel, ConnectReport, DetectResult, DisconnectReport, HomeCtx, ModelCatalog,
-    Wiring, WiringCtx, WiredState, all_specs,
+    WiredState, Wiring, WiringCtx, all_specs,
 };
 use serde::{Deserialize, Serialize};
 
@@ -157,19 +157,17 @@ impl AgentRegistry {
             uuid::Uuid::new_v4()
         ));
         let store = Arc::new(FileSecretStore::new(dir.join("secrets.json")));
-        let registry = Self::new(
-            dir.clone(),
-            store,
-            "http://127.0.0.1:8080".to_owned(),
-            None,
-        );
+        let registry = Self::new(dir.clone(), store, "http://127.0.0.1:8080".to_owned(), None);
         registry.set_home(dir);
         registry
     }
 
     /// Replaces the catalog snapshot used by connect/sync/digest checks.
     pub fn set_catalog(&self, catalog: ModelCatalog) {
-        let mut guard = self.catalog.write().unwrap_or_else(|lock| lock.into_inner());
+        let mut guard = self
+            .catalog
+            .write()
+            .unwrap_or_else(|lock| lock.into_inner());
         *guard = catalog;
     }
 
@@ -258,13 +256,7 @@ impl AgentRegistry {
                         }
                     })
                     .unwrap_or_else(|| STATUS_DISCONNECTED.to_owned());
-                if status == STATUS_CONNECTED
-                    && self.agent_drifted(
-                        spec.as_ref(),
-                        &ctx,
-                        &applied,
-                    )
-                {
+                if status == STATUS_CONNECTED && self.agent_drifted(spec.as_ref(), &ctx, &applied) {
                     status = STATUS_DRIFTED.to_owned();
                     drifted.push(id.clone());
                 }
@@ -328,7 +320,12 @@ impl AgentRegistry {
         let mut inner = self.inner.lock().await;
         let spec = spec_for(agent_id)?;
 
-        let existing = inner.state.agents.get(agent_id).cloned().unwrap_or_default();
+        let existing = inner
+            .state
+            .agents
+            .get(agent_id)
+            .cloned()
+            .unwrap_or_default();
         let default_model = resolve_model(&catalog, model, existing.default_model.as_deref())?;
 
         let (key, key_id, created_at, last_used) = match inner.agent_keys.get(agent_id) {
@@ -390,11 +387,7 @@ impl AgentRegistry {
         let spec = spec_for(agent_id)?;
         let wiring = Wiring::new(&self.data_dir);
         let report = wiring.disconnect(spec.as_ref(), &home_ctx)?;
-        let entry = inner
-            .state
-            .agents
-            .entry(agent_id.to_owned())
-            .or_default();
+        let entry = inner.state.agents.entry(agent_id.to_owned()).or_default();
         entry.status = STATUS_DISCONNECTED.to_owned();
         self.save_state(&inner.state)?;
         Ok(report)
@@ -568,6 +561,18 @@ impl AgentRegistry {
         auth::validate_client_keys(global, keys.iter().map(String::as_str), header)
     }
 
+    /// Key plaintexts for the synchronous inference-auth check in the
+    /// request path: a snapshot copy so no lock is held while validating.
+    /// Callers inside async contexts must use [`Self::key_snapshot_async`].
+    pub async fn key_snapshot_async(&self) -> Vec<String> {
+        let inner = self.inner.lock().await;
+        inner
+            .agent_keys
+            .values()
+            .map(|entry| entry.key.clone())
+            .collect()
+    }
+
     /// Spawns a best-effort sync when the stored digest differs from the live
     /// catalog. The caller's request never awaits the sync itself.
     pub async fn request_sync_if_stale(self: &Arc<Self>, agent_id: &str) {
@@ -638,7 +643,10 @@ pub fn catalog_from_config(config: &ServerConfig) -> ModelCatalog {
         if route.pattern.contains('*') || route.pattern.contains('?') {
             continue;
         }
-        let provider_name = route.provider.as_deref().or_else(|| route.providers.first().map(String::as_str));
+        let provider_name = route
+            .provider
+            .as_deref()
+            .or_else(|| route.providers.first().map(String::as_str));
         let Some(provider_name) = provider_name else {
             continue;
         };
@@ -752,10 +760,7 @@ fn load_state(data_dir: &Path) -> AgentStateFile {
     }
 }
 
-fn load_keys(
-    secrets: &FileSecretStore,
-    state: &AgentStateFile,
-) -> HashMap<String, AgentKeyEntry> {
+fn load_keys(secrets: &FileSecretStore, state: &AgentStateFile) -> HashMap<String, AgentKeyEntry> {
     let mut keys = HashMap::new();
     for (agent_id, entry) in &state.agents {
         let Some(key_id) = entry.agent_key_id.as_deref() else {
@@ -786,4 +791,3 @@ fn load_keys(
     }
     keys
 }
-
