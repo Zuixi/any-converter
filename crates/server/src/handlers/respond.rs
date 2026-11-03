@@ -1,7 +1,13 @@
 //! The responses every handler returns: the one JSON error shape, its
 //! variants, and conversion calls that survive a panic.
 
-use super::*;
+use any_converter_core::convert::{Format, convert_request, convert_response};
+use axum::Json;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use log::error;
+
+use crate::auth::AuthError;
 
 pub(crate) fn api_error_response(
     status: StatusCode,
