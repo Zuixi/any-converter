@@ -42,7 +42,6 @@ pub(crate) use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-pub(crate) use http_body_util::BodyExt;
 pub(crate) use log::{debug, error, info, warn};
 pub(crate) use reqwest::Client;
 pub(crate) use serde_json::Value;
@@ -55,7 +54,6 @@ pub(crate) use crate::credentials::copilot::{
     COPILOT_DEFAULT_API_BASE, CopilotError, CopilotSessions, copilot_api_headers,
 };
 pub(crate) use crate::credentials::signout::{self, RevokeOutcome};
-pub(crate) use crate::credentials::token::{AuthErr401, classify_401};
 pub(crate) use crate::credentials::{
     AccountResolver, Allowance, ApiKeySource, Credential, Limit, TokenSource,
 };
