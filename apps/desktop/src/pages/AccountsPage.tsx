@@ -137,7 +137,7 @@ export function AccountsPage() {
       .then((settings) => {
         if (cancelled) return;
         const host = settings["server.host"] || "127.0.0.1";
-        const port = settings["server.port"] || "8080";
+        const port = settings["server.port"] || "1228";
         // A wildcard bind cannot be dialed back; loopback always can.
         const reachable = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
         const apiKey = settings["server.api_key"] || undefined;

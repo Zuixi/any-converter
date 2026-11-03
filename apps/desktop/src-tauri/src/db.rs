@@ -264,7 +264,7 @@ impl DesktopDb {
                     .get("server.host")
                     .cloned()
                     .unwrap_or_else(|| "0.0.0.0".to_string()),
-                port: parse_u16_setting(&settings, "server.port", 8080)?,
+                port: parse_u16_setting(&settings, "server.port", 1228)?,
                 api_key: settings.get("server.api_key").cloned(),
                 pass_through_headers: Default::default(),
                 proxy: settings.get("server.proxy").cloned(),

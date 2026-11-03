@@ -53,7 +53,7 @@ cp config.example.toml config.toml
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 1228
 api_key = "hello-any"
 
 [[providers]]
@@ -73,7 +73,7 @@ provider = "anthropic"
 any-converter serve --config config.toml
 ```
 
-启动后，本地网关地址就是 `http://127.0.0.1:8080`。
+启动后，本地网关地址就是 `http://127.0.0.1:1228`。
 
 ## 常见客户端接入
 
@@ -82,7 +82,7 @@ any-converter serve --config config.toml
 把 Claude 侧流量指向本地网关：
 
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+export ANTHROPIC_BASE_URL=http://127.0.0.1:1228
 export ANTHROPIC_AUTH_TOKEN=hello-any
 ```
 
@@ -91,7 +91,7 @@ export ANTHROPIC_AUTH_TOKEN=hello-any
 必须使用 OpenAI Responses wire API，不要按 Chat Completions 来测：
 
 ```toml
-base_url = "http://127.0.0.1:8080/v1"
+base_url = "http://127.0.0.1:1228/v1"
 wire_api = "responses"
 api_key = "hello-any"
 ```
@@ -105,7 +105,7 @@ api_key = "hello-any"
 ### OpenAI-compatible 客户端
 
 ```bash
-export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+export OPENAI_BASE_URL=http://127.0.0.1:1228/v1
 export OPENAI_API_KEY=hello-any
 ```
 
@@ -214,7 +214,7 @@ Web UI 会作为独立进程运行在 Rust gateway 旁边，提供：
 先启动 Rust server，再启动 Web UI：
 
 ```bash
-SERVER_URL=http://127.0.0.1:8080 \
+SERVER_URL=http://127.0.0.1:1228 \
 LOG_DIR=../../logs \
 CONFIG_PATH=../../config.toml \
   pnpm --filter @any-converter/web dev

@@ -106,7 +106,7 @@ enum Commands {
         /// Path to TOML configuration file
         #[arg(long, conflicts_with_all = ["port", "provider", "format", "base_url", "upstream_key"])]
         config: Option<PathBuf>,
-        #[arg(long, default_value_t = 8080)]
+        #[arg(long, default_value_t = 1228)]
         port: u16,
         #[arg(long, default_value = "default")]
         provider: String,
@@ -1484,7 +1484,7 @@ fn accounts_order(
 /// the CLI free of an HTTP dependency (the workspace adds none for P9).
 #[allow(clippy::print_stdout)]
 async fn accounts_quotas() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = std::env::var("ANY_CONVERTER_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let addr = std::env::var("ANY_CONVERTER_ADDR").unwrap_or_else(|_| "127.0.0.1:1228".to_string());
     let mut stream = tokio::net::TcpStream::connect(&addr)
         .await
         .map_err(|err| format!("cannot reach the server at {addr}: {err} (is it running?)"))?;

@@ -53,7 +53,7 @@ Minimum example:
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 1228
 api_key = "hello-any"
 
 [[providers]]
@@ -73,7 +73,7 @@ provider = "anthropic"
 any-converter serve --config config.toml
 ```
 
-Your local gateway is now available at `http://127.0.0.1:8080`.
+Your local gateway is now available at `http://127.0.0.1:1228`.
 
 ## Subscription accounts (OAuth)
 
@@ -122,7 +122,7 @@ backup); `ANY_CONVERTER_SECRETS` overrides the path.
 Point Claude-compatible traffic at the gateway:
 
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+export ANTHROPIC_BASE_URL=http://127.0.0.1:1228
 export ANTHROPIC_AUTH_TOKEN=hello-any
 ```
 
@@ -131,7 +131,7 @@ export ANTHROPIC_AUTH_TOKEN=hello-any
 Use the OpenAI Responses wire API, not Chat Completions:
 
 ```toml
-base_url = "http://127.0.0.1:8080/v1"
+base_url = "http://127.0.0.1:1228/v1"
 wire_api = "responses"
 api_key = "hello-any"
 ```
@@ -145,7 +145,7 @@ Important:
 ### OpenAI-compatible clients
 
 ```bash
-export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+export OPENAI_BASE_URL=http://127.0.0.1:1228/v1
 export OPENAI_API_KEY=hello-any
 ```
 
@@ -254,7 +254,7 @@ The web app runs as a separate process beside the Rust gateway and provides:
 Start it after the Rust server is running:
 
 ```bash
-SERVER_URL=http://127.0.0.1:8080 \
+SERVER_URL=http://127.0.0.1:1228 \
 LOG_DIR=../../logs \
 CONFIG_PATH=../../config.toml \
   pnpm --filter @any-converter/web dev
