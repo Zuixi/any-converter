@@ -15,10 +15,11 @@ use any_converter_server::config::{
 };
 use any_converter_server::credentials::account::clear_revoked_default_store;
 use any_converter_server::credentials::{
-    CodexStore, CopilotEndpoints, CopilotSignIn, Credential, FileSecretStore, FoundAccount,
-    GeminiAccount, GeminiEndpoints, GeminiSignIn, ImportStatus, SecretStore, TokenUpdate,
-    codex_store, discover, gemini::DEFAULT_SIGN_IN_TIMEOUT, import_path, mark_adopted,
-    release_adopted, to_credential, write_tokens,
+    ANTIGRAVITY_RISK, CodexSignIn, CodexStore, CopilotEndpoints, CopilotSignIn, Credential,
+    FileSecretStore, FoundAccount, GeminiAccount, GeminiEndpoints, GeminiSignIn, GoogleApp,
+    ImportStatus, SecretStore, TokenUpdate, codex_homes, codex_store, discover,
+    gemini::DEFAULT_SIGN_IN_TIMEOUT, import_path, mark_adopted, release_adopted, to_credential,
+    write_tokens,
 };
 use any_converter_server::plugins::{
     AuthMethodKind, Authorization, AuthorizeParams, CallbackParams, ManagedHosts, PluginAuthStore,
@@ -392,15 +393,27 @@ async fn accounts_add(
     }
     let store = open_secret_store()?;
     match provider.to_ascii_lowercase().as_str() {
-        "gemini" => {
-            let sign_in = GeminiSignIn::new(GeminiEndpoints::default());
+        "gemini" | "antigravity" => {
+            let provider = provider.to_ascii_lowercase();
+            let app = if provider == "antigravity" {
+                GoogleApp::Antigravity
+            } else {
+                GoogleApp::Gemini
+            };
+            // Google suspends Antigravity accounts used outside
+            // Antigravity: warn before the flow starts (magpie
+            // `AntigravityRisk`).
+            if matches!(app, GoogleApp::Antigravity) {
+                println!("{ANTIGRAVITY_RISK}");
+            }
+            let sign_in = GeminiSignIn::new(GeminiEndpoints::for_app(app));
             let started = sign_in.start().await?;
             println!("Open this URL in your browser to sign in:");
             println!("  {}", started.url);
             println!("Waiting up to 600s for the browser callback...");
             let account = sign_in.wait(DEFAULT_SIGN_IN_TIMEOUT).await?;
-            let account_id = format!("gemini:{}", account.email);
-            store.put(&account_id, &gemini_credential(&account))?;
+            let account_id = format!("{provider}:{}", account.email);
+            store.put(&account_id, &gemini_credential(&provider, &account))?;
             // A fresh sign-in restores a previously revoked account.
             if let Err(err) = clear_revoked_default_store(&account_id).await {
                 log::warn!("failed to clear revoked marker for {account_id}: {err}");
@@ -410,9 +423,51 @@ async fn accounts_add(
             println!("Add this to config.toml to serve it:");
             println!();
             println!("  [[providers]]");
-            println!("  name = \"gemini\"");
+            println!("  name = \"{provider}\"");
             println!("  format = \"gemini\"");
-            println!("  base_url = \"https://cloudcode-pa.googleapis.com\"");
+            println!("  base_url = \"{}\"", app.base());
+            println!("  api_key = \"\"            # unused: the account signs the requests");
+            println!("  account = \"{account_id}\"");
+        }
+        "codex" => {
+            // Where the sign-in is written back to: the machine's main
+            // codex home (CODEX_HOME, else ~/.codex).
+            let home = codex_homes(&|key| std::env::var(key).ok(), &home_dir())
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| home_dir().join(".codex"));
+            let sign_in = CodexSignIn::new().with_home(home);
+            let started = sign_in.start().await?;
+            println!("Open this URL in your browser to sign in:");
+            println!("  {}", started.url);
+            println!("Paste the address your browser finally lands on to finish the");
+            println!("sign-in when the loopback callback cannot be served.");
+            let account = if started.paste_callback {
+                println!(
+                    "The loopback callback could not be served ({}): paste the address\n\
+                     your browser finally lands on and press enter.",
+                    started.callback_blocked
+                );
+                let url = read_callback_url()?;
+                sign_in.finish_pasted(&url, &started.state).await?
+            } else {
+                println!("Waiting up to 600s for the browser callback...");
+                sign_in.wait(DEFAULT_SIGN_IN_TIMEOUT).await?
+            };
+            let account_id = account.account_id_key();
+            store.put(&account_id, &codex_credential(&account))?;
+            // A fresh sign-in restores a previously revoked account.
+            if let Err(err) = clear_revoked_default_store(&account_id).await {
+                log::warn!("failed to clear revoked marker for {account_id}: {err}");
+            }
+            println!("Signed in as {} (stored as {account_id})", account.user);
+            println!();
+            println!("Add this to config.toml to serve it:");
+            println!();
+            println!("  [[providers]]");
+            println!("  name = \"codex\"");
+            println!("  format = \"openai_chat\"");
+            println!("  base_url = \"https://api.openai.com\"");
             println!("  api_key = \"\"            # unused: the account signs the requests");
             println!("  account = \"{account_id}\"");
         }
@@ -452,7 +507,8 @@ async fn accounts_add(
         _ => {
             return Err(format!(
                 "invalid value '{provider}': unknown provider: {provider} \
-                 (built-in ones are gemini, copilot; use --plugin for a plugin provider)"
+                 (built-in ones are gemini, antigravity, codex, copilot; \
+                 use --plugin for a plugin provider)"
             )
             .into());
         }
@@ -893,14 +949,37 @@ fn accounts_import(path: &Path, dry_run: bool) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-fn gemini_credential(account: &GeminiAccount) -> Credential {
+fn gemini_credential(provider: &str, account: &GeminiAccount) -> Credential {
     Credential::OAuth {
-        provider: "gemini".to_string(),
+        provider: provider.to_string(),
         account: account.email.clone(),
         access_token: account.tokens.access_token.clone(),
         refresh_token: account.tokens.refresh_token.clone(),
         expires_at_unix: account.tokens.expires_at.and_then(instant_to_unix),
     }
+}
+
+/// The credential `accounts add codex` stores for a fresh ChatGPT
+/// sign-in (provider `"codex"`).
+fn codex_credential(account: &any_converter_server::credentials::CodexAccount) -> Credential {
+    Credential::OAuth {
+        provider: "codex".to_string(),
+        account: account.email.clone(),
+        access_token: account.access_token.clone(),
+        refresh_token: Some(account.refresh_token.clone()),
+        expires_at_unix: account.expires_at_unix,
+    }
+}
+
+/// Read one pasted callback URL from stdin (the paste fallback of
+/// `accounts add codex`).
+#[allow(clippy::print_stdout)]
+fn read_callback_url() -> Result<String, Box<dyn std::error::Error>> {
+    print!("Callback URL: ");
+    io::stdout().flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
 }
 
 /// `Instant` → unix seconds (round-trips through `SystemTime`; `None` when

@@ -29,9 +29,11 @@ use uuid::Uuid;
 
 use crate::credentials::Credential;
 use crate::credentials::account::AccountResolver;
+use crate::credentials::codex_signin::CodexEndpoints;
+use crate::credentials::codex_signin::CodexSignIn;
 use crate::credentials::copilot::{CopilotEndpoints, CopilotSignIn};
 use crate::credentials::gemini::{
-    DEFAULT_SIGN_IN_TIMEOUT, GeminiAccount, GeminiEndpoints, GeminiSignIn, SignInError,
+    DEFAULT_SIGN_IN_TIMEOUT, GeminiAccount, GeminiEndpoints, GeminiSignIn, GoogleApp, SignInError,
 };
 
 /// The terminal state of a task's flow (`waiting|done|failed|canceled`).
@@ -45,13 +47,18 @@ const GEMINI_INSTRUCTIONS: &str = "Open the URL in your browser. If the browser 
 cannot reach this host, paste the callback URL from the browser's address bar below.";
 /// Copilot device-flow instructions.
 const COPILOT_INSTRUCTIONS: &str = "Open the verification page and enter the code.";
+/// Codex instructions shown to the user (loopback on a fixed port; the
+/// paste fallback covers hosts where the port cannot be served).
+const CODEX_INSTRUCTIONS: &str = "Open the URL in your browser. If the browser \
+cannot reach this host or port 1455 is busy, paste the callback URL from the \
+browser's address bar below.";
 
 /// One sign-in task snapshot (magpie `SignInState`).
 #[derive(Debug, Clone, Serialize)]
 pub struct SignInTask {
     /// Registry id (`signin-<uuid>`); also the `id` of the sign-in route.
     pub id: String,
-    /// `gemini` or `copilot`.
+    /// `gemini` | `antigravity` | `codex` | `copilot`.
     pub provider: String,
     /// `waiting` | `done` | `failed` | `canceled`.
     pub state: String,
@@ -74,9 +81,18 @@ pub struct SignInTask {
 }
 
 /// What the background task runs for each provider.
+#[derive(Clone)]
 enum TaskDriver {
     Gemini {
         sign_in: Arc<GeminiSignIn>,
+        /// The OAuth `state` `submit` must pass to `finish_pasted`.
+        oauth_state: String,
+        /// `gemini` or `antigravity`: the account id prefix the settled
+        /// credential is stored under.
+        provider: String,
+    },
+    Codex {
+        sign_in: Arc<CodexSignIn>,
         /// The OAuth `state` `submit` must pass to `finish_pasted`.
         oauth_state: String,
     },
@@ -157,9 +173,10 @@ impl SignInTasks {
         }
     }
 
-    /// Start a gemini or copilot sign-in and return the task at once
-    /// (magpie `startSignIn`). Uses the server-level proxy; callers that
-    /// resolved a provider-level proxy use [`Self::start_with_proxy`].
+    /// Start a gemini, antigravity, codex or copilot sign-in and return
+    /// the task at once (magpie `startSignIn`). Uses the server-level
+    /// proxy; callers that resolved a provider-level proxy use
+    /// [`Self::start_with_proxy`].
     pub async fn start(
         &self,
         provider: &str,
@@ -178,10 +195,18 @@ impl SignInTasks {
         accounts: Arc<AccountResolver>,
     ) -> Result<SignInTask, String> {
         match provider.to_ascii_lowercase().as_str() {
-            "gemini" => self.start_gemini(proxy, accounts).await,
+            "gemini" => {
+                self.start_google(GoogleApp::Gemini, "gemini", proxy, accounts)
+                    .await
+            }
+            "antigravity" => {
+                self.start_google(GoogleApp::Antigravity, "antigravity", proxy, accounts)
+                    .await
+            }
+            "codex" => self.start_codex(proxy, accounts).await,
             "copilot" => self.start_copilot(proxy, accounts).await,
             other => Err(format!(
-                "unknown provider: {other} (supported: gemini, copilot)"
+                "unknown provider: {other} (supported: gemini, antigravity, codex, copilot)"
             )),
         }
     }
@@ -195,15 +220,16 @@ impl SignInTasks {
         registry.tasks.get(id).map(|handle| handle.task.clone())
     }
 
-    /// Finish a flow with a pasted callback URL (gemini).
+    /// Finish a flow with a pasted callback URL (gemini, antigravity,
+    /// codex).
     ///
-    /// Runs the existing [`GeminiSignIn::finish_pasted`] path: the
-    /// background `wait` (and its loopback listener) is aborted first so
-    /// the pasted exchange owns the session. A failed exchange marks the
-    /// task `failed` and returns the snapshot (magpie `signInFlow.finish`).
+    /// Runs the provider sign-in's `finish_pasted` path: the background
+    /// `wait` (and its loopback listener) is aborted first so the pasted
+    /// exchange owns the session. A failed exchange marks the task
+    /// `failed` and returns the snapshot (magpie `signInFlow.finish`).
     /// Copilot has no pasted input; submitting one is an error.
     pub async fn submit(&self, id: &str, input: &str) -> Result<SignInTask, String> {
-        let (sign_in, oauth_state, background, accounts) = {
+        let (driver, background, accounts) = {
             let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             let handle = registry
                 .tasks
@@ -217,12 +243,8 @@ impl SignInTasks {
                 TaskDriver::Copilot => {
                     return Err("copilot has no pasted input".to_string());
                 }
-                TaskDriver::Gemini {
-                    sign_in,
-                    oauth_state,
-                } => (
-                    sign_in.clone(),
-                    oauth_state.clone(),
+                TaskDriver::Gemini { .. } | TaskDriver::Codex { .. } => (
+                    handle.driver.clone(),
                     handle.background.take(),
                     handle.accounts.clone(),
                 ),
@@ -237,11 +259,34 @@ impl SignInTasks {
             let _ = background.await;
         }
 
-        let result = sign_in.finish_pasted(input, &oauth_state).await;
-        let (state, user, error) = settle_gemini(&accounts, result).await;
+        let (state, user, plan, error) = match driver {
+            TaskDriver::Gemini {
+                sign_in,
+                oauth_state,
+                provider,
+            } => {
+                let (state, user, error) = settle_google(
+                    &accounts,
+                    sign_in.finish_pasted(input, &oauth_state).await,
+                    &provider,
+                )
+                .await;
+                (state, user, String::new(), error)
+            }
+            TaskDriver::Codex {
+                sign_in,
+                oauth_state,
+            } => {
+                let (state, user, plan, error) =
+                    settle_codex(&accounts, sign_in.finish_pasted(input, &oauth_state).await).await;
+                (state, user, plan, error)
+            }
+            TaskDriver::Copilot => unreachable!("copilot was refused above"),
+        };
         update_task(&self.inner, id, |task| {
             task.state = state;
             task.user = user;
+            task.plan = plan;
             task.error = error;
         })
         .await;
@@ -286,16 +331,19 @@ impl SignInTasks {
         }
     }
 
-    /// Start a Gemini browser sign-in: bind the loopback listener, report
-    /// `waiting` + the authorize URL at once, then `wait` in the
-    /// background until the callback arrives or the timeout elapses.
-    async fn start_gemini(
+    /// Start a Gemini/Antigravity browser sign-in: bind the loopback
+    /// listener, report `waiting` + the authorize URL at once, then `wait`
+    /// in the background until the callback arrives or the timeout
+    /// elapses.
+    async fn start_google(
         &self,
+        app: GoogleApp,
+        provider: &str,
         proxy: Option<String>,
         accounts: Arc<AccountResolver>,
     ) -> Result<SignInTask, String> {
         let sign_in = Arc::new(
-            GeminiSignIn::with_proxy(GeminiEndpoints::default(), proxy.as_deref())
+            GeminiSignIn::with_proxy(GeminiEndpoints::for_app(app), proxy.as_deref())
                 .map_err(|err| err.to_string())?,
         );
         // Local only (PKCE + loopback bind); completes before the response
@@ -305,7 +353,7 @@ impl SignInTasks {
         let id = format!("signin-{}", Uuid::new_v4());
         let task = SignInTask {
             id: id.clone(),
-            provider: "gemini".to_string(),
+            provider: provider.to_string(),
             state: STATE_WAITING.to_string(),
             url: started.url,
             code: String::new(),
@@ -320,9 +368,10 @@ impl SignInTasks {
         let inner = self.inner.clone();
         let wait_sign_in = sign_in.clone();
         let wait_accounts = accounts.clone();
+        let wait_provider = provider.to_string();
         let background = tokio::spawn(async move {
             let result = wait_sign_in.wait(DEFAULT_SIGN_IN_TIMEOUT).await;
-            let (state, user, error) = settle_gemini(&wait_accounts, result).await;
+            let (state, user, error) = settle_google(&wait_accounts, result, &wait_provider).await;
             update_task(&inner, &id, |task| {
                 task.state = state;
                 task.user = user;
@@ -340,6 +389,79 @@ impl SignInTasks {
                 task: task.clone(),
                 background: Some(background),
                 driver: TaskDriver::Gemini {
+                    sign_in,
+                    oauth_state: started.state,
+                    provider: provider.to_string(),
+                },
+                accounts,
+                finished_at: None,
+            },
+        );
+        Ok(task)
+    }
+
+    /// Start a Codex ChatGPT browser sign-in: try to take loopback port
+    /// 1455, report `waiting` + the authorize URL at once, then `wait` in
+    /// the background until the callback arrives or the timeout elapses.
+    /// When the port stays taken the task is paste-only: `submit` finishes
+    /// it with the address the browser finally lands on (magpie #1782).
+    async fn start_codex(
+        &self,
+        proxy: Option<String>,
+        accounts: Arc<AccountResolver>,
+    ) -> Result<SignInTask, String> {
+        let sign_in = Arc::new(
+            CodexSignIn::with_proxy(CodexEndpoints::default(), proxy.as_deref())
+                .map_err(|err| err.to_string())?,
+        );
+        let started = sign_in.start().await.map_err(|err| err.to_string())?;
+
+        let id = format!("signin-{}", Uuid::new_v4());
+        let task = SignInTask {
+            id: id.clone(),
+            provider: "codex".to_string(),
+            state: STATE_WAITING.to_string(),
+            url: started.url.clone(),
+            code: String::new(),
+            instructions: CODEX_INSTRUCTIONS.to_string(),
+            paste_callback: started.paste_callback,
+            paste_code: false,
+            user: String::new(),
+            plan: String::new(),
+            error: String::new(),
+        };
+
+        // A paste-only flow (port 1455 taken) has no listener to wait on:
+        // only `submit` can finish it. Otherwise the browser callback is
+        // waited for in the background, the same way gemini's is.
+        let background = if started.paste_callback {
+            None
+        } else {
+            let inner = self.inner.clone();
+            let wait_sign_in = sign_in.clone();
+            let wait_accounts = accounts.clone();
+            Some(tokio::spawn(async move {
+                let result = wait_sign_in.wait_inner(DEFAULT_SIGN_IN_TIMEOUT).await;
+                let (state, user, plan, error) = settle_codex(&wait_accounts, result).await;
+                update_task(&inner, &id, |task| {
+                    task.state = state;
+                    task.user = user;
+                    task.plan = plan;
+                    task.error = error;
+                })
+                .await;
+                mark_finished(&inner, &id);
+            }))
+        };
+
+        let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.prune();
+        registry.tasks.insert(
+            task.id.clone(),
+            TaskHandle {
+                task: task.clone(),
+                background,
+                driver: TaskDriver::Codex {
                     sign_in,
                     oauth_state: started.state,
                 },
@@ -424,19 +546,21 @@ impl SignInTasks {
     }
 }
 
-/// Persist a completed Gemini sign-in and report `(state, user, error)`
-/// (shared by the background `wait` completion and `submit`).
-async fn settle_gemini(
+/// Persist a completed Gemini/Antigravity sign-in and report
+/// `(state, user, error)` (shared by the background `wait` completion and
+/// `submit`).
+async fn settle_google(
     accounts: &AccountResolver,
     result: Result<GeminiAccount, SignInError>,
+    provider: &str,
 ) -> (String, String, String) {
     let account = match result {
         Ok(account) => account,
         Err(err) => return (STATE_FAILED.to_string(), String::new(), err.to_string()),
     };
-    let account_id = format!("gemini:{}", account.email);
+    let account_id = format!("{provider}:{}", account.email);
     let credential = Credential::OAuth {
-        provider: "gemini".to_string(),
+        provider: provider.to_string(),
         account: account.email,
         access_token: account.tokens.access_token,
         refresh_token: account.tokens.refresh_token,
@@ -451,6 +575,48 @@ async fn settle_gemini(
         Ok(()) => (STATE_DONE.to_string(), account_id, String::new()),
         Err(err) => (
             STATE_FAILED.to_string(),
+            String::new(),
+            format!("storing the account failed: {err}"),
+        ),
+    }
+}
+
+/// Persist a completed Codex ChatGPT sign-in and report
+/// `(state, user, plan, error)` (shared by the background `wait`
+/// completion and `submit`).
+async fn settle_codex(
+    accounts: &AccountResolver,
+    result: Result<crate::credentials::codex_signin::CodexAccount, SignInError>,
+) -> (String, String, String, String) {
+    let account = match result {
+        Ok(account) => account,
+        Err(err) => {
+            return (
+                STATE_FAILED.to_string(),
+                String::new(),
+                String::new(),
+                err.to_string(),
+            );
+        }
+    };
+    let account_id = account.account_id_key();
+    let credential = Credential::OAuth {
+        provider: "codex".to_string(),
+        account: account.email.clone(),
+        access_token: account.access_token.clone(),
+        refresh_token: Some(account.refresh_token.clone()),
+        expires_at_unix: account.expires_at_unix,
+    };
+    match accounts.store_sign_in(&account_id, credential).await {
+        Ok(()) => (
+            STATE_DONE.to_string(),
+            account.user,
+            account.plan,
+            String::new(),
+        ),
+        Err(err) => (
+            STATE_FAILED.to_string(),
+            String::new(),
             String::new(),
             format!("storing the account failed: {err}"),
         ),
@@ -664,6 +830,56 @@ mod tests {
         tasks.shutdown().await;
         assert!(tasks.status(&a.id).is_none());
         assert!(tasks.status(&b.id).is_none());
+    }
+
+    #[tokio::test]
+    async fn antigravity_start_uses_its_own_identity() {
+        let tasks = SignInTasks::new(None);
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = test_accounts(&dir);
+
+        let task = tasks.start("antigravity", accounts.clone()).await.unwrap();
+
+        assert_eq!(task.provider, "antigravity");
+        assert_eq!(task.state, STATE_WAITING);
+        assert!(
+            task.url
+                .starts_with("https://accounts.google.com/o/oauth2/v2/auth?")
+        );
+        // Antigravity redirects to `localhost` (not 127.0.0.1) with its
+        // own callback path.
+        assert!(
+            task.url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A"),
+            "url: {}",
+            task.url
+        );
+        assert!(task.url.contains("%2Foauth-callback"), "url: {}", task.url);
+        assert!(task.url.contains("cclog"), "url: {}", task.url);
+        assert!(task.paste_callback);
+        assert!(!task.paste_code);
+        assert!(tasks.cancel(&task.id).await);
+    }
+
+    #[tokio::test]
+    async fn codex_start_reports_waiting_with_url_at_once() {
+        let tasks = SignInTasks::new(None);
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = test_accounts(&dir);
+
+        let task = tasks.start("codex", accounts.clone()).await.unwrap();
+
+        assert_eq!(task.provider, "codex");
+        assert_eq!(task.state, STATE_WAITING);
+        assert!(
+            task.url
+                .starts_with("https://auth.openai.com/oauth/authorize?")
+        );
+        // Port 1455 may be taken (then the task is paste-only) or served
+        // (then `wait` runs in the background) — either way the task is
+        // registered and cancelable without leaks.
+        assert!(tasks.status(&task.id).is_some());
+        assert!(tasks.cancel(&task.id).await);
+        assert!(tasks.status(&task.id).is_none());
     }
 
     #[tokio::test]
