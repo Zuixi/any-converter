@@ -66,6 +66,8 @@ pub struct ManagedHosts {
     hosts: Mutex<HashMap<String, Arc<HostedPlugin>>>,
     /// `{spec}|{target}|{account}` → (models, fetched_at).
     models: Mutex<HashMap<String, (Vec<PluginModel>, Instant)>>,
+    /// One start lock per spec, so a thundering herd spawns one host.
+    starts: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl ManagedHosts {
@@ -76,6 +78,7 @@ impl ManagedHosts {
             auth,
             hosts: Mutex::new(HashMap::new()),
             models: Mutex::new(HashMap::new()),
+            starts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -86,8 +89,28 @@ impl ManagedHosts {
     /// subprocess takes its place). Callers still treat RPC errors on the
     /// returned host as transport failures: the liveness probe cannot rule
     /// out the process dying right after it.
+    /// Start (or reuse) the host for `r`.
+    ///
+    /// Starting is single-flight per spec: two requests arriving before the
+    /// first host is up would otherwise each spawn a Node process, and the
+    /// loser (dropped without being referenced again) was a process nobody
+    /// shut down.
     pub async fn host_for(&self, r: &PluginRef) -> Result<Arc<HostedPlugin>, PluginError> {
         let key = host_key(r);
+        // Cheap path first: an already-running host needs no start lock.
+        if let Some(host) = self.hosts.lock().await.get(&key).cloned() {
+            if host_is_alive(&host).await {
+                return Ok(host);
+            }
+        }
+        let start_lock = {
+            let mut locks = self.starts.lock().await;
+            Arc::clone(locks.entry(key.clone()).or_default())
+        };
+        let _starting = start_lock.lock().await;
+
+        // Re-check under the start lock: the winner may have spawned while
+        // we waited.
         if let Some(host) = self.hosts.lock().await.get(&key).cloned() {
             if host_is_alive(&host).await {
                 return Ok(host);
@@ -161,6 +184,16 @@ impl ManagedHosts {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    /// Whether Node is on PATH (the fixture host needs it).
+    fn node_reachable() -> bool {
+        std::process::Command::new("node")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
     use super::*;
 
     fn sample_ref() -> PluginRef {
@@ -230,5 +263,37 @@ mod tests {
         hosts.invalidate(&r, "").await;
         let keys: Vec<String> = hosts.models.lock().await.keys().cloned().collect();
         assert_eq!(keys, vec!["other|spec|one".to_string()]);
+    }
+    /// Concurrent first use must spawn ONE host: a racing duplicate used to
+    /// leak a Node process nobody shut down.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_host_for_spawns_one_host() {
+        if !node_reachable() {
+            log::debug!("skipping: node not available");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = Arc::new(ManagedHosts::with_store(Arc::new(PluginAuthStore::new(
+            dir.path().join("auth.json"),
+        ))));
+        let spec = PluginRef {
+            spec: format!("{}/tests/fixtures/plugin-hello", env!("CARGO_MANIFEST_DIR")),
+            target: String::new(),
+        };
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let hosts = Arc::clone(&hosts);
+            let spec = spec.clone();
+            handles.push(tokio::spawn(
+                async move { hosts.host_for(&spec).await.unwrap() },
+            ));
+        }
+        let mut pids = Vec::new();
+        for handle in handles {
+            pids.push(handle.await.unwrap().pid());
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        assert_eq!(pids.len(), 1, "one host process, got {pids:?}");
     }
 }
