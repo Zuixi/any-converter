@@ -150,3 +150,14 @@ format = "pretty"
 # base_url = "https://cloudcode-pa.googleapis.com"
 # api_key = ""                                  # unused: the account signs
 # account = "gemini:you@example.com"
+#
+# Sign in with ChatGPT: OpenAI's own API, at /v1/responses. `accounts add
+# chatgpt-api` ends by pasting the address the browser landed on (it carries
+# the code and the client id OpenAI issued).
+#
+# [[providers]]
+# name = "chatgpt-api"
+# format = "openai_responses"
+# base_url = "https://api.openai.com"
+# api_key = ""
+# account = "chatgpt-api:you@example.com"

@@ -38,6 +38,8 @@ use crate::credentials::copilot::{CopilotEndpoints, CopilotSignIn};
 use crate::credentials::gemini::{
     DEFAULT_SIGN_IN_TIMEOUT, GeminiAccount, GeminiEndpoints, GeminiSignIn, GoogleApp, SignInError,
 };
+use crate::credentials::siwc_signin::SiwcSignIn;
+use crate::credentials::siwc_signin::SiwcStarted;
 
 /// The terminal state of a task's flow (`waiting|done|failed|canceled`).
 pub const STATE_WAITING: &str = "waiting";
@@ -102,6 +104,12 @@ enum TaskDriver {
         sign_in: Arc<CodexSignIn>,
         /// The OAuth `state` `submit` must pass to `finish_pasted`.
         oauth_state: String,
+    },
+    /// Sign in with ChatGPT: a pasted callback address finishes it, and the
+    /// started flow carries the PKCE verifier and nonce it must check.
+    Siwc {
+        sign_in: Arc<SiwcSignIn>,
+        started: SiwcStarted,
     },
     /// The Claude driver lives in the background task (the `claude auth
     /// login` it waits on); `submit` feeds the CLI's stdin / callback.
@@ -215,6 +223,7 @@ impl SignInTasks {
             }
             "codex" => self.start_codex(proxy, accounts).await,
             "copilot" => self.start_copilot(proxy, accounts).await,
+            "chatgpt-api" => self.start_siwc(accounts).await,
             "claude" => self.start_claude(accounts).await,
             other => Err(format!(
                 "unknown provider: {other} (supported: gemini, antigravity, codex, copilot, \
@@ -276,7 +285,9 @@ impl SignInTasks {
                     // the task when the CLI exits. A refused paste keeps the
                     // flow alive so a corrected one can be submitted.
                     TaskDriver::Claude { sign_in } => Action::IntoCli(Arc::clone(sign_in)),
-                    TaskDriver::Gemini { .. } | TaskDriver::Codex { .. } => Action::Finish {
+                    TaskDriver::Gemini { .. }
+                    | TaskDriver::Codex { .. }
+                    | TaskDriver::Siwc { .. } => Action::Finish {
                         driver: handle.driver.clone(),
                         background: handle.background.take(),
                         accounts: Arc::clone(&handle.accounts),
@@ -334,6 +345,11 @@ impl SignInTasks {
             } => {
                 let (state, user, plan, error) =
                     settle_codex(&accounts, sign_in.finish_pasted(input, &oauth_state).await).await;
+                (state, user, plan, error)
+            }
+            TaskDriver::Siwc { sign_in, started } => {
+                let (state, user, plan, error) =
+                    settle_siwc(&accounts, sign_in.finish_pasted(input, &started).await).await;
                 (state, user, plan, error)
             }
             TaskDriver::Copilot | TaskDriver::Claude { .. } => unreachable!("refused above"),
@@ -606,6 +622,43 @@ impl SignInTasks {
     /// the browser's final address) back to the CLI, and the background
     /// wait settles the task when the CLI exits. A machine without the
     /// `claude` command line fails the start with the install hint.
+    /// Start a Sign in with ChatGPT (P16). The browser comes back to
+    /// 127.0.0.1:1455, or to a free port when that one is busy; either way
+    /// the address can be pasted, which is the only way on a machine the
+    /// browser can't reach.
+    async fn start_siwc(&self, accounts: Arc<AccountResolver>) -> Result<SignInTask, String> {
+        let sign_in = Arc::new(SiwcSignIn::new(reqwest::Client::new()));
+        let started = sign_in.start().map_err(|err| err.to_string())?;
+        let id = format!("signin-{}", Uuid::new_v4());
+        let task = SignInTask {
+            id: id.clone(),
+            provider: SIWC_PROVIDER.to_string(),
+            state: STATE_WAITING.to_string(),
+            url: started.url.clone(),
+            code: String::new(),
+            instructions: SIWC_INSTRUCTIONS.to_string(),
+            paste_callback: started.paste_callback,
+            paste_code: false,
+            user: String::new(),
+            plan: String::new(),
+            error: String::new(),
+        };
+        let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.prune();
+        registry.tasks.insert(
+            task.id.clone(),
+            TaskHandle {
+                task: task.clone(),
+                // No listener of its own: `submit` finishes this flow.
+                background: None,
+                driver: TaskDriver::Siwc { sign_in, started },
+                accounts,
+                finished_at: None,
+            },
+        );
+        Ok(task)
+    }
+
     async fn start_claude(&self, accounts: Arc<AccountResolver>) -> Result<SignInTask, String> {
         let cli = find_claude_cli(|key| std::env::var(key).ok())
             .ok_or_else(|| CLAUDE_INSTALL_HINT.to_string())?;
@@ -697,6 +750,52 @@ async fn settle_google(
 /// Persist a completed Codex ChatGPT sign-in and report
 /// `(state, user, plan, error)` (shared by the background `wait`
 /// completion and `submit`).
+/// `chatgpt-api` as the provider id, and what the task's page says.
+const SIWC_PROVIDER: &str = "chatgpt-api";
+const SIWC_INSTRUCTIONS: &str =
+    "Paste the whole address the browser ended on — it carries the code and the client id";
+
+/// Keep a finished Sign in with ChatGPT: the tokens in the secret store,
+/// the client id/host id/ID token beside it (see `siwc_store`).
+async fn settle_siwc(
+    accounts: &AccountResolver,
+    result: Result<crate::credentials::SiwcAccount, SignInError>,
+) -> (String, String, String, String) {
+    let account = match result {
+        Ok(account) => account,
+        Err(err) => {
+            return (
+                STATE_FAILED.to_string(),
+                String::new(),
+                String::new(),
+                err.to_string(),
+            );
+        }
+    };
+    let account_id = account.account_id();
+    let credential = Credential::OAuth {
+        provider: SIWC_PROVIDER.to_string(),
+        account: account.user.clone(),
+        access_token: account.access.clone(),
+        refresh_token: Some(account.refresh.clone()),
+        expires_at_unix: Some(account.expires_at_unix),
+    };
+    match accounts.store_sign_in(&account_id, credential).await {
+        Ok(()) => (
+            STATE_DONE.to_string(),
+            account.user,
+            account.plan,
+            String::new(),
+        ),
+        Err(err) => (
+            STATE_FAILED.to_string(),
+            String::new(),
+            String::new(),
+            err.to_string(),
+        ),
+    }
+}
+
 async fn settle_codex(
     accounts: &AccountResolver,
     result: Result<crate::credentials::codex_signin::CodexAccount, SignInError>,

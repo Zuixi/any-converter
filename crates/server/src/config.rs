@@ -618,6 +618,8 @@ impl ProviderConfig {
         let prefix = self.account_ids().first().and_then(|a| a.split(':').next());
         match prefix {
             Some("gemini" | "antigravity") => UpstreamApi::CodeAssist,
+            // Sign in with ChatGPT talks to OpenAI's own API, at /v1/responses.
+            Some("chatgpt-api") => UpstreamApi::Responses,
             _ => UpstreamApi::from_format(self.format),
         }
     }
@@ -665,6 +667,22 @@ impl ProviderConfig {
             Some("antigravity") => ANTIGRAVITY_CODE_ASSIST_BASE.to_string(),
             _ => GEMINI_CODE_ASSIST_BASE.to_string(),
         }
+    }
+
+    /// The base a Sign in with ChatGPT account's requests go to: OpenAI's
+    /// own API, where the token is good (`siwcAPI`, magpie chatgpt_api.go).
+    ///
+    /// Kept without the `/v1` the other providers' bases are written without:
+    /// the request path already carries it (`/v1/responses`), so a base that
+    /// ends in `/v1` — magpie's own `siwcAPI` does — is trimmed here rather
+    /// than sending `/v1/v1/responses`.
+    pub fn chatgpt_api_base(&self) -> String {
+        let base = if self.base_url.trim().is_empty() {
+            "https://api.openai.com".to_string()
+        } else {
+            self.base_url.trim_end_matches('/').to_string()
+        };
+        base.strip_suffix("/v1").map(str::to_string).unwrap_or(base)
     }
 
     /// The base `loadCodeAssist` project/flags discovery goes to for this
