@@ -114,6 +114,7 @@ const STRINGS = {
     released: "No longer written back",
     quotaMore: "Windows",
     quotaEmpty: "No allowance read yet",
+    quotaResets: "resets",
     signInFailed: "Sign-in failed",
     hintKeyring:
       "Codex keeps this sign-in in the system keychain. Set cli_auth_credentials_store = \"file\" in its config.toml, or sign in with Codex itself and use Discover instead.",
@@ -173,6 +174,7 @@ const STRINGS = {
     released: "已停止写回",
     quotaMore: "窗口",
     quotaEmpty: "尚未读取额度",
+    quotaResets: "重置于",
     signInFailed: "登录失败",
     hintKeyring:
       "Codex 把这次登录放在系统钥匙串里。可在它的 config.toml 里设置 cli_auth_credentials_store = \"file\"，或先用 Codex 本身登录再使用 Discover。",
@@ -319,9 +321,16 @@ export function AccountsPage() {
     setError(undefined);
     setPastedUrl("");
     try {
+      // A plugin's provider is `plugin:<spec>#<id>` in the picker.
+      const payload: Record<string, unknown> = { provider };
+      if (provider.startsWith("plugin:")) {
+        const [spec, id] = provider.slice("plugin:".length).split("#");
+        payload.provider = `plugin:${id}`;
+        payload.spec = spec;
+      }
       const started = await request<SignInTask>("/v1/accounts/signin", {
         method: "POST",
-        body: JSON.stringify({ provider }),
+        body: JSON.stringify(payload),
       });
       setTask(started);
     } catch (cause) {
@@ -457,11 +466,39 @@ export function AccountsPage() {
           account.account || "—",
           account.kind,
           account.id,
-          windows.length === 0
-            ? s.quotaNone
-            : windows
-                .map((window) => `${window.name} ${window.used}%`)
-                .join(", "),
+          windows.length === 0 ? (
+            <span className="text-muted-foreground">{s.quotaNone}</span>
+          ) : (
+            <ul className="grid gap-1">
+              {windows.map((window) => (
+                <li key={window.name} className="grid gap-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="w-24 shrink-0 truncate text-xs">{window.name}</span>
+                    <span className="h-1.5 flex-1 overflow-hidden rounded bg-muted">
+                      <span
+                        className={
+                          window.used >= 95
+                            ? "block h-full bg-destructive"
+                            : window.used >= 70
+                              ? "block h-full bg-amber-500"
+                              : "block h-full bg-emerald-500"
+                        }
+                        style={{ width: `${Math.min(100, Math.max(0, window.used))}%` }}
+                      />
+                    </span>
+                    <span className="w-10 shrink-0 text-right text-xs tabular-nums">
+                      {Math.round(window.used)}%
+                    </span>
+                  </div>
+                  {window.resets && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {s.quotaResets} {new Date(window.resets).toLocaleString()}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ),
           <div key={account.id} className="flex flex-wrap items-center gap-1">
             {account.provider !== "" && siblingsOf(account).length > 1 && (
               <Button
@@ -517,6 +554,20 @@ export function AccountsPage() {
                   <SelectItem value="chatgpt-api">chatgpt-api</SelectItem>
                   <SelectItem value="copilot">copilot</SelectItem>
                   <SelectItem value="claude">claude</SelectItem>
+                  {plugins
+                    .filter((plugin) => !plugin.error)
+                    .flatMap((plugin) =>
+                      plugin.providers
+                        .filter((served) => served.methods.length > 0)
+                        .map((served) => (
+                          <SelectItem
+                            key={`${plugin.spec}#${served.id}`}
+                            value={`plugin:${plugin.spec}#${served.id}`}
+                          >
+                            {served.name || served.id} · plugin
+                          </SelectItem>
+                        )),
+                    )}
                 </SelectContent>
               </Select>
             </Field>
