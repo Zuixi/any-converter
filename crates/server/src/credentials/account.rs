@@ -198,11 +198,24 @@ impl AccountResolver {
     /// Create a resolver that refreshes against a specific `token_url` for
     /// every provider (test seam; production uses [`Self::new`], which
     /// points codex accounts at ChatGPT's real token endpoint).
-    /// Where this resolver looks for a Sign in with ChatGPT account's client
-    /// id (defaults to the app's own `siwc-accounts.json`).
+    /// Where a Sign in with ChatGPT client id saved by an older version is
+    /// still read from (`siwc-accounts.json`). New sign-ins keep it in the
+    /// account's own entry, so this is only a fallback.
     pub fn with_siwc_meta_path(mut self, path: std::path::PathBuf) -> Self {
         self.siwc_meta_path = path;
         self
+    }
+
+    /// A ChatGPT API account's extra fields: the account's own entry first,
+    /// the old side file second.
+    fn siwc_meta_of(&self, account_id: &str) -> Option<super::SiwcMeta> {
+        if let Ok(Some(Credential::OAuth {
+            siwc: Some(meta), ..
+        })) = self.store.get(account_id)
+        {
+            return Some(meta);
+        }
+        super::siwc_store::get(&self.siwc_meta_path, account_id)
     }
 
     pub fn with_token_url(
@@ -482,6 +495,7 @@ impl AccountResolver {
             access_token: parsed.access_token.clone(),
             refresh_token: new_refresh_token,
             expires_at_unix,
+            siwc: None,
         };
         self.store.put(account_id, &updated)?;
         self.cache_put(account_id, parsed.access_token.clone(), expires_at_unix);
@@ -520,7 +534,9 @@ impl AccountResolver {
         account_id: &str,
         latest: &StoredOAuth,
     ) -> Result<ResolvedAccount, AccountError> {
-        let meta = super::siwc_store::get(&self.siwc_meta_path, account_id).ok_or_else(|| {
+        // The client id rides in the account's own entry now: one ledger,
+        // so it can't be lost while the tokens survive.
+        let meta = self.siwc_meta_of(account_id).ok_or_else(|| {
             AccountError::RefreshFailed(format!(
                 "no ChatGPT API client id is kept for {account_id}; sign in again"
             ))
@@ -551,19 +567,23 @@ impl AccountResolver {
                     access_token: tokens.access.clone(),
                     refresh_token: Some(tokens.refresh.clone()),
                     expires_at_unix,
+                    siwc: Some(super::SiwcMeta {
+                        client_id: meta.client_id.clone(),
+                        host_id: meta.host_id.clone(),
+                        id_token: if tokens.id_token.is_empty() {
+                            meta.id_token.clone()
+                        } else {
+                            tokens.id_token.clone()
+                        },
+                        scopes: tokens
+                            .scope
+                            .split_ascii_whitespace()
+                            .map(str::to_string)
+                            .collect(),
+                    }),
                 };
                 self.store.put(account_id, &updated)?;
                 self.cache_put(account_id, tokens.access.clone(), expires_at_unix);
-                if !tokens.id_token.is_empty() && tokens.id_token != meta.id_token {
-                    let mut next = meta.clone();
-                    next.id_token = tokens.id_token;
-                    next.scopes = tokens
-                        .scope
-                        .split_ascii_whitespace()
-                        .map(str::to_string)
-                        .collect();
-                    let _ = super::siwc_store::put(&self.siwc_meta_path, account_id, &next);
-                }
                 Ok(ResolvedAccount {
                     id: account_id.to_string(),
                     access_token: tokens.access,
@@ -954,6 +974,7 @@ impl AccountResolver {
                 access_token,
                 refresh_token,
                 expires_at_unix,
+                siwc: None,
             } => Ok(StoredOAuth {
                 provider,
                 account,
@@ -1420,6 +1441,7 @@ mod tests {
                     access_token: "old".into(),
                     refresh_token: Some("old-refresh".into()),
                     expires_at_unix: Some(unix_now() - 10),
+                    siwc: None,
                 },
             )
             .unwrap();

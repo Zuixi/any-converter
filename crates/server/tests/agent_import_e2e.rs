@@ -283,6 +283,7 @@ fn import_writes_secrets_and_never_touches_the_agent_file() {
         access_token,
         refresh_token,
         expires_at_unix,
+        siwc: None,
     }) = store.get("codex:me@example.com").unwrap()
     else {
         panic!("expected an OAuth credential under codex:me@example.com");

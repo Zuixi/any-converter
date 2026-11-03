@@ -294,6 +294,7 @@ pub fn to_credential(account: &FoundAccount) -> Credential {
         access_token: account.access_token.clone(),
         refresh_token: (!account.refresh_token.is_empty()).then(|| account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     }
 }
 

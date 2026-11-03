@@ -253,6 +253,7 @@ fn oauth_credential(access_token: &str, expires_at_unix: i64) -> Credential {
         access_token: access_token.into(),
         refresh_token: Some("ref-1".into()),
         expires_at_unix: Some(expires_at_unix),
+        siwc: None,
     }
 }
 

@@ -205,6 +205,7 @@ impl TestEnv {
                     access_token: "tok-1".into(),
                     refresh_token: Some("ref-1".into()),
                     expires_at_unix: Some(unix_now() + 3600),
+                    siwc: None,
                 },
             )
             .unwrap();

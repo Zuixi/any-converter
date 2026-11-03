@@ -15,7 +15,7 @@ use super::gemini::{
     ERROR_PAGE, MISMATCH_PAGE, SUCCESS_PAGE, SignInError, base64url, base64url_decode,
     form_urlencoded, percent_encode, query_pairs, random_bytes, sha256,
 };
-use super::siwc_store::{self, SiwcMeta};
+use super::siwc_store;
 
 /// What a token answer carries (magpie `siwcTokenReply`).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -402,19 +402,10 @@ impl SiwcSignIn {
             ("resource", &self.endpoints.api),
         ]);
         let tokens = self.post_token(&form).await?;
-        let account = self.account_of_tokens(&tokens, client_id, &started.nonce)?;
-        siwc_store::put(
-            &self.meta_path,
-            &account.account_id(),
-            &SiwcMeta {
-                client_id: account.client_id.clone(),
-                host_id: account.host_id.clone(),
-                id_token: account.id_token.clone(),
-                scopes: account.scopes.clone(),
-            },
-        )
-        .map_err(SignInError::Vendor)?;
-        Ok(account)
+        // The caller keeps the whole account — tokens and these fields —
+        // in one entry (`Credential::OAuth.siwc`), so nothing is written
+        // here: a second ledger is a second thing to lose.
+        self.account_of_tokens(&tokens, client_id, &started.nonce)
     }
 
     /// Finish from the address the browser ended on.

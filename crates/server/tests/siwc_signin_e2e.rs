@@ -297,14 +297,15 @@ async fn account_comes_from_the_claims() {
     assert_eq!(account.account_id(), "chatgpt-api:me@example.com");
     assert!(account.expires_at_unix > now());
 
-    // The side file keeps what the tokens file doesn't.
-    let meta = any_converter_server::credentials::siwc_store::get(
-        &f.dir.path().join("siwc-accounts.json"),
-        "chatgpt-api:me@example.com",
-    )
-    .unwrap();
-    assert_eq!(meta.client_id, "client-1");
-    assert!(meta.host_id.starts_with("urn:uuid:"));
+    // The client id and host id travel with the account itself: the caller
+    // stores them in the same entry as the tokens (Credential::OAuth.siwc),
+    // so nothing is written beside the secret store.
+    assert_eq!(account.client_id, "client-1");
+    assert!(account.host_id.starts_with("urn:uuid:"));
+    assert!(
+        !f.dir.path().join("siwc-accounts.json").exists(),
+        "one ledger: no side file is written"
+    );
 }
 
 // ── refreshing ─────────────────────────────────────────────────────────
@@ -322,6 +323,7 @@ fn seed_expired(dir: &tempfile::TempDir) -> String {
                 access_token: "old-access".into(),
                 refresh_token: Some("old-refresh".into()),
                 expires_at_unix: Some(now() - 10),
+                siwc: None,
             },
         )
         .unwrap();
@@ -407,6 +409,7 @@ async fn refresh_hiccup_keeps_the_token_in_hand() {
                 refresh_token: Some("r".into()),
                 // Expired for the *margin*, still inside its real lifetime.
                 expires_at_unix: Some(now() + 60),
+                siwc: None,
             },
         )
         .unwrap();
@@ -493,4 +496,53 @@ fn jwt_claims_round_trips() {
     let claims = serde_json::json!({"email": "me@example.com"});
     let token = jwt(&claims);
     assert_eq!(jwt_claims(&token).unwrap(), claims);
+}
+
+/// A Sign in with ChatGPT account keeps its client id **in the same entry as
+/// its tokens**, so the two cannot drift: losing a side file would leave an
+/// account that can never refresh again.
+#[tokio::test]
+async fn the_client_id_rides_with_the_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileSecretStore::new(dir.path().join("secrets.json"));
+    let id = "chatgpt-api:me@example.com";
+    store
+        .put(
+            id,
+            &Credential::OAuth {
+                provider: "chatgpt-api".into(),
+                account: "me@example.com".into(),
+                access_token: "a".into(),
+                refresh_token: Some("r".into()),
+                expires_at_unix: Some(now() + 3600),
+                siwc: Some(any_converter_server::credentials::SiwcMeta {
+                    client_id: "client-1".into(),
+                    host_id: "urn:uuid:x".into(),
+                    id_token: "id-1".into(),
+                    scopes: vec!["openid".into()],
+                }),
+            },
+        )
+        .unwrap();
+
+    // Read back through the resolver: it finds the client id in the entry.
+    let backup = dir.path().join("siwc-accounts.json");
+    assert!(!backup.exists(), "nothing is written beside the store");
+    let raw = std::fs::read_to_string(dir.path().join("secrets.json")).unwrap();
+    assert!(
+        raw.contains("client-1"),
+        "the client id is in the entry: {raw}"
+    );
+    assert!(raw.contains("urn:uuid:x"), "{raw}");
+
+    // The old side file is still read when a sign-in predates this shape.
+    any_converter_server::credentials::siwc_store::put(
+        &backup,
+        id,
+        &any_converter_server::credentials::SiwcMeta {
+            client_id: "client-1".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
 }

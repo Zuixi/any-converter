@@ -24,6 +24,13 @@ pub enum Credential {
         access_token: String,
         refresh_token: Option<String>,
         expires_at_unix: Option<i64>,
+        /// What only a Sign in with ChatGPT account needs — the client id
+        /// OpenAI issued at sign-in, this machine's id, the last ID token
+        /// and the granted scopes. Kept in the same entry as the tokens on
+        /// purpose: two ledgers drift, and a lost client id is an account
+        /// that can never refresh again (magpie keeps one `siwcCreds`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        siwc: Option<crate::credentials::SiwcMeta>,
     },
 }
 
