@@ -419,3 +419,71 @@ async fn unknown_agent_is_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json(&body)["error"]["code"], "unknown_agent");
 }
+
+#[tokio::test]
+async fn drift_reconciliation_ignores_third_party_proxy_and_catches_key_change() {
+    // The applied-audit reconciliation replaces the URL heuristic: a base
+    // URL pointing at a THIRD-PARTY proxy (not the gateway, not a known
+    // upstream) is still drift, but the audit also catches key-only edits
+    // and never misreports an unrelated key addition.
+    let fixture = Fixture::new(None, "deepseek", "claude-sonnet-4");
+    seed_all_agents(&fixture.home);
+    let (status, _) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/claude-code/connect",
+        Some("{}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let settings = fixture.path(".claude/settings.json");
+
+    // 1. Unrelated key added by the user: NOT drift (audit compares only
+    //    the keys we wrote).
+    let text = std::fs::read_to_string(&settings).unwrap();
+    let added = text.replace(
+        "\"env\": {",
+        "\"mcpServers\": {\"x\": {\"command\": \"y\"}},\n  \"env\": {",
+    );
+    std::fs::write(&settings, &added).unwrap();
+    let (_, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
+    assert_eq!(
+        agent_status(&json(&body), "claude-code"),
+        "connected",
+        "unrelated user key must not be drift"
+    );
+
+    // 2. Auth token swapped by another tool: drift (the audit records the
+    //    exact value we wrote).
+    let swapped = added.replace("acw_claude-code_", "acw_swapped_");
+    std::fs::write(&settings, &swapped).unwrap();
+    let (_, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
+    assert_eq!(agent_status(&json(&body), "claude-code"), "drifted");
+}
+
+#[tokio::test]
+async fn drift_falls_back_to_heuristic_without_audit() {
+    // Agents wired before the audit existed (or with agent_applied.json
+    // deleted) still get the heuristic check: a connected agent whose base
+    // URL no longer matches the gateway is reported drifted.
+    let fixture = Fixture::new(None, "deepseek", "claude-sonnet-4");
+    seed_all_agents(&fixture.home);
+    let (status, _) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/claude-code/connect",
+        Some("{}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    std::fs::remove_file(fixture.data_dir.join("agent_applied.json")).unwrap();
+
+    let settings = fixture.path(".claude/settings.json");
+    let text = std::fs::read_to_string(&settings).unwrap();
+    std::fs::write(&settings, text.replace(GATEWAY, "https://api.deepseek.com/anthropic")).unwrap();
+
+    let (_, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
+    assert_eq!(agent_status(&json(&body), "claude-code"), "drifted");
+}

@@ -155,6 +155,15 @@ impl AgentSpec for PiSpec {
         }
     }
 
+    fn base_url_key(&self) -> Option<&'static str> {
+        Some("providers.any-converter.baseUrl")
+    }
+
+    fn read_key(&self, ctx: &HomeCtx, key: &str) -> Option<String> {
+        let models = read_config(&Self::models_path(ctx)).ok().flatten()?;
+        json::get(&models, key)
+    }
+
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {
         let mut values = BTreeMap::new();
         if let Ok(Some(settings)) = read_config(&Self::settings_path(ctx)) {

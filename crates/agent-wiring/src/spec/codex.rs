@@ -192,6 +192,15 @@ impl AgentSpec for CodexSpec {
         }
     }
 
+    fn base_url_key(&self) -> Option<&'static str> {
+        Some("model_providers.any-converter.base_url")
+    }
+
+    fn read_key(&self, ctx: &HomeCtx, key: &str) -> Option<String> {
+        let config = read_config(&Self::config_path(ctx)).ok().flatten()?;
+        toml::get(&config, key)
+    }
+
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {
         let mut values = BTreeMap::new();
         if let Ok(Some(config)) = read_config(&Self::config_path(ctx)) {

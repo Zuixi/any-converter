@@ -93,6 +93,19 @@ pub trait AgentSpec {
     /// Reads the cheap drift state from the agent configuration.
     fn read_state(&self, ctx: &HomeCtx) -> WiredState;
 
+    /// The key whose value carries the gateway base URL, for the drift
+    /// fallback that checks the URL still points at THIS gateway.
+    /// `None` for specs without a URL-shaped key.
+    fn base_url_key(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Reads one of `our_keys` from the agent's files as a plain string.
+    /// `None` when the key is absent or the file cannot be read.
+    fn read_key(&self, _ctx: &HomeCtx, _key: &str) -> Option<String> {
+        None
+    }
+
     /// Values the spec just wrote, used for the drift audit.
     ///
     /// The default implementation is empty so third-party specs remain valid.
