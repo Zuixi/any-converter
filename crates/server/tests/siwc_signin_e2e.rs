@@ -133,6 +133,24 @@ fn id_claims(nonce: &str, client_id: &str) -> serde_json::Value {
     })
 }
 
+/// A renewal request built the way `AccountResolver` builds one.
+fn siwc_request<'a>(
+    client_id: &'a str,
+    refresh: &'a str,
+    access: &'a str,
+    expires_at_unix: i64,
+) -> any_converter_server::credentials::siwc_signin::SiwcRefreshRequest<'a> {
+    any_converter_server::credentials::siwc_signin::SiwcRefreshRequest {
+        client_id,
+        refresh_token: refresh,
+        access_token: access,
+        id_token: "",
+        scopes: &[],
+        expires_at_unix,
+        force: false,
+    }
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -330,10 +348,17 @@ async fn refresh_dead_code_means_sign_in_again() {
         r#"{"error":{"code":"invalid_grant","message":"revoked"}}"#,
     );
     let sign_in = SiwcSignIn::with_http(SiwcEndpoints::default(), Arc::new(mock.clone()))
-        .with_meta_path(dir.path().join("siwc-accounts.json"))
-        .with_secrets_path(dir.path().join("secrets.json"));
-    let id = seed_expired(&dir);
-    let err = sign_in.refresh(&id, false).await.unwrap_err();
+        .with_meta_path(dir.path().join("siwc-accounts.json"));
+    let _ = seed_expired(&dir);
+    let err = sign_in
+        .renew(siwc_request(
+            "client-1",
+            "old-refresh",
+            "old-access",
+            now() - 10,
+        ))
+        .await
+        .unwrap_err();
     assert_eq!(err, SiwcError::SignInExpired);
 }
 
@@ -347,11 +372,18 @@ async fn refresh_unknown_client_is_reported() {
         r#"{"error":{"code":"invalid_client","message":"unknown client"}}"#,
     );
     let sign_in = SiwcSignIn::with_http(SiwcEndpoints::default(), Arc::new(mock.clone()))
-        .with_meta_path(dir.path().join("siwc-accounts.json"))
-        .with_secrets_path(dir.path().join("secrets.json"));
-    let id = seed_expired(&dir);
+        .with_meta_path(dir.path().join("siwc-accounts.json"));
+    let _ = seed_expired(&dir);
     assert_eq!(
-        sign_in.refresh(&id, false).await.unwrap_err(),
+        sign_in
+            .renew(siwc_request(
+                "client-1",
+                "old-refresh",
+                "old-access",
+                now() - 10
+            ))
+            .await
+            .unwrap_err(),
         SiwcError::ClientUnknown
     );
 }
@@ -363,8 +395,7 @@ async fn refresh_hiccup_keeps_the_token_in_hand() {
     // The token endpoint is unreachable, but the stored token is still
     // valid: magpie keeps using it rather than failing the request.
     let sign_in = SiwcSignIn::with_http(SiwcEndpoints::default(), Arc::new(mock))
-        .with_meta_path(dir.path().join("siwc-accounts.json"))
-        .with_secrets_path(dir.path().join("secrets.json"));
+        .with_meta_path(dir.path().join("siwc-accounts.json"));
     let id = "chatgpt-api:me@example.com".to_string();
     FileSecretStore::new(dir.path().join("secrets.json"))
         .put(
@@ -388,11 +419,13 @@ async fn refresh_hiccup_keeps_the_token_in_hand() {
         },
     )
     .unwrap();
-    // A hiccup is not a refusal: the stored token still has life in it, so
-    // the request goes on rather than failing.
-    let tokens = sign_in.refresh(&id, false).await.unwrap();
-    assert_eq!(tokens.access, "still-good");
-    assert!(tokens.expires_in > 0);
+    // A hiccup is not a refusal: the token in hand still has life in it, so
+    // the request goes on rather than failing. `None` is exactly that.
+    let renewed = sign_in
+        .renew(siwc_request("client-1", "r", "still-good", now() + 60))
+        .await
+        .unwrap();
+    assert!(renewed.is_none(), "the caller keeps the token in hand");
 }
 
 // ── revoking and models ────────────────────────────────────────────────
@@ -408,10 +441,12 @@ async fn revoke_uses_the_published_endpoint() {
     );
     mock.route("/oauth/revoke", 200, "{}");
     let sign_in = SiwcSignIn::with_http(SiwcEndpoints::default(), Arc::new(mock.clone()))
-        .with_meta_path(dir.path().join("siwc-accounts.json"))
-        .with_secrets_path(dir.path().join("secrets.json"));
+        .with_meta_path(dir.path().join("siwc-accounts.json"));
     let id = seed_expired(&dir);
-    assert!(sign_in.revoke(&id).await.unwrap(), "revoked");
+    assert!(
+        sign_in.revoke(&id, Some("old-refresh")).await.unwrap(),
+        "revoked"
+    );
     assert!(
         mock.calls().iter().any(|u| u.contains("/oauth/revoke")),
         "the endpoint was called: {:?}",
@@ -425,10 +460,12 @@ async fn revoke_without_an_endpoint_is_not_offered() {
     let mock = Mock::default();
     mock.route("/.well-known/openid-configuration", 200, "{}");
     let sign_in = SiwcSignIn::with_http(SiwcEndpoints::default(), Arc::new(mock))
-        .with_meta_path(dir.path().join("siwc-accounts.json"))
-        .with_secrets_path(dir.path().join("secrets.json"));
+        .with_meta_path(dir.path().join("siwc-accounts.json"));
     let id = seed_expired(&dir);
-    assert!(!sign_in.revoke(&id).await.unwrap(), "nothing to revoke at");
+    assert!(
+        !sign_in.revoke(&id, Some("old-refresh")).await.unwrap(),
+        "nothing to revoke at"
+    );
 }
 
 #[tokio::test]
