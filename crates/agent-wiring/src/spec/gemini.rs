@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde_json::json;
 
 use super::{
-    AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, is_gateway_base, load_stash,
+    AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, gw_base_match, load_stash,
     read_config, record_old_values, save_stash, write_config,
 };
 use crate::edit::{KV, env as env_edit, json};
@@ -159,28 +159,21 @@ impl AgentSpec for GeminiSpec {
         Ok(written)
     }
 
-    fn read_state(&self, ctx: &HomeCtx) -> WiredState {
+    fn read_state(&self, ctx: &HomeCtx, gateway_url: &str) -> WiredState {
         let Ok(Some(env_text)) = read_config(&Self::env_path(ctx)) else {
             return WiredState::Disconnected;
         };
         let base = env_edit::get(&env_text, "GOOGLE_GEMINI_BASE_URL");
         let key = env_edit::get(&env_text, "GEMINI_API_KEY");
-        let gateway = base.as_deref().is_some_and(is_gateway_base);
+        let gateway = base
+            .as_deref()
+            .is_some_and(|value| gw_base_match(value, gateway_url));
         let key = key.as_deref().is_some_and(|value| !value.is_empty());
         match (gateway, key) {
             (true, true) => WiredState::Connected,
             (false, false) => WiredState::Disconnected,
             _ => WiredState::Drifted,
         }
-    }
-
-    fn base_url_key(&self) -> Option<&'static str> {
-        Some("GOOGLE_GEMINI_BASE_URL")
-    }
-
-    fn read_key(&self, ctx: &HomeCtx, key: &str) -> Option<String> {
-        let env_text = read_config(&Self::env_path(ctx)).ok().flatten()?;
-        env_edit::get(&env_text, key)
     }
 
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {

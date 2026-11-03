@@ -57,7 +57,10 @@ fn connect_records_applied_values_and_stash() {
             .get("env.ANTHROPIC_BASE_URL"),
         Some(&"https://api.anthropic.com".to_owned())
     );
-    assert_eq!(wiring.check_drift(&ClaudeSpec, &ctx), WiredState::Connected);
+    assert_eq!(
+        ClaudeSpec.read_state(&ctx, common::GATEWAY),
+        WiredState::Connected
+    );
 }
 
 #[test]
@@ -162,7 +165,7 @@ impl AgentSpec for FailingSpec {
         Ok(Vec::new())
     }
 
-    fn read_state(&self, _ctx: &HomeCtx) -> WiredState {
+    fn read_state(&self, _ctx: &HomeCtx, _gateway_url: &str) -> WiredState {
         WiredState::Disconnected
     }
 }

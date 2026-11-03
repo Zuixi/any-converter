@@ -105,7 +105,7 @@ fn connect_writes_provider_and_settings() {
     assert!(enabled.contains("openai/gpt"));
     assert!(enabled.contains("any-converter/claude-sonnet-4-5"));
     assert_eq!(PiSpec.our_keys(), OUR_KEYS);
-    assert_eq!(PiSpec.read_state(&ctx), WiredState::Connected);
+    assert_eq!(PiSpec.read_state(&ctx, common::GATEWAY), WiredState::Connected);
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn drift_is_detected_from_provider_base_url() {
     .unwrap();
     common::write(&models, &drifted);
 
-    assert_eq!(PiSpec.read_state(&ctx), WiredState::Drifted);
+    assert_eq!(PiSpec.read_state(&ctx, common::GATEWAY), WiredState::Drifted);
 }
 
 #[test]

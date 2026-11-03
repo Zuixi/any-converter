@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde_json::json;
 
 use super::{
-    AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, is_gateway_base, load_stash,
+    AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, gw_base_match, load_stash,
     read_config, record_old_values, save_stash, write_config,
 };
 use crate::edit::{KV, json};
@@ -132,28 +132,21 @@ impl AgentSpec for ClaudeSpec {
         Ok(vec![written])
     }
 
-    fn read_state(&self, ctx: &HomeCtx) -> WiredState {
+    fn read_state(&self, ctx: &HomeCtx, gateway_url: &str) -> WiredState {
         let Ok(Some(current)) = read_config(&Self::settings_path(ctx)) else {
             return WiredState::Disconnected;
         };
         let base = json::get(&current, "env.ANTHROPIC_BASE_URL");
         let token = json::get(&current, "env.ANTHROPIC_AUTH_TOKEN");
-        let gateway = base.as_deref().is_some_and(is_gateway_base);
+        let gateway = base
+            .as_deref()
+            .is_some_and(|value| gw_base_match(value, gateway_url));
         let key = token.as_deref().is_some_and(|value| !value.is_empty());
         match (gateway, key) {
             (true, true) => WiredState::Connected,
             (false, false) => WiredState::Disconnected,
             _ => WiredState::Drifted,
         }
-    }
-
-    fn base_url_key(&self) -> Option<&'static str> {
-        Some("env.ANTHROPIC_BASE_URL")
-    }
-
-    fn read_key(&self, ctx: &HomeCtx, key: &str) -> Option<String> {
-        let current = read_config(&Self::settings_path(ctx)).ok()??;
-        json::get(&current, key)
     }
 
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {

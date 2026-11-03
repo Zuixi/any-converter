@@ -7,7 +7,7 @@ use serde_json::json;
 
 use super::{
     AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, env_dir, gateway_path,
-    is_gateway_base, load_stash, read_config, record_old_values, remove_config, save_stash,
+    gw_base_match, load_stash, read_config, record_old_values, remove_config, save_stash,
     write_config,
 };
 use crate::edit::{EditError, KV, json, toml};
@@ -174,7 +174,7 @@ impl AgentSpec for CodexSpec {
         Ok(written)
     }
 
-    fn read_state(&self, ctx: &HomeCtx) -> WiredState {
+    fn read_state(&self, ctx: &HomeCtx, gateway_url: &str) -> WiredState {
         let config = read_config(&Self::config_path(ctx)).ok().flatten();
         let auth = read_config(&Self::auth_path(ctx)).ok().flatten();
         let base = config
@@ -183,22 +183,15 @@ impl AgentSpec for CodexSpec {
         let key = auth
             .as_deref()
             .and_then(|text| json::get(text, "OPENAI_API_KEY"));
-        let gateway = base.as_deref().is_some_and(is_gateway_base);
+        let gateway = base
+            .as_deref()
+            .is_some_and(|value| gw_base_match(value, gateway_url));
         let key = key.as_deref().is_some_and(|value| !value.is_empty());
         match (gateway, key) {
             (true, true) => WiredState::Connected,
             (false, false) => WiredState::Disconnected,
             _ => WiredState::Drifted,
         }
-    }
-
-    fn base_url_key(&self) -> Option<&'static str> {
-        Some("model_providers.any-converter.base_url")
-    }
-
-    fn read_key(&self, ctx: &HomeCtx, key: &str) -> Option<String> {
-        let config = read_config(&Self::config_path(ctx)).ok().flatten()?;
-        toml::get(&config, key)
     }
 
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {

@@ -70,7 +70,7 @@ fn connect_writes_gateway_keys_and_state() {
     );
     assert_eq!(json::get(&text, "theme").as_deref(), Some("dark"));
     assert_eq!(ClaudeSpec.our_keys(), OUR_KEYS);
-    assert_eq!(ClaudeSpec.read_state(&ctx), WiredState::Connected);
+    assert_eq!(ClaudeSpec.read_state(&ctx, common::GATEWAY), WiredState::Connected);
 }
 
 #[test]
@@ -79,11 +79,11 @@ fn drift_and_disconnect_states() {
     let ctx = common::home(dir.path());
     let settings = dir.path().join(".claude/settings.json");
     common::write(&settings, "{}");
-    assert_eq!(ClaudeSpec.read_state(&ctx), WiredState::Disconnected);
+    assert_eq!(ClaudeSpec.read_state(&ctx, common::GATEWAY), WiredState::Disconnected);
 
     let catalog = common::catalog();
     ClaudeSpec.connect(&ctx, &wiring_ctx(&catalog)).unwrap();
-    assert_eq!(ClaudeSpec.read_state(&ctx), WiredState::Connected);
+    assert_eq!(ClaudeSpec.read_state(&ctx, common::GATEWAY), WiredState::Connected);
 
     let text = common::read(&settings);
     let drifted = json::set(
@@ -95,10 +95,10 @@ fn drift_and_disconnect_states() {
     )
     .unwrap();
     common::write(&settings, &drifted);
-    assert_eq!(ClaudeSpec.read_state(&ctx), WiredState::Drifted);
+    assert_eq!(ClaudeSpec.read_state(&ctx, common::GATEWAY), WiredState::Drifted);
 
     ClaudeSpec.disconnect(&ctx).unwrap();
-    assert_eq!(ClaudeSpec.read_state(&ctx), WiredState::Disconnected);
+    assert_eq!(ClaudeSpec.read_state(&ctx, common::GATEWAY), WiredState::Disconnected);
 }
 
 #[test]

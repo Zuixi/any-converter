@@ -22,7 +22,7 @@ use crate::atomic;
 use crate::backup::{Applied, Snapshot, Stash};
 use crate::edit::{env as env_edit, json};
 use crate::error::WiringError;
-use crate::spec::{AgentSpec, HomeCtx, StashScope, WiredState, WiringCtx};
+use crate::spec::{AgentSpec, HomeCtx, StashScope, WiringCtx};
 
 /// Result of a successful connect.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -184,11 +184,7 @@ impl Wiring {
         })
     }
 
-    /// Cheap drift check delegated to the agent specification.
-    pub fn check_drift(&self, spec: &dyn AgentSpec, home: &HomeCtx) -> WiredState {
-        spec.read_state(home)
-    }
-
+    /// Restores files after a failed connect (best effort).
     fn restore_after_failed_connect(&self, snapshot: &Snapshot, files: &[PathBuf]) {
         for file in files {
             let Ok(backup) = snapshot.read_backup(file) else {

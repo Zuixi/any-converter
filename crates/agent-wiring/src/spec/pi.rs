@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, env_dir, gateway_path,
-    is_gateway_base, load_stash, read_config, record_old_values, save_stash, write_config,
+    gw_base_match, load_stash, read_config, record_old_values, save_stash, write_config,
 };
 use crate::edit::{KV, json};
 use crate::error::WiringError;
@@ -140,28 +140,21 @@ impl AgentSpec for PiSpec {
         Ok(written)
     }
 
-    fn read_state(&self, ctx: &HomeCtx) -> WiredState {
+    fn read_state(&self, ctx: &HomeCtx, gateway_url: &str) -> WiredState {
         let Ok(Some(models)) = read_config(&Self::models_path(ctx)) else {
             return WiredState::Disconnected;
         };
         let base = json::get(&models, "providers.any-converter.baseUrl");
         let key = json::get(&models, "providers.any-converter.apiKey");
-        let gateway = base.as_deref().is_some_and(is_gateway_base);
+        let gateway = base
+            .as_deref()
+            .is_some_and(|value| gw_base_match(value, gateway_url));
         let key = key.as_deref().is_some_and(|value| !value.is_empty());
         match (gateway, key) {
             (true, true) => WiredState::Connected,
             (false, false) => WiredState::Disconnected,
             _ => WiredState::Drifted,
         }
-    }
-
-    fn base_url_key(&self) -> Option<&'static str> {
-        Some("providers.any-converter.baseUrl")
-    }
-
-    fn read_key(&self, ctx: &HomeCtx, key: &str) -> Option<String> {
-        let models = read_config(&Self::models_path(ctx)).ok().flatten()?;
-        json::get(&models, key)
     }
 
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {
