@@ -16,7 +16,8 @@ use crate::credentials::AccountResolver;
 use crate::credentials::CopilotAllowances;
 use crate::credentials::copilot::CopilotSessions;
 use crate::handlers::{
-    AppState, handle_account_quotas, handle_account_remove, handle_account_signin,
+    AppState, handle_account_adopt, handle_account_order, handle_account_plugins,
+    handle_account_quotas, handle_account_release, handle_account_remove, handle_account_signin,
     handle_account_signin_cancel, handle_account_signin_status, handle_account_signin_submit,
     handle_accounts, handle_claude, handle_count_tokens, handle_gemini, handle_health,
     handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
@@ -157,6 +158,10 @@ pub fn create_router_with_state(state: Arc<AppState>) -> Router {
         .route("/models/{model_id}", get(handle_model_retrieve))
         .route("/v1/accounts", get(handle_accounts))
         .route("/v1/accounts/quotas", get(handle_account_quotas))
+        .route("/v1/accounts/plugins", get(handle_account_plugins))
+        .route("/v1/accounts/order", post(handle_account_order))
+        .route("/v1/accounts/{id}/adopt", post(handle_account_adopt))
+        .route("/v1/accounts/{id}/release", post(handle_account_release))
         .route("/v1/accounts/signin", post(handle_account_signin))
         .route(
             "/v1/accounts/signin/{id}",

@@ -60,6 +60,57 @@ async fn host_is_alive(host: &HostedPlugin) -> bool {
 }
 
 /// Hosts for every plugin provider referenced by the config.
+/// One installed plugin: the spec, what it serves, and why it may not load.
+#[derive(Debug, Clone)]
+pub struct InstalledPlugin {
+    pub spec: String,
+    pub providers: Vec<PluginProviderInfo>,
+    pub error: String,
+}
+
+/// `<config>/plugins`: where `plugin install` puts a package. `ANY_CONVERTER_PLUGINS`
+/// overrides it (the same name the CLI uses).
+pub fn plugins_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("ANY_CONVERTER_PLUGINS") {
+        return std::path::PathBuf::from(dir);
+    }
+    crate::config::secrets_path()
+        .parent()
+        .map(|dir| dir.join("plugins"))
+        .unwrap_or_else(|| std::path::PathBuf::from("plugins"))
+}
+
+/// The package names under `node_modules` in `dir` (scopes unfolded one
+/// level), sorted so the list is stable.
+pub fn installed_specs(dir: &std::path::Path) -> Vec<String> {
+    let root = dir.join("node_modules");
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if name == ".bin" {
+            continue;
+        }
+        if name.starts_with('@') {
+            if let Ok(scoped) = std::fs::read_dir(entry.path()) {
+                for inner in scoped.flatten() {
+                    if let Ok(one) = inner.file_name().into_string() {
+                        out.push(format!("{name}/{one}"));
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(name);
+    }
+    out.sort();
+    out
+}
+
 pub struct ManagedHosts {
     auth: Arc<PluginAuthStore>,
     /// `{spec}|{target}` → running plugin process.
@@ -139,6 +190,31 @@ impl ManagedHosts {
     pub async fn providers(&self, r: &PluginRef) -> Result<Vec<PluginProviderInfo>, PluginError> {
         let host = self.host_for(r).await?;
         Ok(vec![host.info().clone()])
+    }
+
+    /// Every plugin installed under `dir`, with the providers each serves.
+    /// A spec that won't load is reported with why, never skipped silently.
+    pub async fn installed(&self, dir: &std::path::Path) -> Vec<InstalledPlugin> {
+        let mut out = Vec::new();
+        for spec in installed_specs(dir) {
+            let r = PluginRef {
+                spec: spec.clone(),
+                target: dir.to_string_lossy().into_owned(),
+            };
+            match self.providers(&r).await {
+                Ok(providers) => out.push(InstalledPlugin {
+                    spec,
+                    providers,
+                    error: String::new(),
+                }),
+                Err(err) => out.push(InstalledPlugin {
+                    spec,
+                    providers: Vec::new(),
+                    error: err.to_string(),
+                }),
+            }
+        }
+        out
     }
 
     /// The models the plugin lists for `account`, cached for 60 seconds.
