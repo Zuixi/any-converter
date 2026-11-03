@@ -59,6 +59,7 @@ fn make_app(providers: Vec<ProviderConfig>, route_provider: &str, api_key: Optio
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     create_router_with_state(Arc::new(AppState {

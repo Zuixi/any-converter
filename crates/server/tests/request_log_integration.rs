@@ -58,6 +58,7 @@ fn test_config(base_url: &str, log_path: PathBuf) -> ServerConfig {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: LoggingConfig {
             dir: Some(log_path.to_string_lossy().to_string()),
             request_log: RequestLogConfig {

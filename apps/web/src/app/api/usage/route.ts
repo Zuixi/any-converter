@@ -1,16 +1,31 @@
 import { NextResponse } from "next/server";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 
-import { parseJsonl } from "@any-converter/shared";
-import type { AggregatedUsage, RequestLogRecord, ResponseBodyKind, UsageRecord } from "@any-converter/shared";
+import type {
+  Granularity,
+  LedgerFilter,
+  LedgerPage,
+  SplitDim,
+  UsageQuery,
+  UsageSummary,
+  UsageTotals,
+} from "@any-converter/shared";
 
-import { readUsageFromSqlite } from "../log-store";
+import {
+  heatmapFromSqlite,
+  ledgerCsv,
+  ledgerPageFromSqlite,
+  resolvePeriod,
+  usageSummaryFromSqlite,
+} from "../log-store";
 
 export const runtime = "nodejs";
 
-interface UsageBucket extends AggregatedUsage {
-  latency_total_ms: number;
+const DEFAULT_PRESET = "7d";
+const DEFAULT_GRANULARITY: Granularity = "day";
+
+interface ResolvedRange {
+  from: string;
+  to: string;
 }
 
 function getLogDir(): string {
@@ -21,201 +36,178 @@ function getLogDir(): string {
   return dir;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const params = new URL(request.url).searchParams;
+  const granularity = granularityFrom(params.get("granularity"));
+  const wantsLedger = params.get("ledger") === "1" || params.get("format") === "csv";
+  const wantsHeatmap = params.get("heatmap") === "1";
+
+  let range: ResolvedRange;
+  try {
+    // An explicit from/to pair wins over the preset: the hook layer works in
+    // concrete ranges and must not silently fall back to a default window.
+    const from = params.get("from");
+    const to = params.get("to");
+    range = from && to ? { from, to } : resolvePeriod(params.get("preset") ?? DEFAULT_PRESET);
+  } catch (error) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 400 });
+  }
+
   try {
     const logDir = getLogDir();
-    const sqliteRecords = readUsageFromSqlite(logDir, 50);
-    if (sqliteRecords && sqliteRecords.length > 0) {
-      return NextResponse.json({ records: sqliteRecords });
+
+    if (wantsHeatmap) {
+      // The calendar has its own 53-week span, so the resolved range only has to
+      // be a valid one for the request to reach this branch.
+      const heatmap = heatmapFromSqlite(logDir, ledgerFilter(params, range));
+      if (heatmap === null) {
+        return NextResponse.json({ heatmap: null }, { status: 500 });
+      }
+      return NextResponse.json({ heatmap });
     }
 
-    const files = await readdir(logDir);
-    const requestRecords = await readRecentRequestRecords(logDir, files);
-    const records =
-      requestRecords.length > 0
-        ? aggregateRequestRecords(requestRecords)
-        : aggregateUsageRecords(await readRecentUsageRecords(logDir, files));
+    if (wantsLedger) {
+      const page =
+        ledgerPageFromSqlite(
+          logDir,
+          ledgerFilter(params, range),
+          parseInteger(params.get("cursor")),
+          parseInteger(params.get("limit")) ?? 0,
+        ) ?? emptyLedgerPage();
 
-    return NextResponse.json({ records: records.slice(-50) });
+      if (params.get("format") === "csv") {
+        return new NextResponse(ledgerCsv(page.rows), {
+          headers: { "content-type": "text/csv; charset=utf-8" },
+        });
+      }
+      return NextResponse.json({ page });
+    }
+
+    const query: UsageQuery = {
+      ...range,
+      granularity,
+      provider: optionalParam(params, "provider"),
+      model: optionalParam(params, "model"),
+      agent: optionalParam(params, "agent"),
+      split_by: splitDimFrom(params.get("split_by")),
+    };
+    const summary = usageSummaryFromSqlite(logDir, query) ?? emptySummary(range, granularity);
+
+    return NextResponse.json({ summary });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return NextResponse.json({ records: [], error: message }, { status: 500 });
-  }
-}
-
-async function readRecentRequestRecords(logDir: string, files: string[]): Promise<RequestLogRecord[]> {
-  const requestFiles = files
-    .filter((name) => name.startsWith("requests.") && name.endsWith(".jsonl"))
-    .sort()
-    .reverse();
-  let records: RequestLogRecord[] = [];
-  for (const file of requestFiles.slice(0, 7)) {
-    const text = await readFile(join(logDir, file), "utf-8");
-    records = records.concat(parseJsonl<RequestLogRecord>(text));
-  }
-  return records;
-}
-
-async function readRecentUsageRecords(logDir: string, files: string[]): Promise<AggregatedUsage[]> {
-  const usageFiles = files
-    .filter((name) => name.startsWith("usage.") && name.endsWith(".jsonl"))
-    .sort()
-    .reverse();
-  let records: AggregatedUsage[] = [];
-  for (const file of usageFiles.slice(0, 7)) {
-    const text = await readFile(join(logDir, file), "utf-8");
-    records = records.concat(parseJsonl<AggregatedUsage>(text));
-  }
-  return records;
-}
-
-function aggregateRequestRecords(records: RequestLogRecord[]): AggregatedUsage[] {
-  const bucketed = new Map<string, UsageBucket>();
-  for (const record of records) {
-    const usage = effectiveUsage(record);
-    const hour = record.timestamp.slice(0, 13);
-    const existing = bucketed.get(hour);
-    const totalTokens = usage.input_tokens + usage.output_tokens;
-    if (existing) {
-      existing.input_tokens += usage.input_tokens;
-      existing.output_tokens += usage.output_tokens;
-      existing.total_tokens += totalTokens;
-      existing.request_count += 1;
-      existing.latency_total_ms += record.latency_ms;
-      existing.avg_latency_ms = Math.round(existing.latency_total_ms / existing.request_count);
-      existing.max_latency_ms = Math.max(existing.max_latency_ms ?? 0, record.latency_ms);
-      existing.latency_ms = existing.avg_latency_ms;
-      existing.error_count = (existing.error_count ?? 0) + (record.response_status >= 400 ? 1 : 0);
-    } else {
-      bucketed.set(hour, {
-        timestamp: `${hour}:00`,
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        total_tokens: totalTokens,
-        request_count: 1,
-        status: record.response_status,
-        latency_ms: record.latency_ms,
-        avg_latency_ms: record.latency_ms,
-        max_latency_ms: record.latency_ms,
-        latency_total_ms: record.latency_ms,
-        error_count: record.response_status >= 400 ? 1 : 0,
-        provider: record.provider,
-        client_model: record.client_model,
-      });
+    const message = errorMessage(error);
+    if (wantsHeatmap) {
+      return NextResponse.json({ heatmap: null, error: message }, { status: 500 });
     }
-  }
-  return finalizeBuckets(bucketed);
-}
-
-function aggregateUsageRecords(records: AggregatedUsage[]): AggregatedUsage[] {
-  const bucketed = new Map<string, UsageBucket>();
-  for (const record of records) {
-    const hour = record.timestamp.slice(0, 13);
-    const requestCount = record.request_count || 1;
-    const latency = record.avg_latency_ms ?? record.latency_ms ?? 0;
-    const existing = bucketed.get(hour);
-    if (existing) {
-      existing.input_tokens += record.input_tokens;
-      existing.output_tokens += record.output_tokens;
-      existing.total_tokens += record.total_tokens ?? record.input_tokens + record.output_tokens;
-      existing.request_count += requestCount;
-      existing.latency_total_ms += latency * requestCount;
-      existing.avg_latency_ms = Math.round(existing.latency_total_ms / existing.request_count);
-      existing.max_latency_ms = Math.max(existing.max_latency_ms ?? 0, record.max_latency_ms ?? record.latency_ms ?? 0);
-      existing.latency_ms = existing.avg_latency_ms;
-      existing.error_count = (existing.error_count ?? 0) + (record.status >= 400 ? requestCount : 0);
-    } else {
-      bucketed.set(hour, {
-        ...record,
-        timestamp: `${hour}:00`,
-        total_tokens: record.total_tokens ?? record.input_tokens + record.output_tokens,
-        request_count: requestCount,
-        latency_ms: latency,
-        avg_latency_ms: latency,
-        max_latency_ms: record.max_latency_ms ?? record.latency_ms ?? latency,
-        latency_total_ms: latency * requestCount,
-        error_count: record.status >= 400 ? requestCount : 0,
-      });
+    if (wantsLedger) {
+      return NextResponse.json({ page: emptyLedgerPage(), error: message }, { status: 500 });
     }
+    return NextResponse.json(
+      { summary: emptySummary(range, granularity), error: message },
+      { status: 500 },
+    );
   }
-  return finalizeBuckets(bucketed);
 }
 
-function finalizeBuckets(bucketed: Map<string, UsageBucket>): AggregatedUsage[] {
-  return Array.from(bucketed.values())
-    .map(({ latency_total_ms: _latencyTotal, ...bucket }) => bucket)
-    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-}
-
-function effectiveUsage(record: RequestLogRecord): UsageRecord {
-  const streamed = extractUsageFromResponseBody(record.response_body);
-  if (streamed.input_tokens > 0 || streamed.output_tokens > 0) {
-    return streamed;
-  }
-  return record.usage;
-}
-
-function extractUsageFromResponseBody(body: ResponseBodyKind): UsageRecord {
-  if ("text" in body) {
-    const parsed = safeParseObject(body.text);
-    return usageFromUnknown(parsed?.usage);
-  }
-
-  let latest: UsageRecord = { input_tokens: 0, output_tokens: 0 };
-  for (const block of body.lines) {
-    for (const payload of extractSseDataPayloads(block)) {
-      if (payload === "[DONE]") {
-        continue;
-      }
-      const parsed = safeParseObject(payload);
-      if (parsed?.type === "response.completed") {
-        const response = parsed.response;
-        if (response && typeof response === "object") {
-          const usage = usageFromUnknown((response as Record<string, unknown>).usage);
-          if (usage.input_tokens > 0 || usage.output_tokens > 0) {
-            latest = usage;
-          }
-        }
-      }
-      if (parsed?.type === "message_delta") {
-        const usage = usageFromUnknown(parsed.usage);
-        if (usage.input_tokens > 0 || usage.output_tokens > 0) {
-          latest = usage;
-        }
-      }
-    }
-  }
-  return latest;
-}
-
-function usageFromUnknown(value: unknown): UsageRecord {
-  if (!value || typeof value !== "object") {
-    return { input_tokens: 0, output_tokens: 0 };
-  }
-  const usage = value as Record<string, unknown>;
+function ledgerFilter(params: URLSearchParams, range: ResolvedRange): LedgerFilter {
+  const failed = params.get("failed");
   return {
-    input_tokens: numberField(usage.input_tokens) ?? numberField(usage.prompt_tokens) ?? 0,
-    output_tokens: numberField(usage.output_tokens) ?? numberField(usage.completion_tokens) ?? 0,
+    ...range,
+    day: optionalParam(params, "day"),
+    provider: optionalParam(params, "provider"),
+    model: optionalParam(params, "model"),
+    agent: optionalParam(params, "agent"),
+    account: optionalParam(params, "account"),
+    failed: failed === "1" || failed === "true",
+    query: optionalParam(params, "query"),
   };
 }
 
-function extractSseDataPayloads(block: string): string[] {
-  return block
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart())
-    .filter(Boolean);
-}
-
-function safeParseObject(text: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
+function granularityFrom(value: string | null): Granularity {
+  switch (value) {
+    case "hour":
+    case "day":
+    case "week":
+    case "month":
+      return value;
+    default:
+      return DEFAULT_GRANULARITY;
   }
 }
 
-function numberField(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function optionalParam(params: URLSearchParams, name: string): string | undefined {
+  return params.get(name) ?? undefined;
+}
+
+/** `account` is accepted; the split then comes back without `by`, as the rollup has no account column. */
+function splitDimFrom(value: string | null): SplitDim | undefined {
+  switch (value) {
+    case "provider":
+    case "agent":
+    case "model":
+    case "account":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseInteger(value: string | null): number | undefined {
+  if (value === null || value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function emptySummary(range: ResolvedRange, granularity: Granularity): UsageSummary {
+  return {
+    from: range.from,
+    to: range.to,
+    granularity,
+    totals: zeroTotals(),
+    series: [],
+    by_provider: [],
+    by_model: [],
+    by_agent: [],
+    by_account: [],
+    by_session: [],
+  };
+}
+
+function emptyLedgerPage(): LedgerPage {
+  return {
+    rows: [],
+    total: 0,
+    totals: zeroTotals(),
+  };
+}
+
+function zeroTotals(): UsageTotals {
+  return {
+    calls: 0,
+    errors: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    cache_write_1h: 0,
+    cache_unknown_tokens: 0,
+    reasoning_tokens: 0,
+    latency_sum_ms: 0,
+    latency_max_ms: 0,
+    ttft_sum_ms: 0,
+    ttft_calls: 0,
+    cost_usd: 0,
+    unpriced: 0,
+    retried: 0,
+    loops: 0,
+    hit_rate: null,
+    mean_latency_ms: null,
+    mean_ttft_ms: null,
+  };
 }

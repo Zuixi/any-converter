@@ -323,6 +323,7 @@ fn read_usage(usage: OpenAIUsage) -> Usage {
         output_tokens: usage.completion_tokens,
         cache_read_tokens: usage.prompt_tokens_details.and_then(|d| d.cached_tokens),
         cache_write_tokens: None,
+        cache_write_1h: None,
         reasoning_tokens: None,
     }
 }

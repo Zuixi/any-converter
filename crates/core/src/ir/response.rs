@@ -18,6 +18,10 @@ pub struct Usage {
     pub cache_read_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
+    /// Of `cache_write_tokens`, those written to be kept for an hour (Anthropic's
+    /// 1-hour TTL, billed higher than the 5-minute one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
 }

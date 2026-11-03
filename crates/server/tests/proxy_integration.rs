@@ -66,6 +66,7 @@ async fn non_streaming_proxy() {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
@@ -175,6 +176,7 @@ async fn client_headers_passthrough_to_upstream() {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
@@ -268,6 +270,7 @@ async fn streaming_proxy_text() {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
@@ -346,6 +349,7 @@ async fn provider_failover_priority() {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
@@ -407,6 +411,7 @@ async fn auth_missing_returns_401() {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
@@ -463,6 +468,7 @@ async fn auth_invalid_returns_401() {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
@@ -529,6 +535,7 @@ async fn upstream_error_returns_502() {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
@@ -579,6 +586,7 @@ async fn health_returns_ok() {
         model_routes: vec![],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     let state = Arc::new(AppState {

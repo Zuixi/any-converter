@@ -85,12 +85,26 @@ pub enum ClaudeContentBlock {
     RedactedThinking { data: String },
 }
 
+/// Breakdown of `cache_creation_input_tokens` by cache lifetime. The 1-hour
+/// part is billed at a higher rate than the 5-minute one.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClaudeCacheCreation {
+    #[serde(default)]
+    pub ephemeral_5m_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub ephemeral_1h_input_tokens: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u64>,
+    // Read-only: the breakdown is Anthropic's, we never write it back (the
+    // builder has no IR field for the 5m part).
+    #[serde(default, skip_serializing)]
+    pub cache_creation: Option<ClaudeCacheCreation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
 }
@@ -124,6 +138,8 @@ pub struct ClaudeStreamUsage {
     pub output_tokens: u64,
     #[serde(default)]
     pub cache_creation_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_creation: Option<ClaudeCacheCreation>,
     #[serde(default)]
     pub cache_read_input_tokens: Option<u64>,
 }

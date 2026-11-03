@@ -12,8 +12,17 @@ export function createDesktopApiClient(): ApiClient {
     async getLogs() {
       return api.listRequestLogs(500);
     },
-    async getUsage() {
-      return api.getUsageSummary(50);
+    async getUsage(query) {
+      return api.getUsageSummary("7d", query.granularity);
+    },
+    async getLedger(filter, cursor, limit) {
+      return api.getLedgerPage(filter, cursor, limit);
+    },
+    async getHeatmap(filter) {
+      return api.getHeatmap(filter);
+    },
+    async getLedgerCsv() {
+      throw new Error("Ledger CSV export is not available in the desktop app");
     },
     async getConfig() {
       const settings = await api.getSettings();
