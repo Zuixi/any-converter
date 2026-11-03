@@ -194,6 +194,25 @@ pub struct PluginTransport {
     pid: u32,
 }
 
+/// A dropped transport takes its child with it.
+///
+/// Without this an abandoned host — a racing duplicate from a concurrent
+/// start, or a manager shutting down — left its Node process running until
+/// the machine was rebooted. `Drop` cannot await, so this is the blunt
+/// version: kill the child and let it be reaped by the OS; `shutdown()`
+/// remains the graceful path.
+impl Drop for PluginTransport {
+    fn drop(&mut self) {
+        let child = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(mut child) = child {
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
 impl PluginTransport {
     /// Spawn the plugin described by `launch` and start reading its stdout.
     ///
@@ -442,6 +461,11 @@ pub struct HostedPlugin {
 }
 
 impl HostedPlugin {
+    /// The child's process id (test and diagnostics use).
+    pub fn pid(&self) -> u32 {
+        self.transport.pid()
+    }
+
     /// Spawn the plugin subprocess and perform the `init` handshake.
     ///
     /// `init` carries the host auth store path (the plugin persists real
