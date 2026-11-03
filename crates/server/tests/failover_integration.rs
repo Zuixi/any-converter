@@ -73,6 +73,7 @@ fn make_app(config: ServerConfig) -> axum::Router {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),

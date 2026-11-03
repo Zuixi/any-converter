@@ -175,6 +175,7 @@ dependencies = [
 name = "any-converter-server"
 version = "0.1.0"
 dependencies = [
+ "agent-wiring",
  "any-converter-core",
  "axum",
  "chrono",

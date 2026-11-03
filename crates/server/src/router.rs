@@ -12,8 +12,13 @@ use reqwest::Client;
 use axum::Extension;
 
 use crate::config::ServerConfig;
+use crate::agents::{
+    AgentRegistry, catalog_from_config, handle_agent_connect, handle_agent_disconnect,
+    handle_agent_keys, handle_agent_rotate_key, handle_agent_sync, handle_agents_list,
+};
 use crate::credentials::AccountResolver;
 use crate::credentials::CopilotAllowances;
+use crate::credentials::FileSecretStore;
 use crate::credentials::copilot::CopilotSessions;
 use crate::handlers::{
     AppState, handle_account_quotas, handle_account_remove, handle_account_signin,
@@ -127,6 +132,19 @@ pub fn create_router(config: ServerConfig) -> Router {
     let hosts = Arc::new(ManagedHosts::with_store(Arc::new(PluginAuthStore::new(
         plugin_auth_path(),
     ))));
+    let secrets_path = crate::config::secrets_path();
+    let data_dir = secrets_path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let gateway_url = format!("http://{}:{}", config.server.host, config.server.port);
+    let agents = Arc::new(AgentRegistry::new(
+        data_dir,
+        Arc::new(FileSecretStore::new(secrets_path)),
+        gateway_url,
+        config.server.api_key.clone(),
+    ));
+    agents.set_catalog(catalog_from_config(&config));
     let state = Arc::new(AppState {
         config,
         client,
@@ -136,6 +154,7 @@ pub fn create_router(config: ServerConfig) -> Router {
         usage_logger,
         request_logger,
         hosts,
+        agents,
     });
     create_router_with_state(state)
 }
@@ -171,6 +190,13 @@ pub fn create_router_with_state(state: Arc<AppState>) -> Router {
             post(handle_account_signin_cancel),
         )
         .route("/v1/accounts/{id}/remove", post(handle_account_remove))
+        // Agent wiring (the only agent-configuration write path)
+        .route("/v1/agents", get(handle_agents_list))
+        .route("/v1/agents/{id}/connect", post(handle_agent_connect))
+        .route("/v1/agents/{id}/disconnect", post(handle_agent_disconnect))
+        .route("/v1/agents/{id}/sync", post(handle_agent_sync))
+        .route("/v1/agents/{id}/key/rotate", post(handle_agent_rotate_key))
+        .route("/v1/agents/{id}/keys", get(handle_agent_keys))
         // With /v1/ prefix (standard)
         .route("/v1/chat/completions", post(handle_openai_chat))
         .route("/v1/messages", post(handle_claude))
