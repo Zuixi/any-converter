@@ -4,15 +4,24 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { useI18n } from "@any-converter/core";
+import type { TranslationKey } from "@any-converter/core";
 import { cn } from "@any-converter/ui";
 
-const navItems = [
+interface NavItem {
+  href: string;
+  label: TranslationKey;
+  /** Rendered when the i18n catalog has no entry for `label`. */
+  fallback?: string;
+}
+
+const navItems: NavItem[] = [
   { href: "/playground", label: "nav.playground" },
   { href: "/logs", label: "nav.logs" },
   { href: "/usage", label: "nav.usage" },
   { href: "/status", label: "nav.status" },
+  { href: "/agents", label: "nav.agents" as TranslationKey, fallback: "Agents" },
   { href: "/config", label: "nav.config" },
-] as const;
+];
 
 export function Navigation() {
   const { language, setLanguage, t } = useI18n();
@@ -34,7 +43,7 @@ export function Navigation() {
                 pathname === item.href ? "text-foreground font-medium" : "text-muted-foreground",
               )}
             >
-              {t(item.label)}
+              {t(item.label) || item.fallback || item.label}
             </Link>
           ))}
         </nav>
