@@ -1,0 +1,18 @@
+[package]
+name = "agent-wiring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Format-preserving configuration editors and agent wiring primitives"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml_edit = "0.20"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

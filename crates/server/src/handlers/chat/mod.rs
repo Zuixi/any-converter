@@ -15,7 +15,6 @@ use axum::{
 use log::{error, info, warn};
 use serde_json::Value;
 
-use crate::auth;
 use crate::config::{ProviderConfig, RouteStrategy, UpstreamApi};
 use crate::credentials::{Allowance, ApiKeySource, TokenSource};
 use crate::model::{extract_model_from_body, patch_model_in_body};
@@ -146,7 +145,11 @@ pub async fn handle_count_tokens(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
 
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    // Global or per-agent gateway key (attribution + lazy agent sync).
+    if let Err(err) = state
+        .agents
+        .authenticate(state.config.server.api_key.as_deref(), auth_header)
+        .await
     {
         return auth_error_response(err);
     }
@@ -332,7 +335,7 @@ pub(crate) async fn build_plan(
     state: &AppState,
     ctx: &RequestContext,
     provider_names: &[String],
-) -> Result<(Vec<(ProviderConfig, UpstreamApi)>, Option<String>), Response> {
+) -> Result<(Vec<(ProviderConfig, UpstreamApi)>, Option<String>), Box<Response>> {
     // P9: flatten providers × accounts into one stable attempt plan. Each
     // provider contributes its accounts in the user's order, with the ones
     // past their quota line moved last rather than reordered
@@ -435,16 +438,33 @@ pub(crate) async fn process_request(
     route_info: RouteInfo,
     gemini_model: Option<&str>,
 ) -> Response {
-    let (mut ctx, body) = match prepare_request(state, headers, body, route_info, gemini_model) {
-        Ok(pair) => pair,
-        Err(response) => return *response,
-    };
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    // Global or per-agent gateway key: async authenticate also records key
+    // attribution and schedules a lazy agent catalog sync (never awaited on
+    // the request path beyond the key lookup).
+    if let Err(err) = state
+        .agents
+        .authenticate(state.config.server.api_key.as_deref(), auth_header)
+        .await
+    {
+        return auth_error_response(err);
+    }
+
+    let agent_keys = state.agents.key_snapshot_async().await;
+    let (mut ctx, body) =
+        match prepare_request(state, headers, body, route_info, gemini_model, &agent_keys) {
+            Ok(pair) => pair,
+            Err(response) => return *response,
+        };
 
     let provider_names = order_provider_names(&ctx.provider_names, &ctx.strategy);
 
     let (plan, plan_error) = match build_plan(state, &ctx, &provider_names).await {
         Ok(built) => built,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     // Failover with account-aware 401/403 handling. `fo.expired_retried`
@@ -591,7 +611,7 @@ pub(crate) async fn process_request(
                                     continue;
                                 }
                                 Ok(AuthStep::FallThrough) => rebuilt,
-                                Err(response) => return response,
+                                Err(response) => return *response,
                             }
                         }
                         _ => response,
@@ -651,7 +671,7 @@ pub(crate) async fn process_request(
                                 continue;
                             }
                             Ok(AuthStep::FallThrough) => {}
-                            Err(response) => return response,
+                            Err(response) => return *response,
                         }
                     }
                 }

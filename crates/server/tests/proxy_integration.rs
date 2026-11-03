@@ -80,6 +80,7 @@ async fn non_streaming_proxy() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -188,6 +189,7 @@ async fn client_headers_passthrough_to_upstream() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -280,6 +282,7 @@ async fn streaming_proxy_text() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -357,6 +360,7 @@ async fn provider_failover_priority() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -417,6 +421,7 @@ async fn auth_missing_returns_401() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -472,6 +477,7 @@ async fn auth_invalid_returns_401() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -537,6 +543,7 @@ async fn upstream_error_returns_502() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),
@@ -586,6 +593,7 @@ async fn health_returns_ok() {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),

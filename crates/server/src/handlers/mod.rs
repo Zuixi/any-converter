@@ -33,6 +33,7 @@ pub(crate) use stream::is_streaming_request;
 
 use std::sync::Arc;
 
+use crate::agents::AgentRegistry;
 use crate::config::ServerConfig;
 use crate::credentials::AccountResolver;
 use crate::credentials::allowance::CopilotAllowances;
@@ -60,6 +61,8 @@ pub struct AppState {
     pub request_logger: Option<Arc<RequestLogger>>,
     /// Plugin subprocess hosts for providers with a `plugin` entry (P6.2).
     pub hosts: Arc<ManagedHosts>,
+    /// Agent wiring registry: per-agent gateway keys and wiring state.
+    pub agents: Arc<AgentRegistry>,
 }
 
 #[cfg(test)]

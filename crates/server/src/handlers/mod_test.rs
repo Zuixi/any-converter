@@ -57,6 +57,7 @@ fn sample_state() -> AppState {
                 tempfile::tempdir().unwrap().path().join("auth.json"),
             ),
         ))),
+        agents: Arc::new(crate::agents::AgentRegistry::in_memory()),
     }
 }
 
@@ -161,6 +162,7 @@ async fn test_missing_route_returns_404() {
                 tempfile::tempdir().unwrap().path().join("auth.json"),
             ),
         ))),
+        agents: Arc::new(crate::agents::AgentRegistry::in_memory()),
     });
 
     let route_info = RouteInfo {

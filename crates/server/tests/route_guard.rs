@@ -41,6 +41,13 @@ const ROUTES: &[(&str, &str, &str)] = &[
     // adopt/release are absent on purpose: with no Codex sign-in on the test
     // machine they answer 404 themselves, which is a handler verdict, not a
     // missing route. They are covered by accounts_extra_e2e instead.
+    ("GET", "/v1/agents", ""),
+    ("GET", "/v1/agents/claude-code/keys", ""),
+    // Invalid body: reaches the handler (400) without touching a real home.
+    ("POST", "/v1/agents/claude-code/connect", "not-json"),
+    ("POST", "/v1/agents/claude-code/disconnect", ""),
+    ("POST", "/v1/agents/claude-code/sync", ""),
+    ("POST", "/v1/agents/claude-code/key/rotate", ""),
     (
         "POST",
         "/v1/chat/completions",
@@ -136,6 +143,7 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
         copilot: Arc::new(
             any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
         ),
+        agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
         hosts: Arc::new(any_converter_server::plugins::ManagedHosts::with_store(
             Arc::new(any_converter_server::plugins::PluginAuthStore::new(
                 std::env::temp_dir().join("any-converter-test-plugin-auth.json"),

@@ -40,7 +40,7 @@ pub(crate) async fn classify_account_auth(
     account_id: &str,
     text: &str,
     status: StatusCode,
-) -> Result<AuthStep, Response> {
+) -> Result<AuthStep, Box<Response>> {
     let Attempt {
         state, provider, ..
     } = att;
@@ -126,7 +126,7 @@ pub(crate) async fn classify_account_auth(
                     None => format!("provider {} account {account_id} revoked", provider.name),
                 });
                 if !has_next {
-                    return Err(revoked_account_response(account_id));
+                    return Err(Box::new(revoked_account_response(account_id)));
                 }
                 AuthStep::Next
             }

@@ -75,6 +75,7 @@ pub(crate) fn prepare_request(
     body: &[u8],
     route_info: RouteInfo,
     gemini_model: Option<&str>,
+    agent_keys: &[String],
 ) -> Result<(RequestContext, Vec<u8>), Box<Response>> {
     let req_id = uuid::Uuid::new_v4();
     let start_time = std::time::Instant::now();
@@ -90,8 +91,16 @@ pub(crate) fn prepare_request(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
 
-    auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-        .map_err(|err| Box::new(auth_error_response(err)))?;
+    // Global or per-agent gateway key: validate synchronously here; the
+    // async attribution/lazy-sync side (`registry.authenticate`) runs in
+    // `process_request` before this function is reached, which also passes
+    // the key snapshot in (no lock is taken on this path).
+    auth::validate_client_keys(
+        state.config.server.api_key.as_deref(),
+        agent_keys.iter().map(String::as_str),
+        auth_header,
+    )
+    .map_err(|err| Box::new(auth_error_response(err)))?;
 
     let client_model = extract_model_from_body(body)
         .or_else(|| gemini_model.map(String::from))
@@ -189,7 +198,7 @@ pub(crate) async fn resolve_upstream_api(
     state: &AppState,
     provider: &crate::config::ProviderConfig,
     model: &str,
-) -> Result<UpstreamApi, Response> {
+) -> Result<UpstreamApi, Box<Response>> {
     let Some(plugin_ref) = &provider.plugin else {
         return Ok(provider.api_for(model));
     };

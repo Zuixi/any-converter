@@ -53,7 +53,7 @@ cp config.example.toml config.toml
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 1228
 api_key = "hello-any"
 
 [[providers]]
@@ -73,16 +73,49 @@ provider = "anthropic"
 any-converter serve --config config.toml
 ```
 
-启动后，本地网关地址就是 `http://127.0.0.1:8080`。
+启动后，本地网关地址就是 `http://127.0.0.1:1228`。
 
-## 常见客户端接入
+## 一键接入编码 Agent
+
+`agents` 命令会把编码 Agent 自己的配置文件接上网关——地址、每个 Agent 专属的网关
+密钥、以及完整模型目录——断开时**逐字节还原**原配置（每个被修改的文件旁都有一个
+`.before-any-converter` 备份，可作离线教急副本）：
+
+```bash
+any-converter agents list                    # 看谁已安装、谁已接入
+any-converter agents connect claude-code     # 接入 Claude Code（需网关在运行）
+any-converter agents connect pi --model deepseek/deepseek-chat
+any-converter agents disconnect claude-code  # 还原接入前的配置
+any-converter agents sync                    # 配置变更后刷新模型目录
+any-converter agents rotate-key pi           # 重发该 Agent 的专属密钥
+```
+
+支持的 Agent：**Claude Code**、**Codex**、**Gemini CLI**、**Pi**。
+Web 界面（`/agents` 页）提供同样能力，并带漂移检测：接入期间若有其他工具改写了
+Agent 配置，页面会提示「配置被外部修改」并可一键重新应用。
+
+每个接入的 Agent 拿到自己的网关密钥（`acw_<agent>_…`），请求归因不依赖
+User-Agent，密钥可独立轮换；Agent 密钥只能调推理接口，不能调 agents 管理接口。
+
+注意：
+
+- 网关必须在运行（`any-converter serve`）；CLI 只是个薄客户端。若网关已停又急需
+  断开，可直接用 Agent 配置旁的 `.before-any-converter` 文件手动还原。
+- Codex 接的是 `~/.codex`（主 `CODEX_HOME`）；不碰 OAuth 登录——网关密钥写进
+  `auth.json` 的 `OPENAI_API_KEY` 字段。
+- Claude Code：项目级 `settings.local.json` 优先于用户级配置，个别项目里自行设置
+  的 `env` 会覆盖接入配置。
+
+## 常见客户端接入（手动）
+
+以下为没有 `agents` 集成的客户端（或偏好手动改配置时）的手动接入方式：
 
 ### Claude Code
 
 把 Claude 侧流量指向本地网关：
 
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+export ANTHROPIC_BASE_URL=http://127.0.0.1:1228
 export ANTHROPIC_AUTH_TOKEN=hello-any
 ```
 
@@ -91,7 +124,7 @@ export ANTHROPIC_AUTH_TOKEN=hello-any
 必须使用 OpenAI Responses wire API，不要按 Chat Completions 来测：
 
 ```toml
-base_url = "http://127.0.0.1:8080/v1"
+base_url = "http://127.0.0.1:1228/v1"
 wire_api = "responses"
 api_key = "hello-any"
 ```
@@ -105,7 +138,7 @@ api_key = "hello-any"
 ### OpenAI-compatible 客户端
 
 ```bash
-export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+export OPENAI_BASE_URL=http://127.0.0.1:1228/v1
 export OPENAI_API_KEY=hello-any
 ```
 
@@ -214,7 +247,7 @@ Web UI 会作为独立进程运行在 Rust gateway 旁边，提供：
 先启动 Rust server，再启动 Web UI：
 
 ```bash
-SERVER_URL=http://127.0.0.1:8080 \
+SERVER_URL=http://127.0.0.1:1228 \
 LOG_DIR=../../logs \
 CONFIG_PATH=../../config.toml \
   pnpm --filter @any-converter/web dev
