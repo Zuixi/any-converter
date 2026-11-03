@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! `resolve_provider` must accept the catalog ids agent wiring writes into
 //! agent configs (`<provider>/<model>`), not just bare model names.
 
