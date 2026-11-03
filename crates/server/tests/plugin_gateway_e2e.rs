@@ -153,6 +153,7 @@ impl Harness {
             copilot: Arc::new(
                 any_converter_server::credentials::copilot::CopilotSessions::new(Client::new()),
             ),
+            agents: Arc::new(any_converter_server::agents::AgentRegistry::in_memory()),
             hosts: Arc::clone(&hosts),
         });
         let app = create_router_with_state(state);

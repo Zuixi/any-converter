@@ -15,6 +15,7 @@ use reqwest::Client;
 use serde_json::Value;
 
 use crate::agent_id::agent_of;
+use crate::agents::AgentRegistry;
 use crate::auth::{self, AuthError};
 use crate::config::{PluginRef, RouteStrategy, ServerConfig, UpstreamApi};
 use crate::credentials::allowance::{CopilotAllowances, copilot_allowance};
@@ -53,6 +54,8 @@ pub struct AppState {
     pub request_logger: Option<Arc<RequestLogger>>,
     /// Plugin subprocess hosts for providers with a `plugin` entry (P6.2).
     pub hosts: Arc<ManagedHosts>,
+    /// Agent wiring registry: detect/connect/disconnect/sync and key state.
+    pub agents: Arc<AgentRegistry>,
 }
 
 pub async fn handle_health() -> impl IntoResponse {
@@ -656,7 +659,10 @@ pub async fn handle_count_tokens(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
 
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    if let Err(err) = state
+        .agents
+        .authenticate(state.config.server.api_key.as_deref(), auth_header)
+        .await
     {
         return auth_error_response(err);
     }
@@ -836,7 +842,7 @@ fn extract_session_id(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-fn prepare_request(
+async fn prepare_request(
     state: &AppState,
     headers: &HeaderMap,
     body: &[u8],
@@ -857,7 +863,10 @@ fn prepare_request(
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
 
-    auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    state
+        .agents
+        .authenticate(state.config.server.api_key.as_deref(), auth_header)
+        .await
         .map_err(|err| Box::new(auth_error_response(err)))?;
 
     let client_model = extract_model_from_body(body)
@@ -1307,7 +1316,8 @@ async fn process_request(
     route_info: RouteInfo,
     gemini_model: Option<&str>,
 ) -> Response {
-    let (mut ctx, body) = match prepare_request(state, headers, body, route_info, gemini_model) {
+    let (mut ctx, body) = match prepare_request(state, headers, body, route_info, gemini_model).await
+    {
         Ok(pair) => pair,
         Err(response) => return *response,
     };
@@ -2169,6 +2179,7 @@ mod tests {
             request_logger: None,
             copilot: Arc::new(CopilotSessions::new(Client::new())),
             copilot_allowances: Arc::new(CopilotAllowances::default()),
+            agents: Arc::new(crate::agents::AgentRegistry::in_memory()),
             hosts: Arc::new(crate::plugins::ManagedHosts::with_store(Arc::new(
                 crate::plugins::PluginAuthStore::new(
                     tempfile::tempdir().unwrap().path().join("auth.json"),
@@ -2273,6 +2284,7 @@ mod tests {
             request_logger: None,
             copilot: Arc::new(CopilotSessions::new(Client::new())),
             copilot_allowances: Arc::new(CopilotAllowances::default()),
+            agents: Arc::new(crate::agents::AgentRegistry::in_memory()),
             hosts: Arc::new(crate::plugins::ManagedHosts::with_store(Arc::new(
                 crate::plugins::PluginAuthStore::new(
                     tempfile::tempdir().unwrap().path().join("auth.json"),
