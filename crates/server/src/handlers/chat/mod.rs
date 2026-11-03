@@ -295,21 +295,20 @@ impl Failover {
     }
 }
 
-pub(crate) async fn process_request(
+/// The attempts one request will make, in order: every provider's seats
+/// flattened into one list (P9/P17).
+///
+/// A provider contributes its accounts in the user's saved order, with the
+/// ones past their quota line moved last rather than reordered; a provider
+/// with no accounts contributes a single api_key slot. A revoked seat is
+/// dropped here — before the body is converted for it, which is a full JSON
+/// parse and rewrite that a revoked first seat would otherwise pay for on
+/// every request. `Err` carries the response to return as it is.
+pub(crate) async fn build_plan(
     state: &AppState,
-    headers: &HeaderMap,
-    body: &[u8],
-    route_info: RouteInfo,
-    gemini_model: Option<&str>,
-) -> Response {
-    let (mut ctx, body) = match prepare_request(state, headers, body, route_info, gemini_model) {
-        Ok(pair) => pair,
-        Err(response) => return *response,
-    };
-
-    let mut last_error: Option<String> = None;
-    let provider_names = order_provider_names(&ctx.provider_names, &ctx.strategy);
-
+    ctx: &RequestContext,
+    provider_names: &[String],
+) -> Result<(Vec<(ProviderConfig, UpstreamApi)>, Option<String>), Response> {
     // P9: flatten providers × accounts into one stable attempt plan. Each
     // provider contributes its accounts in the user's order, with the ones
     // past their quota line moved last rather than reordered
@@ -317,7 +316,7 @@ pub(crate) async fn process_request(
     // api_key slot. The same account is never tried twice in one request.
     let mut plan: Vec<(crate::config::ProviderConfig, UpstreamApi)> = Vec::new();
     let mut plan_error: Option<String> = None;
-    for provider_name in &provider_names {
+    for provider_name in provider_names {
         let provider = match state.config.find_provider(provider_name) {
             Some(p) => p,
             None => {
@@ -396,11 +395,33 @@ pub(crate) async fn process_request(
             effective.account = account;
             let api = match resolve_upstream_api(state, &effective, &ctx.upstream_model).await {
                 Ok(api) => api,
-                Err(response) => return response,
+                Err(response) => return Err(response),
             };
             plan.push((effective, api));
         }
     }
+
+    Ok((plan, plan_error))
+}
+
+pub(crate) async fn process_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: &[u8],
+    route_info: RouteInfo,
+    gemini_model: Option<&str>,
+) -> Response {
+    let (mut ctx, body) = match prepare_request(state, headers, body, route_info, gemini_model) {
+        Ok(pair) => pair,
+        Err(response) => return *response,
+    };
+
+    let provider_names = order_provider_names(&ctx.provider_names, &ctx.strategy);
+
+    let (plan, plan_error) = match build_plan(state, &ctx, &provider_names).await {
+        Ok(built) => built,
+        Err(response) => return response,
+    };
 
     // Failover with account-aware 401/403 handling. `fo.expired_retried`
     // remembers which attempt already consumed its single `token_expired`
@@ -478,7 +499,7 @@ pub(crate) async fn process_request(
                             "plugin provider returned {} request_id={} provider={}, trying next account/provider",
                             status, ctx.req_id, provider.name
                         );
-                        last_error =
+                        fo.last_error =
                             Some(format!("provider {} returned {}", provider.name, status));
                         fo.attempt += 1;
                         continue;
@@ -554,7 +575,7 @@ pub(crate) async fn process_request(
                             "upstream returned {} request_id={} provider={}, trying next account/provider",
                             status, ctx.req_id, provider.name
                         );
-                        last_error =
+                        fo.last_error =
                             Some(format!("provider {} returned {}", provider.name, status));
                         fo.attempt += 1;
                         continue;
@@ -635,5 +656,8 @@ pub(crate) async fn process_request(
         }
     }
 
-    upstream_error_response(&last_error.unwrap_or_else(|| "all providers failed".into()))
+    upstream_error_response(
+        &fo.last_error
+            .unwrap_or_else(|| "all providers failed".into()),
+    )
 }
