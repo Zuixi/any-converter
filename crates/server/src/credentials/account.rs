@@ -169,6 +169,9 @@ pub struct AccountResolver {
     /// Accounts whose allowance is being read right now, so a burst of
     /// requests starts one background read rather than one each.
     pub(crate) reading: Mutex<std::collections::HashSet<String>>,
+    /// Where a Sign in with ChatGPT account's client id is kept
+    /// (`siwc-accounts.json`); injectable so tests never touch the user's.
+    siwc_meta_path: std::path::PathBuf,
 }
 
 impl AccountResolver {
@@ -186,6 +189,13 @@ impl AccountResolver {
     /// Create a resolver that refreshes against a specific `token_url` for
     /// every provider (test seam; production uses [`Self::new`], which
     /// points codex accounts at ChatGPT's real token endpoint).
+    /// Where this resolver looks for a Sign in with ChatGPT account's client
+    /// id (defaults to the app's own `siwc-accounts.json`).
+    pub fn with_siwc_meta_path(mut self, path: std::path::PathBuf) -> Self {
+        self.siwc_meta_path = path;
+        self
+    }
+
     pub fn with_token_url(
         store: FileSecretStore,
         client: reqwest::Client,
@@ -212,6 +222,7 @@ impl AccountResolver {
             projects: Mutex::new(HashMap::new()),
             allowances: Mutex::new(HashMap::new()),
             reading: Mutex::new(std::collections::HashSet::new()),
+            siwc_meta_path: super::siwc_store::default_path(),
         }
     }
 
@@ -351,6 +362,13 @@ impl AccountResolver {
         latest: &StoredOAuth,
     ) -> Result<ResolvedAccount, AccountError> {
         let provider = account_id.split(':').next().unwrap_or("");
+        // Sign in with ChatGPT has its own endpoint shape, its own refusal
+        // codes and its own side file, so it renews on its own path — still
+        // under the cross-process lock the caller holds (P9): its refresh
+        // token rotates the same way.
+        if provider == "chatgpt-api" {
+            return self.refresh_siwc(account_id, latest).await;
+        }
         let token_url = match provider {
             "gemini" => self.token_url.as_str(),
             "codex" => self.codex_token_url.as_str(),
@@ -482,6 +500,80 @@ impl AccountResolver {
             id: account_id.to_string(),
             access_token: parsed.access_token,
         })
+    }
+
+    /// Renew a Sign in with ChatGPT account (P16). The client id OpenAI
+    /// issued at sign-in comes from the side file; a refresh token OpenAI
+    /// will never take again marks the account revoked, exactly as a
+    /// `token_revoked` from the API would.
+    async fn refresh_siwc(
+        &self,
+        account_id: &str,
+        latest: &StoredOAuth,
+    ) -> Result<ResolvedAccount, AccountError> {
+        let meta = super::siwc_store::get(&self.siwc_meta_path, account_id).ok_or_else(|| {
+            AccountError::RefreshFailed(format!(
+                "no ChatGPT API client id is kept for {account_id}; sign in again"
+            ))
+        })?;
+        let refresh_token = latest.refresh_token.clone().ok_or_else(|| {
+            AccountError::RefreshFailed("token expired and no refresh token is stored".to_string())
+        })?;
+        let sign_in = super::siwc_signin::SiwcSignIn::with_http(
+            super::siwc_signin::SiwcEndpoints::default(),
+            std::sync::Arc::new(super::siwc_signin::ReqwestSiwc::new(self.client.clone())),
+        )
+        .with_meta_path(self.siwc_meta_path.clone());
+        let request = super::siwc_signin::SiwcRefreshRequest {
+            client_id: &meta.client_id,
+            refresh_token: &refresh_token,
+            access_token: &latest.access_token,
+            id_token: &meta.id_token,
+            scopes: &meta.scopes,
+            expires_at_unix: latest.expires_at_unix.unwrap_or(0),
+            force: false,
+        };
+        match sign_in.renew(request).await {
+            Ok(Some(tokens)) => {
+                let expires_at_unix = Some(unix_now() + tokens.expires_in);
+                let updated = Credential::OAuth {
+                    provider: latest.provider.clone(),
+                    account: latest.account.clone(),
+                    access_token: tokens.access.clone(),
+                    refresh_token: Some(tokens.refresh.clone()),
+                    expires_at_unix,
+                };
+                self.store.put(account_id, &updated)?;
+                self.cache_put(account_id, tokens.access.clone(), expires_at_unix);
+                if !tokens.id_token.is_empty() && tokens.id_token != meta.id_token {
+                    let mut next = meta.clone();
+                    next.id_token = tokens.id_token;
+                    next.scopes = tokens
+                        .scope
+                        .split_ascii_whitespace()
+                        .map(str::to_string)
+                        .collect();
+                    let _ = super::siwc_store::put(&self.siwc_meta_path, account_id, &next);
+                }
+                Ok(ResolvedAccount {
+                    id: account_id.to_string(),
+                    access_token: tokens.access,
+                })
+            }
+            // The token in hand still does (a hiccup, not a refusal).
+            Ok(None) => Ok(ResolvedAccount {
+                id: account_id.to_string(),
+                access_token: latest.access_token.clone(),
+            }),
+            Err(super::siwc_signin::SiwcError::SignInExpired) => {
+                let why = format!("{account_id}'s ChatGPT sign-in has expired — sign in again");
+                if let Err(error) = self.mark_revoked(account_id, &why).await {
+                    log::warn!("could not mark {account_id} revoked: {error}");
+                }
+                Err(AccountError::Revoked(account_id.to_string(), why))
+            }
+            Err(err) => Err(AccountError::RefreshFailed(err.to_string())),
+        }
     }
 
     /// The Code Assist project the account's requests go to, found the way
@@ -1274,5 +1366,44 @@ mod tests {
         assert_eq!(access_token_exp(wrong), None);
         assert_eq!(access_token_exp("not-a-jwt"), None);
         assert_eq!(access_token_exp("a.b"), None);
+    }
+    /// A Sign in with ChatGPT account renews through `AccountResolver` like
+    /// every other provider — without it the account died an hour after
+    /// signing in, with no path back but signing in again.
+    #[tokio::test]
+    async fn chatgpt_api_account_renews_through_the_resolver() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSecretStore::new(dir.path().join("secrets.json"));
+        let id = "chatgpt-api:me@example.com";
+        store
+            .put(
+                id,
+                &Credential::OAuth {
+                    provider: "chatgpt-api".into(),
+                    account: "me@example.com".into(),
+                    access_token: "old".into(),
+                    refresh_token: Some("old-refresh".into()),
+                    expires_at_unix: Some(unix_now() - 10),
+                },
+            )
+            .unwrap();
+        // No side file: the client id the sign-in registered is missing, and
+        // the resolver says so rather than sending a refresh that would be
+        // refused.
+        let resolver = AccountResolver::new(
+            FileSecretStore::new(dir.path().join("secrets.json")),
+            reqwest::Client::new(),
+        )
+        .with_siwc_meta_path(dir.path().join("siwc-accounts.json"));
+        let err = resolver.resolve(id).await.unwrap_err();
+        assert!(
+            matches!(&err, AccountError::RefreshFailed(why) if why.contains("sign in again")),
+            "{err}"
+        );
+
+        // The missing client id is an actionable error rather than a
+        // refresh that OpenAI would refuse: the account is told to sign in
+        // again, which is exactly what it needs.
+        assert!(err.to_string().contains("ChatGPT API"), "{err}");
     }
 }

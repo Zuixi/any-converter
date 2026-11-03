@@ -16,7 +16,6 @@ use super::gemini::{
     form_urlencoded, percent_encode, query_pairs, random_bytes, sha256,
 };
 use super::siwc_store::{self, SiwcMeta};
-use super::store::SecretStore;
 
 /// What a token answer carries (magpie `siwcTokenReply`).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -140,6 +139,20 @@ pub struct SiwcStarted {
     pub paste_callback: bool,
 }
 
+/// What a renewal needs, all of it the caller's to hold.
+pub struct SiwcRefreshRequest<'a> {
+    pub client_id: &'a str,
+    pub refresh_token: &'a str,
+    pub access_token: &'a str,
+    pub id_token: &'a str,
+    pub scopes: &'a [String],
+    /// The stored expiry (unix): the margin decides whether a renewal runs.
+    pub expires_at_unix: i64,
+    /// Renew even when the token in hand looks fresh (the vendor turned it
+    /// away, so its clock and ours disagree).
+    pub force: bool,
+}
+
 /// A finished sign-in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SiwcAccount {
@@ -245,8 +258,6 @@ pub struct SiwcSignIn {
     http: std::sync::Arc<dyn SiwcHttp>,
     meta_path: PathBuf,
     host_path: PathBuf,
-    /// Where the tokens are kept, for `refresh`/`revoke` (tests inject).
-    secrets_path: PathBuf,
     /// Fixed for tests; otherwise the flow picks 1455 or a free port.
     port: Option<u16>,
     host_id: Option<String>,
@@ -266,7 +277,6 @@ impl SiwcSignIn {
             http,
             meta_path: siwc_store::default_path(),
             host_path: siwc_store::host_id_path(),
-            secrets_path: crate::config::secrets_path(),
             port: None,
             host_id: None,
         }
@@ -274,12 +284,6 @@ impl SiwcSignIn {
 
     pub fn with_meta_path(mut self, path: PathBuf) -> Self {
         self.meta_path = path;
-        self
-    }
-
-    /// Where the tokens are kept (defaults to the app's secrets file).
-    pub fn with_secrets_path(mut self, path: PathBuf) -> Self {
-        self.secrets_path = path;
         self
     }
 
@@ -469,45 +473,35 @@ impl SiwcSignIn {
         Ok(account)
     }
 
-    /// Renew a stored account (magpie `siwcFresh`): a dead refresh token is
-    /// [`SiwcError::SignInExpired`], an unknown client
-    /// [`SiwcError::ClientUnknown`], and any other failure keeps the token
-    /// in hand while it is still good.
-    pub async fn refresh(&self, account_id: &str, force: bool) -> Result<SiwcTokens, SiwcError> {
-        let meta = siwc_store::get(&self.meta_path, account_id)
-            .ok_or_else(|| SiwcError::Other(format!("no ChatGPT API metadata for {account_id}")))?;
-        let stored = crate::credentials::FileSecretStore::new(self.secrets_path.clone())
-            .get(account_id)
-            .ok()
-            .flatten();
-        let (access, refresh, expires_at) = match stored {
-            Some(crate::credentials::Credential::OAuth {
-                access_token,
-                refresh_token,
-                expires_at_unix,
-                ..
-            }) => (
-                access_token,
-                refresh_token.unwrap_or_default(),
-                expires_at_unix.unwrap_or(0),
-            ),
-            _ => return Err(SiwcError::Other(format!("no sign-in for {account_id}"))),
-        };
+    /// Renew a stored sign-in (magpie `siwcFresh`), given what is stored.
+    ///
+    /// `Ok(None)` means the token in hand still does: the endpoint was
+    /// unreachable and the token has not expired yet, so the caller carries
+    /// on rather than failing a request over a hiccup.
+    ///
+    /// The caller owns the store and the cross-process refresh lock — a
+    /// refresh token rotates, and two processes spending the same one is
+    /// `refresh_token_reused`, i.e. a sign-in lost. This module therefore
+    /// touches no file of its own here.
+    pub async fn renew(
+        &self,
+        req: SiwcRefreshRequest<'_>,
+    ) -> Result<Option<SiwcTokens>, SiwcError> {
         let now = unix_now();
-        if !force && expires_at - now > SIWC_MARGIN.as_secs() as i64 {
-            return Ok(SiwcTokens {
-                access,
-                refresh,
-                id_token: meta.id_token,
-                expires_in: expires_at - now,
-                scope: meta.scopes.join(" "),
-            });
+        if !req.force && req.expires_at_unix - now > SIWC_MARGIN.as_secs() as i64 {
+            return Ok(Some(SiwcTokens {
+                access: req.access_token.to_string(),
+                refresh: req.refresh_token.to_string(),
+                id_token: req.id_token.to_string(),
+                expires_in: req.expires_at_unix - now,
+                scope: req.scopes.join(" "),
+            }));
         }
 
         let form = form_urlencoded(&[
             ("grant_type", "refresh_token"),
-            ("client_id", &meta.client_id),
-            ("refresh_token", &refresh),
+            ("client_id", req.client_id),
+            ("refresh_token", req.refresh_token),
             ("resource", &self.endpoints.api),
         ]);
         let reply = self
@@ -527,53 +521,32 @@ impl SiwcSignIn {
         let reply = match reply {
             Ok(reply) => reply,
             Err(err) => {
-                // A hiccup — the endpoint unreachable, no answer — is not a
-                // refusal: while the token in hand has not expired it still
-                // does, and the request goes on with it (magpie siwcFresh).
-                if !force && expires_at > unix_now() {
-                    return Ok(SiwcTokens {
-                        access,
-                        refresh,
-                        id_token: meta.id_token,
-                        expires_in: expires_at - unix_now(),
-                        scope: meta.scopes.join(" "),
-                    });
+                if !req.force && req.expires_at_unix > now {
+                    return Ok(None); // a hiccup: the token in hand still does
                 }
                 return Err(SiwcError::Other(format!("ChatGPT token refresh: {err}")));
             }
         };
         if reply.status != 200 {
-            let refusal = token_refusal(&reply);
-            return Err(classify_refresh(&refusal));
+            return Err(classify_refresh(&token_refusal(&reply)));
         }
         let tokens = parse_tokens(&reply.body).map_err(|e| SiwcError::Other(e.to_string()))?;
-        if !tokens
-            .scope
-            .split_ascii_whitespace()
-            .any(|s| s == SIWC_DIRECT_SCOPE)
-        {
-            return Err(SiwcError::Other(format!(
-                "OpenAI didn't grant the use of the subscription through its API ({SIWC_DIRECT_SCOPE})"
-            )));
-        }
-        Ok(tokens)
+        Ok(Some(tokens))
     }
 
     /// Sign out: OpenAI revokes the refresh token at the endpoint it
     /// publishes (magpie `siwcRevoke`). `None` when it publishes none.
-    pub async fn revoke(&self, account_id: &str) -> Result<bool, SiwcError> {
+    pub async fn revoke(
+        &self,
+        account_id: &str,
+        revoke_tokens: Option<&str>,
+    ) -> Result<bool, SiwcError> {
         let meta = siwc_store::get(&self.meta_path, account_id)
             .ok_or_else(|| SiwcError::Other(format!("no ChatGPT API metadata for {account_id}")))?;
-        let stored = crate::credentials::FileSecretStore::new(self.secrets_path.clone())
-            .get(account_id)
-            .ok()
-            .flatten();
-        let refresh = match stored {
-            Some(crate::credentials::Credential::OAuth { refresh_token, .. }) => {
-                refresh_token.unwrap_or_default()
-            }
-            _ => return Err(SiwcError::Other(format!("no sign-in for {account_id}"))),
-        };
+        // The caller hands the token in: this module keeps no store of its
+        // own (the resolver does, under the same lock every refresh takes).
+        let refresh = revoke_tokens
+            .ok_or_else(|| SiwcError::Other(format!("no sign-in for {account_id}")))?;
 
         let cookie = format!(
             "{}/.well-known/openid-configuration",
@@ -595,7 +568,7 @@ impl SiwcSignIn {
             return Ok(false);
         };
         let form = form_urlencoded(&[
-            ("token", &refresh),
+            ("token", refresh),
             ("token_type_hint", "refresh_token"),
             ("client_id", &meta.client_id),
         ]);

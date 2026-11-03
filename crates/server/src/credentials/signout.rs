@@ -61,9 +61,16 @@ pub async fn remove(
     // publishes in its OIDC metadata (magpie `siwcRevoke`), which is the
     // only place it is named.
     if provider == "chatgpt-api" {
-        let outcome = match SiwcSignIn::new(reqwest::Client::new())
+        // Through the account's own exit, as every other request is: a
+        // revocation that left from another address reads as a stranger.
+        let client = build_proxied_client(proxy).unwrap_or_default();
+        let refresh_token = credential.as_ref().and_then(|credential| match credential {
+            Credential::OAuth { refresh_token, .. } => refresh_token.clone(),
+            _ => None,
+        });
+        let outcome = match SiwcSignIn::new(client)
             .with_meta_path(siwc_store::default_path())
-            .revoke(id)
+            .revoke(id, refresh_token.as_deref())
             .await
         {
             Ok(true) => RevokeOutcome::Revoked,

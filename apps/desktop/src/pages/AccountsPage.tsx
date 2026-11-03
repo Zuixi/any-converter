@@ -60,20 +60,25 @@ const STRINGS = {
     subtitle: "OAuth sign-ins stored locally by the server. Tokens never leave the account store.",
     add: "Add account",
     provider: "Provider",
-    providerHelp: "gemini signs in through the browser; copilot uses a device code.",
+    providerHelp:
+      "gemini and antigravity use the browser; antigravity may cost you the account. " +
+      "codex signs in as Codex CLI and writes back to its auth.json. " +
+      "chatgpt-api ends by pasting the address the browser landed on. " +
+      "copilot shows a device code. claude needs the `claude` command line.",
     start: "Start sign-in",
     openUrl: "Open URL",
     copy: "Copy",
     copied: "Copied",
     code: "Code",
     paste: "Paste callback URL",
+    pasteCodeLabel: "Paste the code or the address",
     pastePlaceholder: "http://127.0.0.1:.../oauth2callback?state=...&code=...",
     submit: "Finish sign-in",
     cancel: "Cancel",
     state: "State",
     stateWaiting: "waiting…",
     error: "Error",
-    empty: "No accounts stored yet. Sign in with gemini or copilot to add one.",
+    empty: "No accounts stored yet. Pick a provider above and sign in to add one.",
     providerCol: "Provider",
     accountCol: "Account",
     kindCol: "Kind",
@@ -82,6 +87,13 @@ const STRINGS = {
     quotaNone: "—",
     remove: "Remove",
     removed: "Removed",
+    antigravityRisk:
+      "Google may suspend an Antigravity account it sees used outside Antigravity. " +
+      "Use one you can afford to lose.",
+    siwcHint:
+      "OpenAI registers this app as you sign in, so the address the browser ends on " +
+      "carries the code and the client id. Paste the whole address.",
+    pasteCode: "Paste the code Claude's page shows, or the whole address it ended on",
     unreachable: "The server is not reachable (is it running?).",
   },
   "zh-CN": {
@@ -89,20 +101,23 @@ const STRINGS = {
     subtitle: "服务端本地保存的 OAuth 登录。令牌永不离开账户存储。",
     add: "添加账户",
     provider: "服务商",
-    providerHelp: "gemini 通过浏览器登录；copilot 使用设备码。",
+    providerHelp:
+      "gemini 与 antigravity 走浏览器；antigravity 可能导致账号被封。codex 以 Codex CLI 身份登录并写回它的 auth.json。" +
+      "chatgpt-api 最后要粘贴浏览器落地的整条地址。copilot 显示设备码。claude 需要本机装有 `claude` 命令。",
     start: "开始登录",
     openUrl: "打开链接",
     copy: "复制",
     copied: "已复制",
     code: "设备码",
     paste: "粘贴回调地址",
+    pasteCodeLabel: "粘贴 code 或整条地址",
     pastePlaceholder: "http://127.0.0.1:.../oauth2callback?state=...&code=...",
     submit: "完成登录",
     cancel: "取消",
     state: "状态",
     stateWaiting: "等待中…",
     error: "错误",
-    empty: "暂无账户。使用 gemini 或 copilot 登录添加。",
+    empty: "暂无账户。在上方选择服务商并登录即可添加。",
     providerCol: "服务商",
     accountCol: "账户",
     kindCol: "类型",
@@ -111,6 +126,11 @@ const STRINGS = {
     quotaNone: "—",
     remove: "移除",
     removed: "已移除",
+    antigravityRisk:
+      "Google 可能停用它在 Antigravity 之外看到被使用的账号。请用一个你承受得起损失的账号。",
+    siwcHint:
+      "登录过程中 OpenAI 会现场注册本应用，所以浏览器最终落到的地址里同时带着 code 与 client id。请粘贴整条地址。",
+    pasteCode: "粘贴 Claude 页面显示的 code，或浏览器最终落到的整条地址",
     unreachable: "服务器不可达（是否已启动？）。",
   },
 } as const;
@@ -328,11 +348,25 @@ export function AccountsPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="gemini">gemini</SelectItem>
+                  <SelectItem value="antigravity">antigravity</SelectItem>
+                  <SelectItem value="codex">codex</SelectItem>
+                  <SelectItem value="chatgpt-api">chatgpt-api</SelectItem>
                   <SelectItem value="copilot">copilot</SelectItem>
+                  <SelectItem value="claude">claude</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
           </div>
+          {provider === "antigravity" && (
+            <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+              {s.antigravityRisk}
+            </p>
+          )}
+          {provider === "chatgpt-api" && (
+            <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              {s.siwcHint}
+            </p>
+          )}
           <Button className="w-fit" onClick={() => void start()} disabled={busy || !server}>
             {s.start}
           </Button>
@@ -364,13 +398,18 @@ export function AccountsPage() {
                     </code>
                   </div>
                 )}
-                {task.paste_callback && (
+                {(task.paste_callback || task.paste_code) && (
                   <div className="flex items-end gap-2">
                     <div className="flex-1">
-                      <Field label={s.paste} help="">
+                      <Field
+                        label={task.paste_code ? s.pasteCodeLabel : s.paste}
+                        help=""
+                      >
                         <Input
                           value={pastedUrl}
-                          placeholder={s.pastePlaceholder}
+                          placeholder={
+                            task.paste_code ? s.pasteCode : s.pastePlaceholder
+                          }
                           onChange={(event) => setPastedUrl(event.target.value)}
                         />
                       </Field>
