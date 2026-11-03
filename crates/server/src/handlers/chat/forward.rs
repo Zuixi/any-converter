@@ -14,14 +14,13 @@ use crate::credentials::{ApiKeySource, TokenSource};
 use crate::model::patch_model_in_body;
 use crate::namespace::patch_response_namespaces;
 use crate::proxy::build_upstream_url_for_provider;
-use crate::router::RouteInfo;
 use crate::usage::{self, UsageRecord};
 
 use super::super::{
     HandlerError, api_error_response, conversion_error_response, safe_convert_request,
     safe_convert_response, sanitize_headers_for_log, truncated_body,
 };
-use super::{AppState, RequestContext};
+use super::{Attempt, RequestContext};
 
 /// Outcome of building the upstream request for one account attempt (P9).
 pub(crate) enum AccountStep {
@@ -38,14 +37,18 @@ pub(crate) enum AccountStep {
 }
 
 pub(crate) async fn convert_and_build_upstream(
-    state: &AppState,
+    att: &Attempt<'_>,
+    ctx: &mut RequestContext,
     headers: &HeaderMap,
     body: &[u8],
-    route_info: RouteInfo,
-    ctx: &mut RequestContext,
-    provider: &crate::config::ProviderConfig,
-    api: UpstreamApi,
 ) -> Result<AccountStep, Box<Response>> {
+    let Attempt {
+        state,
+        provider,
+        api,
+        route_info,
+    } = att;
+    let api = *api;
     // Code Assist always speaks Gemini on the wire: conversion targets Gemini
     // (not `provider.format`) and the body rides inside the request envelope.
     let to_format = api.to_format();
@@ -278,14 +281,18 @@ pub(crate) async fn convert_and_build_upstream(
 }
 
 pub(crate) fn build_non_streaming_response(
-    state: &AppState,
+    att: &Attempt<'_>,
+    ctx: &RequestContext,
     upstream_body: &[u8],
     status: reqwest::StatusCode,
-    route_info: RouteInfo,
-    ctx: &RequestContext,
-    provider: &crate::config::ProviderConfig,
     from_format: Format,
 ) -> Result<Response, HandlerError> {
+    let Attempt {
+        state,
+        provider,
+        route_info,
+        ..
+    } = att;
     if state.config.logging.conversion_log {
         debug!(
             target: "conversion",
