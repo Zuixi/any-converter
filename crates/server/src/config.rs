@@ -715,9 +715,67 @@ impl ServerConfig {
     /// Resolve a provider for the given model name via `[[model_routes]]` globs.
     ///
     /// Legacy `[[routes]]` are ignored (see the CLI startup warning).
+    ///
+    /// Agent wiring exposes models as `<provider>/<model>` (so several
+    /// providers can share a model name without ambiguity), so a miss on
+    /// the full string is retried with the `provider/` prefix stripped: the
+    /// route tables name bare models (`"deepseek-chat"`, `"deepseek-*"`),
+    /// and the upstream model is the bare name either way.
     pub fn resolve_provider(&self, client_model: &str) -> Option<ResolvedRoute> {
+        // Agent wiring exposes models as `<provider>/<model>`, so a bare-model
+        // route table must also answer the prefixed form. A specific (glob-
+        // free) pattern is tried first on both forms; the prefixed form is
+        // tried before any wildcard so a catch-all `"*"` cannot shadow a
+        // named route, mirroring how model_map matches specific before glob.
+        if let Some(resolved) = self.resolve_provider_form(client_model, false) {
+            return Some(resolved);
+        }
+        if let Some((provider_prefix, bare_model)) = client_model.split_once('/') {
+            // Only strip when the prefix names a configured provider: a model
+            // id that merely contains a slash (some vendors use dated ids)
+            // must keep its full name for matching.
+            if self.find_provider(provider_prefix).is_some() {
+                if let Some(resolved) = self.resolve_provider_form(bare_model, false) {
+                    return Some(Self::rebase_upstream(resolved, client_model, bare_model));
+                }
+            }
+        }
+        if let Some(resolved) = self.resolve_provider_form(client_model, true) {
+            // A bare-model wildcard match (with a known provider prefix) is
+            // more specific than the same string hitting a catch-all, so try
+            // the bare form first inside the wildcard pass too.
+            if let Some((prefix, bare)) = client_model.split_once('/') {
+                if self.find_provider(prefix).is_some() {
+                    if let Some(bare_resolved) = self.resolve_provider_form(bare, true) {
+                        return Some(Self::rebase_upstream(
+                            bare_resolved,
+                            client_model,
+                            bare,
+                        ));
+                    }
+                }
+            }
+            return Some(resolved);
+        }
+        if let Some((_, bare)) = client_model.split_once('/') {
+            return self.resolve_provider_form(bare, true);
+        }
+        None
+    }
+
+    /// Applies `allow_wildcards` as a filter over route patterns so callers
+    /// can prefer specific matches before falling back to globs.
+    fn resolve_provider_form(
+        &self,
+        client_model: &str,
+        allow_wildcards: bool,
+    ) -> Option<ResolvedRoute> {
         if !self.model_routes.is_empty() {
             for mr in &self.model_routes {
+                let is_wildcard = mr.pattern.contains('*') || mr.pattern.contains('?');
+                if is_wildcard && !allow_wildcards {
+                    continue;
+                }
                 if glob_match(&mr.pattern, client_model) {
                     let names = mr.provider_names();
                     if names.is_empty() {
@@ -741,6 +799,24 @@ impl ServerConfig {
         None
     }
 
+    /// Rewrites the resolved upstream model when a bare-model match kept the
+    /// catalog id as the passthrough name: the upstream never wants the
+    /// `provider/` prefix.
+    fn rebase_upstream(
+        resolved: ResolvedRoute,
+        client_model: &str,
+        bare_model: &str,
+    ) -> ResolvedRoute {
+        if resolved.upstream_model == client_model {
+            ResolvedRoute {
+                provider_names: resolved.provider_names,
+                upstream_model: bare_model.to_string(),
+                strategy: resolved.strategy,
+            }
+        } else {
+            resolved
+        }
+    }
     pub fn find_provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.name == name)
     }
