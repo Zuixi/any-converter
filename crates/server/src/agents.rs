@@ -130,7 +130,6 @@ impl From<agent_wiring::WiringError> for ApiError {
     }
 }
 
-
 // ── HTTP handlers ────────────────────────────────────────────────────
 
 /// `GET /v1/agents`
@@ -138,9 +137,7 @@ pub async fn handle_agents_list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    state
-        .agents
-        .set_catalog(catalog_from_config(&state.config));
+    state.agents.set_catalog(catalog_from_config(&state.config));
     if let Some(response) = read_auth(&state, &headers).await {
         return response;
     }
@@ -178,9 +175,7 @@ pub async fn handle_agent_connect(
             }
         }
     };
-    state
-        .agents
-        .set_catalog(catalog_from_config(&state.config));
+    state.agents.set_catalog(catalog_from_config(&state.config));
     let home = state.agents.home();
     match state.agents.connect(&id, model, &home).await {
         Ok(report) => Json(json!({
@@ -237,9 +232,7 @@ pub async fn handle_agent_sync(
     if let Some(response) = management_auth(&state, &headers) {
         return response;
     }
-    state
-        .agents
-        .set_catalog(catalog_from_config(&state.config));
+    state.agents.set_catalog(catalog_from_config(&state.config));
     let home = state.agents.home();
     match state.agents.sync(&id, &home).await {
         Ok(()) => Json(json!({
@@ -261,9 +254,7 @@ pub async fn handle_agent_rotate_key(
     if let Some(response) = management_auth(&state, &headers) {
         return response;
     }
-    state
-        .agents
-        .set_catalog(catalog_from_config(&state.config));
+    state.agents.set_catalog(catalog_from_config(&state.config));
     let home = state.agents.home();
     match state.agents.rotate_key(&id, &home).await {
         Ok(key_id) => Json(json!({ "agent": id, "key_id": key_id })).into_response(),

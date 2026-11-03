@@ -45,6 +45,7 @@ struct FakeUpstream {
     generate_auth: Mutex<Option<String>>,
     generate_body: Mutex<Option<Value>>,
     token_calls: Mutex<usize>,
+    token_refusal: Mutex<Option<String>>,
     token_body: Mutex<Option<String>>,
     /// Queued 401 responses: one body per upcoming generate request.
     generate_401_bodies: Mutex<Vec<String>>,
@@ -84,6 +85,12 @@ impl FakeUpstream {
             .lock()
             .unwrap()
             .push(body.to_string());
+    }
+
+    /// Make the token endpoint refuse, as a vendor does once a refresh
+    /// token is spent.
+    fn set_token_refusal(&self, body: &str) {
+        *self.token_refusal.lock().unwrap() = Some(body.to_string());
     }
 
     fn set_token_delay(&self, ms: u64) {
@@ -161,6 +168,13 @@ async fn token_endpoint(
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
     *state.token_calls.lock().unwrap() += 1;
+    if let Some(refusal) = state.token_refusal.lock().unwrap().clone() {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": "invalid_grant", "error_description": refusal })),
+        )
+            .into_response();
+    }
     *state.token_body.lock().unwrap() = Some(String::from_utf8_lossy(&body).into_owned());
     axum::Json(json!({"access_token": "tok-2", "expires_in": 3600})).into_response()
 }
@@ -239,6 +253,7 @@ fn oauth_credential(access_token: &str, expires_at_unix: i64) -> Credential {
         access_token: access_token.into(),
         refresh_token: Some("ref-1".into()),
         expires_at_unix: Some(expires_at_unix),
+        siwc: None,
     }
 }
 
@@ -595,31 +610,24 @@ async fn revoked_401_marks_account_and_fails_over() {
 
     revoked_upstream.push_generate_401(r#"{"error":{"message":"token_revoked"}}"#);
 
-    // First request: the revoked provider 401s, the account is marked, and
-    // the request fails over to the healthy provider.
+    // The 401 says the sign-in is revoked, but magpie refreshes first and
+    // "a refresh that goes through marks nothing" — the token was merely
+    // stale, so the same provider serves the retry and no marker is kept.
     let (status, body) = chat_via(&app, chat_body(false)).await;
     assert_eq!(status, StatusCode::OK, "response body: {body}");
     let parsed: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed["choices"][0]["message"]["content"], "hi");
-    assert_eq!(revoked_upstream.generate_calls(), 1);
-    assert_eq!(healthy_upstream.generate_calls(), 1);
-
-    // The revoked marker was persisted next to the secrets file.
-    let revoked = std::fs::read_to_string(dir.path().join("revoked.json")).unwrap();
-    assert!(revoked.contains("gemini:me@example.com"), "{revoked}");
-    assert!(revoked.contains("token_revoked"), "{revoked}");
-
-    // A second request never touches the revoked upstream again: the
-    // revoked account is skipped (P9 multi-account semantics) and the
-    // healthy provider serves instead of the old revoked guidance.
-    let (status, body) = chat_via(&app, chat_body(false)).await;
     assert_eq!(
         revoked_upstream.generate_calls(),
-        1,
-        "revoked upstream must not be called again"
+        2,
+        "refreshed and retried"
     );
-    assert_eq!(status, StatusCode::OK, "response body: {body}");
-    assert_eq!(healthy_upstream.generate_calls(), 2);
+    assert_eq!(healthy_upstream.generate_calls(), 0, "no failover needed");
+    assert_eq!(revoked_upstream.token_calls(), 1, "exactly one refresh");
+    assert!(
+        !dir.path().join("revoked.json").exists(),
+        "a refresh that goes through marks nothing"
+    );
 }
 
 #[tokio::test]
@@ -635,12 +643,19 @@ async fn unknown_401_does_not_mark() {
 
     let (_status, _body) = env.chat(chat_body(false)).await;
 
-    // No marker file may be written and no retry may be attempted.
+    // An Unknown 401 is still a 401: magpie refreshes once first, so the
+    // request goes again with the renewed token — but the words name no
+    // sign-in refusal, so nothing is marked.
     assert!(
         !env.revoked_path().exists(),
         "revoked.json must not be created for an Unknown 401"
     );
-    assert_eq!(env.upstream.generate_calls(), 1, "no retry on Unknown 401");
+    assert_eq!(
+        env.upstream.generate_calls(),
+        2,
+        "one refresh and one retry"
+    );
+    assert_eq!(env.upstream.token_calls(), 1, "exactly one refresh");
 }
 
 #[tokio::test]
@@ -692,4 +707,32 @@ async fn refresh_takes_the_file_lock() {
         .unwrap();
     drop(guard);
     assert!(!lock_path.exists(), "guard drop must remove the lock file");
+}
+
+/// The one path that marks an account: a 401 whose words say the sign-in is
+/// gone, and a refresh the vendor refuses. magpie's order — refresh first —
+/// makes the marker the refresh's verdict, not the words alone.
+#[tokio::test]
+async fn revoked_401_then_a_refused_refresh_marks_the_account() {
+    let env = TestEnv::build(
+        Format::Gemini,
+        Some("gemini:me@example.com"),
+        Some(unix_now() + 3600),
+    )
+    .await;
+    env.upstream
+        .push_generate_401(r#"{"error":{"message":"token_revoked"}}"#);
+    env.upstream.set_token_refusal("refresh token revoked");
+
+    let (_status, _body) = env.chat(chat_body(false)).await;
+
+    assert_eq!(env.upstream.token_calls(), 1, "refreshed first");
+    assert_eq!(
+        env.upstream.generate_calls(),
+        1,
+        "no retry: the refresh was refused"
+    );
+    let kept = std::fs::read_to_string(env.revoked_path()).unwrap_or_default();
+    assert!(kept.contains("gemini:me@example.com"), "marked: {kept}");
+    assert!(kept.contains("token_revoked"), "why kept: {kept}");
 }

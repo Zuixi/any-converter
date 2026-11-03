@@ -105,7 +105,10 @@ fn connect_sets_requires_openai_auth_and_preserves_oauth_tokens() {
     let parsed: serde_json::Value = serde_json::from_str(&catalog_text).unwrap();
     assert!(parsed["models"].as_array().unwrap().len() >= 3);
     assert_eq!(CodexSpec.our_keys(), OUR_KEYS);
-    assert_eq!(CodexSpec.read_state(&ctx, common::GATEWAY), WiredState::Connected);
+    assert_eq!(
+        CodexSpec.read_state(&ctx, common::GATEWAY),
+        WiredState::Connected
+    );
 }
 
 #[test]
@@ -128,7 +131,10 @@ fn drift_is_detected_from_provider_base_url() {
     .unwrap();
     common::write(&config, &drifted);
 
-    assert_eq!(CodexSpec.read_state(&ctx, common::GATEWAY), WiredState::Drifted);
+    assert_eq!(
+        CodexSpec.read_state(&ctx, common::GATEWAY),
+        WiredState::Drifted
+    );
 }
 
 #[test]

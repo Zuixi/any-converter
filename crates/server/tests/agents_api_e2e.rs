@@ -6,9 +6,7 @@ use std::sync::Arc;
 use any_converter_server::agents::AgentRegistry;
 use any_converter_server::config::ServerConfig;
 use any_converter_server::credentials::copilot::CopilotSessions;
-use any_converter_server::credentials::{
-    AccountResolver, CopilotAllowances, FileSecretStore,
-};
+use any_converter_server::credentials::{AccountResolver, CopilotAllowances, FileSecretStore};
 use any_converter_server::handlers::AppState;
 use any_converter_server::plugins::{ManagedHosts, PluginAuthStore};
 use any_converter_server::router::create_router_with_state;
@@ -60,7 +58,6 @@ impl Fixture {
         let bytes = std::fs::read(self.data_dir.join("agent_state.json")).unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
-
 }
 
 fn build_registry(data_dir: &Path, api_key: Option<&str>) -> Arc<AgentRegistry> {
@@ -238,8 +235,14 @@ async fn connect_disconnect_roundtrip_is_byte_identical() {
     assert!(written.contains(GATEWAY), "{written}");
     assert!(written.contains("acw_claude-code_"), "{written}");
     assert!(written.contains("deepseek/claude-sonnet-4"), "{written}");
-    assert_eq!(fixture.state()["agents"]["claude-code"]["status"], "connected");
-    assert_eq!(fixture.state()["agents"]["claude-code"]["default_model"], "deepseek/claude-sonnet-4");
+    assert_eq!(
+        fixture.state()["agents"]["claude-code"]["status"],
+        "connected"
+    );
+    assert_eq!(
+        fixture.state()["agents"]["claude-code"]["default_model"],
+        "deepseek/claude-sonnet-4"
+    );
 
     let (status, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
     assert_eq!(status, StatusCode::OK);
@@ -336,9 +339,20 @@ async fn auth_matrix_global_and_agent_keys() {
         Some(&format!("Bearer {agent_key}")),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "agent key must not manage agents");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "agent key must not manage agents"
+    );
 
-    let (status, _) = send(&fixture.app, "POST", "/v1/agents/claude-code/sync", None, None).await;
+    let (status, _) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/claude-code/sync",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -375,7 +389,11 @@ async fn list_detects_drift_after_manual_edit() {
 
     let settings = fixture.path(".claude/settings.json");
     let text = std::fs::read_to_string(&settings).unwrap();
-    std::fs::write(&settings, text.replace(GATEWAY, "https://api.anthropic.com")).unwrap();
+    std::fs::write(
+        &settings,
+        text.replace(GATEWAY, "https://api.anthropic.com"),
+    )
+    .unwrap();
 
     let (status, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
     assert_eq!(status, StatusCode::OK);
@@ -396,9 +414,11 @@ async fn sync_rewrites_agent_after_provider_change() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let settings = fixture.path(".claude/settings.json");
-    assert!(std::fs::read_to_string(&settings)
-        .unwrap()
-        .contains("deepseek/deepseek-chat"));
+    assert!(
+        std::fs::read_to_string(&settings)
+            .unwrap()
+            .contains("deepseek/deepseek-chat")
+    );
 
     let app = fixture.with_config(None, "kimi", "kimi-k2");
     let (status, body) = send(&app, "POST", "/v1/agents/claude-code/sync", None, None).await;
@@ -482,7 +502,11 @@ async fn drift_falls_back_to_heuristic_without_audit() {
 
     let settings = fixture.path(".claude/settings.json");
     let text = std::fs::read_to_string(&settings).unwrap();
-    std::fs::write(&settings, text.replace(GATEWAY, "https://api.deepseek.com/anthropic")).unwrap();
+    std::fs::write(
+        &settings,
+        text.replace(GATEWAY, "https://api.deepseek.com/anthropic"),
+    )
+    .unwrap();
 
     let (_, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
     assert_eq!(agent_status(&json(&body), "claude-code"), "drifted");

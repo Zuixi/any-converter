@@ -16,6 +16,53 @@
 - **Default gateway port is now `1228`** (was `8080`). The server, CLI defaults, Web UI proxy fallback, and Desktop defaults all agree. **Upgrade note**: deployments that relied on the old implicit `8080` default (no explicit `port` in config) move to `1228` on upgrade — set `port = 8080` explicitly to keep it, and update any client `base_url` accordingly.
 - `resolve_provider` now also accepts catalog ids of the form `<provider>/<model>` (what agent wiring writes into configs): specific routes match the bare model name, and a catch-all `"*"` can no longer shadow a named route for prefixed ids.
 
+## Unreleased — subscription accounts and plugins
+
+### Added
+
+- **Sign in to six subscriptions from the window**: `gemini` and `antigravity`
+  (Google OAuth with PKCE and a loopback callback), `codex` (ChatGPT OAuth on
+  Codex CLI's fixed `127.0.0.1:1455`, going paste-only when that port is
+  taken), `chatgpt-api` (Sign in with ChatGPT, which registers this app as it
+  goes and hands back the client id with the code), `copilot` (GitHub device
+  flow) and `claude` (Claude Code's own `claude auth login`, run here). A
+  sign-in is a task: `POST /v1/accounts/signin` returns at once, the window
+  polls, pastes a callback address or a code, or cancels — and a cancelled
+  flow releases its listener and temp state.
+- **Providers served by an OpenCode plugin**: a `plugin` entry in a provider
+  makes the plugin own the transport — its loader supplies the base URL and
+  signs the request, its model list picks the wire API per model (a Claude
+  model and a GPT model can sit side by side), and a request leaves through
+  the plugin's own `fetch`. `any-converter plugin install/list` manage the
+  packages; `GET /v1/accounts/plugins` tells the window what each serves.
+- **Account pools with allowance-aware ordering**: several accounts per
+  provider, tried in the user's saved order (`accounts order`, the page's
+  "move up", kept in `account-order.json`), with any account past 95% of its
+  fullest window moved last rather than rearranged. Routing never waits on a
+  quota read: a cached window decides, a stale one refreshes in the
+  background, and an unknown one counts as having room.
+- **`GET /v1/accounts/quotas`**, and the Accounts page draws each allowance
+  window as a bar with its reset time.
+- **Codex `auth.json` write-back**: an adopted account's rotated tokens are
+  written back where Codex reads them, keeping every other field, under a
+  lock and a last-good backup — and never over a file it could not read. A
+  keyring store is refused with guidance rather than guessed at.
+- **Importing accounts from other tools**: `accounts discover` /
+  `accounts import-agent` read Codex's and Claude Code's own stores (read
+  only), and `accounts import <path>` reads claude-swap (cswap), Sub2API and
+  CLIProxyAPI exports, honouring cswap's newer-wins rule.
+- **Per-account proxies**: a sign-in, a refresh and a revocation leave
+  through the same exit the account's requests use.
+
+### Changed
+
+- Provider authentication goes through a `TokenSource`, so an OAuth account
+  and a static key are the same shape to the request path.
+- The upstream API is a per-provider (and per-plugin-model) property rather
+  than an implication of the client format.
+- `config.rs` and `handlers.rs` are split by concern; `handlers/chat/` keeps
+  the request path in `plan` / `forward` / `plugin` / `failover` stages.
+
 ## Unreleased — Web UI
 
 ### Added

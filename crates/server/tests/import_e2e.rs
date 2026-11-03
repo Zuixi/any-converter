@@ -91,6 +91,7 @@ fn sub2api_claude_and_codex_are_imported() {
             access_token: "test-token-1-claude-access".into(),
             refresh_token: Some("test-token-1-claude-refresh".into()),
             expires_at_unix: Some(1_900_000_000),
+            siwc: None,
         })
     );
 
@@ -106,6 +107,7 @@ fn sub2api_claude_and_codex_are_imported() {
             access_token: "test-token-1-codex-access".into(),
             refresh_token: Some("test-token-1-codex-refresh".into()),
             expires_at_unix: None,
+            siwc: None,
         })
     );
 }
@@ -129,6 +131,7 @@ fn cliproxy_map_is_imported() {
             access_token: "test-token-2-claude-access".into(),
             refresh_token: Some("test-token-2-claude-refresh".into()),
             expires_at_unix: Some(1_890_000_000),
+            siwc: None,
         })
     );
 }
@@ -162,6 +165,7 @@ fn cswap_newer_wins() {
             access_token: "test-token-4-claude-access-newer".into(),
             refresh_token: Some("test-token-3-claude-refresh".into()),
             expires_at_unix: Some(1_890_000_000),
+            siwc: None,
         })
     );
 }
@@ -302,6 +306,7 @@ fn directory_import_is_sorted_and_isolated() {
             access_token: "test-token-9-codex-access".into(),
             refresh_token: Some("test-token-9-codex-refresh".into()),
             expires_at_unix: None,
+            siwc: None,
         })
     );
 }

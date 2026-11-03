@@ -35,11 +35,7 @@ providers = ["deepseek"]
 "#,
     );
     let catalog = catalog_from_config(&config);
-    let ids: Vec<&str> = catalog
-        .models
-        .iter()
-        .map(|m| m.id.as_str())
-        .collect();
+    let ids: Vec<&str> = catalog.models.iter().map(|m| m.id.as_str()).collect();
     assert!(ids.contains(&"deepseek/deepseek-chat"), "ids={ids:?}");
     assert!(ids.contains(&"deepseek/deepseek-reasoner"), "ids={ids:?}");
     assert_eq!(ids.len(), 2, "ids={ids:?}");
@@ -70,11 +66,7 @@ provider = "openai"
 "#,
     );
     let catalog = catalog_from_config(&config);
-    let ids: Vec<&str> = catalog
-        .models
-        .iter()
-        .map(|m| m.id.as_str())
-        .collect();
+    let ids: Vec<&str> = catalog.models.iter().map(|m| m.id.as_str()).collect();
     // Only the concrete model_map entry survives; `gpt-4o*` and `*` from
     // model_map and `gpt-*` from model_routes are patterns, not models.
     assert_eq!(ids, vec!["openai/gpt-4.1"], "ids={ids:?}");
@@ -107,12 +99,12 @@ provider = "deepseek"
 "#,
     );
     let catalog = catalog_from_config(&config);
-    let ids: Vec<&str> = catalog
-        .models
-        .iter()
-        .map(|m| m.id.as_str())
-        .collect();
-    assert_eq!(ids, vec!["deepseek/deepseek-chat", "deepseek/deepseek-r1"], "ids={ids:?}");
+    let ids: Vec<&str> = catalog.models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["deepseek/deepseek-chat", "deepseek/deepseek-r1"],
+        "ids={ids:?}"
+    );
 }
 
 #[test]

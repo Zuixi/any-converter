@@ -348,6 +348,7 @@ fn setup_codex_account(dir: &Path, auth: &Value) -> (PathBuf, PathBuf, FileSecre
                 access_token: "at-old".into(),
                 refresh_token: Some("rt-old".into()),
                 expires_at_unix: Some(unix_now() - 60),
+                siwc: None,
             },
         )
         .unwrap();
