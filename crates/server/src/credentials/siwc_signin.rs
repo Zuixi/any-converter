@@ -469,7 +469,13 @@ impl SiwcSignIn {
         client_id: &str,
         nonce: &str,
     ) -> Result<SiwcAccount, SignInError> {
-        let account = account_from(tokens, client_id, nonce, &self.host_id()?)?;
+        let account = account_from(
+            tokens,
+            client_id,
+            nonce,
+            &self.host_id()?,
+            &self.endpoints.issuer,
+        )?;
         Ok(account)
     }
 
@@ -736,6 +742,7 @@ fn account_from(
     client_id: &str,
     nonce: &str,
     host_id: &str,
+    issuer: &str,
 ) -> Result<SiwcAccount, SignInError> {
     if tokens.id_token.is_empty() {
         return Err(SignInError::Vendor(
@@ -744,7 +751,7 @@ fn account_from(
     }
     let claims = jwt_claims(&tokens.id_token)
         .ok_or_else(|| SignInError::Vendor("OpenAI sent an unreadable ID token".to_string()))?;
-    check_id_token(&claims, client_id, nonce)?;
+    check_id_token(&claims, client_id, nonce, issuer)?;
     let email = claim_string(&claims, &["email"]).unwrap_or_default();
     let subject = claim_string(&claims, &["sub"]).unwrap_or_default();
     let user = if email.is_empty() { subject } else { email };
@@ -778,9 +785,13 @@ fn check_id_token(
     claims: &serde_json::Value,
     client_id: &str,
     nonce: &str,
+    expected: &str,
 ) -> Result<(), SignInError> {
+    // The issuer the endpoints name, not a constant: the endpoints are
+    // injectable, so the check must follow them (magpie compares against
+    // its `siwcIssuer` var for the same reason).
     let issuer = claim_string(claims, &["iss"]).unwrap_or_default();
-    if issuer.trim_end_matches('/') != "https://auth.openai.com".trim_end_matches('/') {
+    if issuer.trim_end_matches('/') != expected.trim_end_matches('/') {
         return Err(SignInError::Vendor(format!(
             "the ID token is from {issuer:?}, not OpenAI"
         )));
