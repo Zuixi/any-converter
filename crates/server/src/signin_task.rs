@@ -30,8 +30,15 @@ use uuid::Uuid;
 use crate::credentials::Credential;
 use std::time::Duration;
 
-/// How often an "auto" plugin flow is retried.
+/// How often an "auto" plugin flow is retried before it is started afresh.
+///
+/// Retrying the callback is cheap — the plugin is waiting on its own browser
+/// — while starting the flow again is not: each `authorize` may open a page
+/// or create a vendor-side session. So the first retries only re-ask the
+/// callback; a fresh flow is started once, after the callback has had a
+/// minute to complete.
 const PLUGIN_SIGN_IN_RETRY: Duration = Duration::from_secs(2);
+const PLUGIN_SIGN_IN_RESTART_AFTER: Duration = Duration::from_secs(60);
 use crate::credentials::account::AccountResolver;
 use crate::credentials::claude_signin::CLAUDE_INSTALL_HINT;
 use crate::credentials::claude_signin::ClaudeSignIn;
@@ -712,6 +719,9 @@ impl SignInTasks {
                 Some(tokio::spawn(async move {
                     let deadline = std::time::Instant::now() + DEFAULT_SIGN_IN_TIMEOUT;
                     let mut current = authorization;
+                    // The flow is started again at most once per minute:
+                    // re-asking the callback is free, starting a flow is not.
+                    let mut restarted = std::time::Instant::now();
                     loop {
                         let attempt = crate::plugins::ProviderPlugin::callback(
                             &*host,
@@ -742,6 +752,13 @@ impl SignInTasks {
                                     break;
                                 }
                                 tokio::time::sleep(PLUGIN_SIGN_IN_RETRY).await;
+                                if restarted.elapsed() < PLUGIN_SIGN_IN_RESTART_AFTER {
+                                    // Still inside the first flow's grace:
+                                    // ask its callback again, don't start a
+                                    // second one at the vendor.
+                                    continue;
+                                }
+                                restarted = std::time::Instant::now();
                                 match crate::plugins::ProviderPlugin::authorize(
                                     &*host,
                                     params.clone(),
