@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! `catalog_from_config` normalization: explicit model_map entries and
 //! `[[model_routes]]` patterns both contribute; wildcards never do.
 

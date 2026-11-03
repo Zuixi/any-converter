@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_wiring::{
     AgentSpec, CatalogModel, ConnectReport, DetectResult, DisconnectReport, HomeCtx, ModelCatalog,
-    WiredState, Wiring, WiringCtx, all_specs,
+    Wiring, WiringCtx, all_specs,
 };
 use serde::{Deserialize, Serialize};
 
@@ -301,7 +301,7 @@ impl AgentRegistry {
             return !applied.drifted_keys(spec.id(), &current).is_empty();
         }
         spec.base_url_key()
-            .and_then(|key| spec.read_key(ctx, &key))
+            .and_then(|key| spec.read_key(ctx, key))
             .is_some_and(|value| !agent_wiring::gw_base_match(&value, &self.gateway_url))
     }
 
