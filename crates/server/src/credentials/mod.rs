@@ -106,7 +106,7 @@ pub use agent_import::{
     FoundAccount, codex_homes, discover, discover_with_env, read_claude, read_codex,
     read_codex_with_env, to_credential,
 };
-pub use allowance::{Allowance, Limit};
+pub use allowance::{Allowance, CopilotAllowances, Limit};
 pub use codex_store::{
     CodexStore, TokenUpdate, WriteBackError, codex_store, write_tokens, write_tokens_with_timeout,
 };

@@ -145,6 +145,9 @@ impl Harness {
             config,
             client: Client::builder().no_proxy().build().unwrap(),
             accounts: AccountResolver::with_default_store(Client::new()),
+            copilot_allowances: Arc::new(
+                any_converter_server::credentials::CopilotAllowances::default(),
+            ),
             usage_logger: None,
             request_logger: None,
             copilot: Arc::new(

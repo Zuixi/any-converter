@@ -12,6 +12,7 @@
 //! [`copilot_allowance`] (magpie `CopilotUserURL`); every other vendor
 //! reports nothing and its accounts count as unused.
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use super::account::{AccountError, AccountResolver};
@@ -126,6 +127,42 @@ impl AccountResolver {
                     .map(|(_, allowance)| allowance)
             }
         }
+    }
+
+    /// The windows read earlier, if any and still fresh — **no I/O**.
+    ///
+    /// This is what routing uses: magpie reads allowances in the background
+    /// and never makes a request wait on one (`KeyAllowance`: "never waited
+    /// for, read in the background"). An account with nothing cached counts
+    /// as having room, which is why a cold start keeps the user's order.
+    pub(crate) fn allowance_fresh(&self, account_id: &str) -> Option<Allowance> {
+        let (at, allowance) = self.allowance_cache_get(account_id)?;
+        (unix_now() - at < ALLOWANCE_CACHE_SECS).then_some(allowance)
+    }
+
+    /// Refresh `account_id`'s windows in the background, unless a read is
+    /// already in flight for it or the cached value is still fresh. The
+    /// request that noticed staleness is never held up by the read.
+    pub(crate) fn refresh_allowance_in_background(self: &Arc<Self>, account_id: &str, base: &str) {
+        if self.allowance_fresh(account_id).is_some() {
+            return;
+        }
+        {
+            let mut reading = self.reading.lock().unwrap_or_else(|e| e.into_inner());
+            if !reading.insert(account_id.to_string()) {
+                return; // one read at a time per account, as magpie keeps it
+            }
+        }
+        let this = Arc::clone(self);
+        let account_id = account_id.to_string();
+        let base = base.to_string();
+        tokio::spawn(async move {
+            let _ = this.allowance(&account_id, &base).await;
+            this.reading
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&account_id);
+        });
     }
 
     /// One `fetchAvailableModels` ask, signed with the account's access
@@ -505,5 +542,58 @@ mod tests {
         let secs = at.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
         assert!(secs > 1_700_000_000, "secs = {secs}");
         assert!(parse_rfc3339("not a time").is_none());
+    }
+}
+
+/// Copilot accounts' quota windows, cached so routing never waits on the
+/// read: asking needs a session exchange plus a round trip, far too much to
+/// put in front of every request (magpie reads allowances in the background
+/// for the same reason).
+#[derive(Default)]
+pub struct CopilotAllowances {
+    entries: std::sync::Mutex<std::collections::HashMap<String, (i64, Allowance)>>,
+    reading: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl CopilotAllowances {
+    /// The windows read earlier, if any and still fresh — **no I/O**.
+    pub fn fresh(&self, account_id: &str) -> Option<Allowance> {
+        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let (at, allowance) = entries.get(account_id)?;
+        (unix_now() - at < ALLOWANCE_CACHE_SECS).then(|| allowance.clone())
+    }
+
+    /// Refresh `account_id`'s windows off the request path, one read at a
+    /// time per account.
+    pub fn refresh_in_background(
+        self: &Arc<Self>,
+        accounts: Arc<super::account::AccountResolver>,
+        copilot: Arc<super::copilot::CopilotSessions>,
+        client: reqwest::Client,
+        account_id: String,
+    ) {
+        {
+            let mut reading = self.reading.lock().unwrap_or_else(|e| e.into_inner());
+            if !reading.insert(account_id.clone()) {
+                return; // one read at a time per account
+            }
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Ok(github) = accounts.resolve(&account_id).await {
+                if let Ok(session) = copilot.session(&github.access_token).await {
+                    if let Some(allowance) = copilot_allowance(&client, &session).await {
+                        this.entries
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(account_id.clone(), (unix_now(), allowance));
+                    }
+                }
+            }
+            this.reading
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&account_id);
+        });
     }
 }

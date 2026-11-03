@@ -166,6 +166,9 @@ pub struct AccountResolver {
     /// In-memory quota window cache: account id → (read_at, windows).
     /// Written by `credentials::allowance` (P9).
     allowances: Mutex<HashMap<String, (i64, super::allowance::Allowance)>>,
+    /// Accounts whose allowance is being read right now, so a burst of
+    /// requests starts one background read rather than one each.
+    pub(crate) reading: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AccountResolver {
@@ -208,6 +211,7 @@ impl AccountResolver {
             revoked: Mutex::new(RevokedCache::default()),
             projects: Mutex::new(HashMap::new()),
             allowances: Mutex::new(HashMap::new()),
+            reading: Mutex::new(std::collections::HashSet::new()),
         }
     }
 

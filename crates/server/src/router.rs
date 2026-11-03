@@ -13,6 +13,7 @@ use axum::Extension;
 
 use crate::config::ServerConfig;
 use crate::credentials::AccountResolver;
+use crate::credentials::CopilotAllowances;
 use crate::credentials::copilot::CopilotSessions;
 use crate::handlers::{
     AppState, handle_account_quotas, handle_account_remove, handle_account_signin,
@@ -131,6 +132,7 @@ pub fn create_router(config: ServerConfig) -> Router {
         client,
         accounts,
         copilot,
+        copilot_allowances: Arc::new(CopilotAllowances::default()),
         usage_logger,
         request_logger,
         hosts,

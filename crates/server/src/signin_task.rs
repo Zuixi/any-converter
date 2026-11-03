@@ -93,7 +93,15 @@ struct TaskHandle {
     driver: TaskDriver,
     /// Where a completed sign-in is persisted.
     accounts: Arc<AccountResolver>,
+    /// When the flow reached done/failed/canceled, so a finished entry can
+    /// be pruned: the UI polls until it sees the final state, then stops.
+    finished_at: Option<std::time::Instant>,
 }
+
+/// How long a finished task stays readable after it settles. The window
+/// exists only so the last poll sees `done`; nothing is kept forever, or a
+/// user who signs in again after every revocation would grow the map.
+const FINISHED_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The registry: live tasks keyed by id.
 #[derive(Default)]
@@ -108,6 +116,19 @@ pub struct SignInTasks {
     /// The server-level proxy ([`crate::config::ServerSettings::proxy`]);
     /// `start` falls back to it when the provider has none of its own.
     server_proxy: Option<String>,
+}
+
+impl Registry {
+    /// Drop tasks that finished a while ago, so the map is bounded by the
+    /// sign-ins in flight plus the last few minutes of finished ones.
+    fn prune(&mut self) {
+        let now = std::time::Instant::now();
+        self.tasks.retain(|_, handle| {
+            handle
+                .finished_at
+                .is_none_or(|at| now.duration_since(at) < FINISHED_TTL)
+        });
+    }
 }
 
 /// The process-wide registry (magpie's package-level `signIns` map).
@@ -169,7 +190,8 @@ impl SignInTasks {
     pub fn status(&self, id: &str) -> Option<SignInTask> {
         // The registry lock is never held across an await point, so
         // blocking here cannot starve the runtime.
-        let registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.prune();
         registry.tasks.get(id).map(|handle| handle.task.clone())
     }
 
@@ -307,9 +329,11 @@ impl SignInTasks {
                 task.error = error;
             })
             .await;
+            mark_finished(&inner, &id);
         });
 
         let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.prune();
         registry.tasks.insert(
             task.id.clone(),
             TaskHandle {
@@ -320,6 +344,7 @@ impl SignInTasks {
                     oauth_state: started.state,
                 },
                 accounts,
+                finished_at: None,
             },
         );
         Ok(task)
@@ -384,6 +409,7 @@ impl SignInTasks {
         });
 
         let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.prune();
         registry.tasks.insert(
             task.id.clone(),
             TaskHandle {
@@ -391,6 +417,7 @@ impl SignInTasks {
                 background: Some(background),
                 driver: TaskDriver::Copilot,
                 accounts,
+                finished_at: None,
             },
         );
         Ok(task)
@@ -466,6 +493,15 @@ async fn update_task(
     let mut registry = inner.lock().unwrap_or_else(|error| error.into_inner());
     if let Some(handle) = registry.tasks.get_mut(id) {
         f(&mut handle.task);
+    }
+}
+
+/// Note that a task has settled, so `prune` may drop it after
+/// [`FINISHED_TTL`].
+fn mark_finished(inner: &Arc<std::sync::Mutex<Registry>>, id: &str) {
+    let mut registry = inner.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(handle) = registry.tasks.get_mut(id) {
+        handle.finished_at = Some(std::time::Instant::now());
     }
 }
 

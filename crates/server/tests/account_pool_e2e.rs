@@ -259,6 +259,9 @@ fn make_app(providers: Vec<ProviderConfig>, store: FileSecretStore) -> Router {
         },
         client,
         accounts,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
@@ -271,6 +274,16 @@ fn make_app(providers: Vec<ProviderConfig>, store: FileSecretStore) -> Router {
         )),
     });
     create_router_with_state(state)
+}
+
+/// `GET /v1/accounts/quotas`: the explicit read that primes the routing
+/// cache (routing itself never waits on a quota read).
+fn quotas_request() -> Request<Body> {
+    Request::builder()
+        .uri("/v1/accounts/quotas")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap()
 }
 
 fn chat_request() -> Request<Body> {
@@ -381,17 +394,51 @@ async fn exhausted_account_goes_last() {
         store,
     );
 
+    // Routing never waits on a quota read (magpie reads allowances in the
+    // background), so the windows must already be known. The quotas
+    // endpoint is the explicit read that primes them — the UI's path.
+    let (status, _) = send(&app, quotas_request()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        upstream.quota_auths(),
+        vec!["Bearer tok-a".to_string(), "Bearer tok-b".to_string()],
+        "the quotas endpoint reads every account"
+    );
+
     let (status, body) = send(&app, chat_request()).await;
     assert_eq!(status, StatusCode::OK, "response body: {body}");
     assert_eq!(body["choices"][0]["message"]["content"], "hi");
 
     // B (room left) served first; A was never tried because B succeeded.
     assert_eq!(upstream.generate_auths(), vec!["Bearer tok-b".to_string()]);
-    // Both accounts had their quota read.
+}
+
+#[tokio::test]
+async fn routing_never_reads_quota_on_the_request_path() {
+    let (base, upstream) = spawn_upstream().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = seeded_store(&dir);
+    let app = make_app(
+        vec![gemini_provider(
+            "gemini",
+            &base,
+            vec![ACCOUNT_A.into(), ACCOUNT_B.into()],
+        )],
+        store,
+    );
+
+    // Nothing has primed the cache: serving must not go asking. Magpie
+    // reads allowances in the background and never waits on one; an
+    // account with nothing known counts as having room, so the user's order
+    // stands and the request is not delayed by two quota round trips.
+    let (status, body) = send(&app, chat_request()).await;
+    assert_eq!(status, StatusCode::OK, "response body: {body}");
     assert_eq!(
         upstream.quota_auths(),
-        vec!["Bearer tok-a".to_string(), "Bearer tok-b".to_string()]
+        Vec::<String>::new(),
+        "the request path must not read quotas"
     );
+    assert_eq!(upstream.generate_auths(), vec!["Bearer tok-a".to_string()]);
 }
 
 #[tokio::test]

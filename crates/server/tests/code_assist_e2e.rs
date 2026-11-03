@@ -274,6 +274,9 @@ impl TestEnv {
             config: server_config(code_assist_provider("gemini-oauth", &base, format, account)),
             client,
             accounts: Arc::clone(&accounts),
+            copilot_allowances: Arc::new(
+                any_converter_server::credentials::CopilotAllowances::default(),
+            ),
             usage_logger: None,
             request_logger: None,
             copilot: Arc::new(
@@ -572,6 +575,9 @@ async fn revoked_401_marks_account_and_fails_over() {
         },
         client,
         accounts,
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
         usage_logger: None,
         request_logger: None,
         copilot: Arc::new(
