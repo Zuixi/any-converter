@@ -7,8 +7,25 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use any_converter_core::convert::Format;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+
+pub mod logging;
+pub mod provider;
+pub mod routes;
+pub mod upstream_api;
+
+pub use logging::{ConsoleConfig, LogFileConfig, LoggingConfig, RequestLogConfig};
+pub use provider::{
+    ANTIGRAVITY_CODE_ASSIST_BASE, AuthScheme, GEMINI_CODE_ASSIST_BASE, PluginRef,
+    ProviderAuthConfig, ProviderConfig, ProviderEndpointConfig,
+};
+pub use routes::{ModelMetadata, ModelRouteConfig, ResolvedRoute, RouteConfig, RouteStrategy};
+pub use upstream_api::{UpstreamApi, WireCompat, copilot_api};
+
+use logging::{
+    default_console_format, default_console_output, default_false, default_log_level,
+    default_max_capture_bytes, default_max_disk_mb, default_trace_preview_bytes, default_true,
+};
 
 /// Warn (once per path) when a config that carries API keys is readable by
 /// group or others: `api_key` is plaintext in TOML, and 0644 hands it to
@@ -144,310 +161,6 @@ pub fn build_proxied_client(proxy: Option<&str>) -> Result<reqwest::Client, reqw
     }
 }
 
-/// The API an upstream speaks. Mirrors magpie's `Protocol` minus Copilot
-/// (which is an auth flavor returning Chat or Responses per model, not a
-/// protocol of its own: internal/provider/plugins.go copilotAPI).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UpstreamApi {
-    #[serde(rename = "chat")]
-    Chat,
-    #[serde(rename = "claude")]
-    Claude,
-    #[serde(rename = "responses")]
-    Responses,
-    #[serde(rename = "gemini")]
-    Gemini,
-    #[serde(rename = "code_assist")]
-    CodeAssist,
-    /// Deserialization-only shim for legacy `api = "copilot"` configs;
-    /// neither [`Self::api_for`] nor [`copilot_api`] ever returns it.
-    #[serde(rename = "copilot")]
-    Copilot,
-}
-
-impl UpstreamApi {
-    /// The client-format the wire is shaped as. [`Self::Copilot`] is not
-    /// reachable here (documented as OpenAIChat, mirroring magpie's
-    /// `copilotAPI` fallthrough).
-    pub fn to_format(self) -> Format {
-        match self {
-            UpstreamApi::Chat | UpstreamApi::Copilot => Format::OpenAIChat,
-            UpstreamApi::Claude => Format::Claude,
-            UpstreamApi::Responses => Format::OpenAIResponses,
-            UpstreamApi::Gemini | UpstreamApi::CodeAssist => Format::Gemini,
-        }
-    }
-
-    /// The path appended to the base (magpie `pathOf`, gateway.go:7520).
-    /// The `model` is only used by [`Self::Gemini`], whose path carries it.
-    pub fn path(self, model: &str, streaming: bool) -> String {
-        match self {
-            UpstreamApi::Chat => "/v1/chat/completions".to_string(),
-            UpstreamApi::Claude => "/v1/messages".to_string(),
-            UpstreamApi::Responses => "/v1/responses".to_string(),
-            UpstreamApi::Gemini if streaming => {
-                format!("/v1beta/models/{model}:streamGenerateContent")
-            }
-            UpstreamApi::Gemini => format!("/v1beta/models/{model}:generateContent"),
-            UpstreamApi::CodeAssist if streaming => {
-                "/v1internal:streamGenerateContent?alt=sse".to_string()
-            }
-            UpstreamApi::CodeAssist => "/v1internal:generateContent".to_string(),
-            // Unreachable via `api_for`; Chat's path keeps the match total.
-            UpstreamApi::Copilot => "/v1/chat/completions".to_string(),
-        }
-    }
-
-    pub fn from_format(f: Format) -> Self {
-        match f {
-            Format::OpenAIChat => UpstreamApi::Chat,
-            Format::Claude => UpstreamApi::Claude,
-            Format::OpenAIResponses => UpstreamApi::Responses,
-            Format::Gemini => UpstreamApi::Gemini,
-        }
-    }
-
-    /// The wire a plugin model is spoken to with, by its AI SDK package
-    /// (magpie pluginProtocol, internal/provider/plugins.go:200).
-    pub fn from_npm(npm: &str) -> UpstreamApi {
-        match npm {
-            "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" => UpstreamApi::Claude,
-            "@ai-sdk/openai" | "@ai-sdk/azure" => UpstreamApi::Responses,
-            "@ai-sdk/google" => UpstreamApi::CodeAssist,
-            // Copilot dispatches per model (P7); until then it — and every
-            // unknown package, including @ai-sdk/openai-compatible — speaks
-            // OpenAI Chat.
-            _ => UpstreamApi::Chat,
-        }
-    }
-}
-
-/// The wire a Copilot model is served on (magpie `copilotAPI`): gpt-5 and
-/// up — except `gpt-5-mini` — answer `/responses`; everything else
-/// (`claude-*`, earlier gpts) answers `/chat/completions`.
-///
-/// Parsed by hand instead of adding a regex dependency: magpie's `^gpt-(\d+)`
-/// is `strip_prefix("gpt-")` followed by the leading digit run.
-pub fn copilot_api(model: &str) -> UpstreamApi {
-    let Some(rest) = model.strip_prefix("gpt-") else {
-        return UpstreamApi::Chat;
-    };
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let Ok(version) = digits.parse::<u32>() else {
-        return UpstreamApi::Chat;
-    };
-    if version >= 5 && !model.starts_with("gpt-5-mini") {
-        UpstreamApi::Responses
-    } else {
-        UpstreamApi::Chat
-    }
-}
-
-/// Legacy `wire` key values from pre-`UpstreamApi` configs.
-///
-/// Read-only compatibility shim: [`ProviderConfig::effective_api`] converts
-/// it to [`UpstreamApi`] once. New configs should use the `api` key instead;
-/// nothing else in the codebase reads this field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WireCompat {
-    GeminiApi,
-    CodeAssist,
-}
-
-impl From<WireCompat> for UpstreamApi {
-    fn from(wire: WireCompat) -> Self {
-        match wire {
-            WireCompat::GeminiApi => UpstreamApi::Gemini,
-            WireCompat::CodeAssist => UpstreamApi::CodeAssist,
-        }
-    }
-}
-
-/// A provider served by an OpenCode plugin (P6.2).
-///
-/// The plugin owns the upstream transport: its loader supplies the real
-/// base URL/API key, and its model list selects the wire protocol per model.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct PluginRef {
-    /// npm spec or path, e.g. "@magpie-community/opencode-cursor-auth".
-    pub spec: String,
-    /// Directory the spec resolves from ("" = process cwd).
-    #[serde(default)]
-    pub target: String,
-}
-
-/// `format` no longer drives the wire (see [`ProviderConfig::effective_api`])
-/// and plugin providers do not need it at all, so it gets a serde default
-/// instead of being required. `Format` lives in the core crate (out of scope
-/// for a `Default` impl), hence this local fallback function.
-fn default_format() -> Format {
-    Format::OpenAIChat
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProviderConfig {
-    pub name: String,
-    #[serde(default = "default_format")]
-    pub format: Format,
-    pub base_url: String,
-    pub api_key: String,
-    /// Optional account id in the secret store (e.g. `gemini:me@example.com`).
-    /// When set, requests are signed with that account's OAuth access token
-    /// and `api_key` is ignored.
-    ///
-    /// Single-account convenience form of [`Self::accounts`]: folded in on
-    /// read ([`Self::account_ids`]), never merged — setting both is a
-    /// config error.
-    #[serde(default)]
-    pub account: Option<String>,
-    /// The account ids this provider tries, in the user's order
-    /// (`account_ids` in the secret store, e.g. `gemini:me@example.com`).
-    /// When set, requests are signed per account and `account`/`api_key`
-    /// are ignored per account. Empty = use [`Self::account`] / `api_key`.
-    #[serde(default)]
-    pub accounts: Vec<String>,
-    /// Explicit upstream API. Old configs keep using the `format` field,
-    /// which [`Self::effective_api`] falls back to via
-    /// [`UpstreamApi::from_format`]; the `format` field itself is kept for
-    /// backward compatibility only and no longer drives URL or conversion
-    /// (it remains a historical field for model routing).
-    #[serde(default)]
-    pub api: Option<UpstreamApi>,
-    /// Legacy `wire` override from pre-`UpstreamApi` configs; otherwise
-    /// inferred via [`Self::effective_api`].
-    #[serde(default)]
-    pub wire: Option<WireCompat>,
-    #[serde(default)]
-    pub model_map: HashMap<String, String>,
-    #[serde(default)]
-    pub endpoints: ProviderEndpointConfig,
-    #[serde(default)]
-    pub auth: ProviderAuthConfig,
-    /// Optional OpenCode plugin serving this provider's requests (P6.2).
-    /// When set, the plugin decides the protocol per model; `api`/`wire`
-    /// must stay unset and `base_url`/`api_key` may be empty.
-    #[serde(default)]
-    pub plugin: Option<PluginRef>,
-    /// Egress proxy for this provider's account traffic (sign-in, refresh,
-    /// revocation). Wins over [`ServerSettings::proxy`]; `None` falls back
-    /// to the server-level proxy (P10, magpie `ProxyOfLogin`).
-    #[serde(default)]
-    pub proxy: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ProviderEndpointConfig {
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub stream_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ProviderAuthConfig {
-    #[serde(default)]
-    pub scheme: Option<AuthScheme>,
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthScheme {
-    Bearer,
-    ApiKeyHeader,
-    XApiKey,
-    GoogleApiKey,
-    Anthropic,
-    None,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ModelRouteConfig {
-    pub pattern: String,
-    #[serde(default)]
-    pub provider: Option<String>,
-    #[serde(default)]
-    pub providers: Vec<String>,
-    #[serde(default)]
-    pub upstream_model: Option<String>,
-    #[serde(default)]
-    pub strategy: RouteStrategy,
-}
-
-#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum RouteStrategy {
-    #[default]
-    Priority,
-    RoundRobin,
-}
-
-/// Legacy format-based route. Not used for routing any more; kept so old configs still parse.
-#[derive(Debug, Clone, Deserialize)]
-pub struct RouteConfig {
-    pub client_format: Format,
-    pub provider: String,
-}
-
-/// Result of model-based provider resolution.
-#[derive(Debug, Clone)]
-pub struct ResolvedRoute {
-    pub provider_names: Vec<String>,
-    pub upstream_model: String,
-    pub strategy: RouteStrategy,
-}
-
-impl ModelRouteConfig {
-    /// Collect all provider names (merging `provider` and `providers` fields).
-    pub fn provider_names(&self) -> Vec<String> {
-        let mut names = Vec::new();
-        if let Some(ref p) = self.provider {
-            names.push(p.clone());
-        }
-        names.extend(self.providers.iter().cloned());
-        names
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ModelMetadata {
-    #[serde(default)]
-    pub context_window: Option<i64>,
-    #[serde(default)]
-    pub max_context_window: Option<i64>,
-    #[serde(default)]
-    pub supports_parallel_tool_calls: Option<bool>,
-    #[serde(default)]
-    pub display_name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-// ── Logging ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LoggingConfig {
-    #[serde(default = "default_log_level")]
-    pub level: String,
-    #[serde(default)]
-    pub dir: Option<String>,
-    #[serde(default = "default_max_disk_mb")]
-    pub max_disk_mb: u64,
-    #[serde(default = "default_true")]
-    pub conversion_log: bool,
-    /// Log the headers sent to the upstream provider (sensitive values redacted).
-    #[serde(default = "default_false")]
-    pub upstream_headers_log: bool,
-    #[serde(default)]
-    pub console: ConsoleConfig,
-    #[serde(default)]
-    pub files: Vec<LogFileConfig>,
-    #[serde(default)]
-    pub request_log: RequestLogConfig,
-}
-
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
@@ -463,18 +176,6 @@ impl Default for LoggingConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct RequestLogConfig {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-    #[serde(default = "default_max_capture_bytes")]
-    pub max_capture_bytes: usize,
-    #[serde(default = "default_true")]
-    pub trace_enabled: bool,
-    #[serde(default = "default_trace_preview_bytes")]
-    pub trace_max_preview_bytes: usize,
-}
-
 impl Default for RequestLogConfig {
     fn default() -> Self {
         Self {
@@ -484,18 +185,6 @@ impl Default for RequestLogConfig {
             trace_max_preview_bytes: default_trace_preview_bytes(),
         }
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ConsoleConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_console_output")]
-    pub output: String,
-    #[serde(default)]
-    pub level: Option<String>,
-    #[serde(default = "default_console_format")]
-    pub format: String,
 }
 
 impl Default for ConsoleConfig {
@@ -509,220 +198,12 @@ impl Default for ConsoleConfig {
     }
 }
 
-fn default_console_output() -> String {
-    "stdout".to_string()
-}
-
-fn default_console_format() -> String {
-    "pretty".to_string()
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LogFileConfig {
-    pub name: String,
-    #[serde(default)]
-    pub level: Option<String>,
-    #[serde(default)]
-    pub target: Option<String>,
-    #[serde(default = "default_file_format")]
-    pub format: String,
-    #[serde(default = "default_rotation")]
-    pub rotation: String,
-}
-
-fn default_file_format() -> String {
-    "json".to_string()
-}
-
-fn default_rotation() -> String {
-    "daily".to_string()
-}
-
-fn default_log_level() -> String {
-    "info".to_string()
-}
-
-fn default_max_disk_mb() -> u64 {
-    500
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_false() -> bool {
-    false
-}
-
-fn default_max_capture_bytes() -> usize {
-    10 * 1024 * 1024
-}
-
-fn default_trace_preview_bytes() -> usize {
-    2048
-}
-
 fn default_host() -> String {
     "127.0.0.1".to_string()
 }
 
 fn default_port() -> u16 {
     8080
-}
-
-/// Default Code Assist request base for Gemini CLI accounts.
-pub const GEMINI_CODE_ASSIST_BASE: &str = "https://cloudcode-pa.googleapis.com";
-
-/// Default Code Assist request base for Antigravity accounts: generation
-/// traffic is served on the `daily-` host (magpie `Base`), while
-/// `loadCodeAssist` discovery stays on the regular host (magpie
-/// `LoadBase`).
-pub const ANTIGRAVITY_CODE_ASSIST_BASE: &str = "https://daily-cloudcode-pa.googleapis.com";
-
-impl ProviderConfig {
-    /// The account ids in force: `accounts`, else `[account]`, else none.
-    /// One source of truth — `account` is folded in on read, never merged.
-    /// Empty ids and repeats are dropped so no account is ever tried twice
-    /// in one request.
-    pub fn account_ids(&self) -> Vec<&str> {
-        let mut ids: Vec<&str> = Vec::new();
-        let source: Vec<&str> = if !self.accounts.is_empty() {
-            self.accounts.iter().map(String::as_str).collect()
-        } else if let Some(account) = &self.account {
-            vec![account.as_str()]
-        } else {
-            Vec::new()
-        };
-        for id in source {
-            if !id.is_empty() && !ids.contains(&id) {
-                ids.push(id);
-            }
-        }
-        ids
-    }
-
-    /// Resolve the API used to talk to this provider.
-    ///
-    /// Precedence: explicit `api` → legacy `wire` key → account prefix
-    /// (`gemini`/`antigravity` selects [`UpstreamApi::CodeAssist`]) →
-    /// [`UpstreamApi::from_format`] of `format`.
-    pub fn effective_api(&self) -> UpstreamApi {
-        if let Some(api) = self.api {
-            return api;
-        }
-        if let Some(wire) = self.wire {
-            return wire.into();
-        }
-        // The first account's prefix drives the inference (accounts and
-        // the single `account` form fold through account_ids, P9).
-        let prefix = self.account_ids().first().and_then(|a| a.split(':').next());
-        match prefix {
-            Some("gemini" | "antigravity") => UpstreamApi::CodeAssist,
-            // Sign in with ChatGPT talks to OpenAI's own API, at /v1/responses.
-            Some("chatgpt-api") => UpstreamApi::Responses,
-            _ => UpstreamApi::from_format(self.format),
-        }
-    }
-
-    /// Resolve the API for a specific upstream model.
-    ///
-    /// Copilot accounts dispatch per model (P7, magpie `copilotAPI` via
-    /// [`copilot_api`]); every other provider speaks [`Self::effective_api`].
-    pub fn api_for(&self, model: &str) -> UpstreamApi {
-        if self.is_copilot_account() {
-            copilot_api(model)
-        } else {
-            self.effective_api()
-        }
-    }
-
-    /// Whether this provider signs in through a Copilot account
-    /// (its first account id starts with `copilot:`; P9).
-    pub fn is_copilot_account(&self) -> bool {
-        self.account_ids()
-            .first()
-            .and_then(|account| account.split(':').next())
-            == Some("copilot")
-    }
-
-    /// The egress proxy in force for this provider: the provider-level
-    /// `proxy`, else the server-level one, else none (P10).
-    pub fn proxy_for<'a>(&'a self, server_proxy: Option<&'a str>) -> Option<&'a str> {
-        self.proxy.as_deref().or(server_proxy)
-    }
-
-    /// The base Code Assist generation requests go to for this provider's
-    /// accounts: the provider's own `base_url` when set, else the account
-    /// prefix's default — `antigravity:` accounts default to the daily host
-    /// (magpie `Base`), everything else to the regular host.
-    pub fn code_assist_base(&self) -> String {
-        if !self.base_url.trim().is_empty() {
-            return self.base_url.clone();
-        }
-        match self
-            .account_ids()
-            .first()
-            .and_then(|id| id.split(':').next())
-        {
-            Some("antigravity") => ANTIGRAVITY_CODE_ASSIST_BASE.to_string(),
-            _ => GEMINI_CODE_ASSIST_BASE.to_string(),
-        }
-    }
-
-    /// The base a Sign in with ChatGPT account's requests go to: OpenAI's
-    /// own API, where the token is good (`siwcAPI`, magpie chatgpt_api.go).
-    ///
-    /// Kept without the `/v1` the other providers' bases are written without:
-    /// the request path already carries it (`/v1/responses`), so a base that
-    /// ends in `/v1` — magpie's own `siwcAPI` does — is trimmed here rather
-    /// than sending `/v1/v1/responses`.
-    pub fn chatgpt_api_base(&self) -> String {
-        let base = if self.base_url.trim().is_empty() {
-            "https://api.openai.com".to_string()
-        } else {
-            self.base_url.trim_end_matches('/').to_string()
-        };
-        base.strip_suffix("/v1").map(str::to_string).unwrap_or(base)
-    }
-
-    /// The base `loadCodeAssist` project/flags discovery goes to for this
-    /// provider's accounts: the provider's own `base_url` when set, else
-    /// the regular Code Assist host — Antigravity accounts discover on the
-    /// regular host even though generation goes to the daily one (magpie
-    /// `LoadBase`).
-    pub fn code_assist_load_base(&self) -> String {
-        if !self.base_url.trim().is_empty() {
-            return self.base_url.clone();
-        }
-        GEMINI_CODE_ASSIST_BASE.to_string()
-    }
-
-    /// Resolve a client model name to the upstream model using model_map.
-    ///
-    /// Priority: exact match → longest prefix wildcard → `"*"` → passthrough.
-    pub fn resolve_model(&self, model: &str) -> String {
-        if let Some(mapped) = self.model_map.get(model) {
-            return mapped.clone();
-        }
-        // Longest prefix wildcard match (e.g. "claude-opus-*" beats "claude-*")
-        let mut best_match: Option<(&str, &str)> = None;
-        for (pattern, target) in &self.model_map {
-            if pattern == "*" {
-                continue;
-            }
-            if glob_match(pattern, model) && best_match.is_none_or(|(p, _)| pattern.len() > p.len())
-            {
-                best_match = Some((pattern.as_str(), target.as_str()));
-            }
-        }
-        if let Some((_, target)) = best_match {
-            return target.to_string();
-        }
-        if let Some(fallback) = self.model_map.get("*") {
-            return fallback.clone();
-        }
-        model.to_string()
-    }
 }
 
 impl ServerConfig {
@@ -902,6 +383,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use any_converter_core::convert::Format;
 
     fn sample_provider(model_map: HashMap<String, String>) -> ProviderConfig {
         ProviderConfig {
