@@ -49,7 +49,7 @@ pub(crate) use serde_json::Value;
 
 pub(crate) use crate::agent_id::agent_of;
 pub(crate) use crate::auth::{self, AuthError};
-pub(crate) use crate::config::{PluginRef, RouteStrategy, ServerConfig, UpstreamApi};
+pub(crate) use crate::config::{RouteStrategy, ServerConfig, UpstreamApi};
 pub(crate) use crate::credentials::allowance::{CopilotAllowances, copilot_allowance};
 pub(crate) use crate::credentials::copilot::{
     COPILOT_DEFAULT_API_BASE, CopilotError, CopilotSessions, copilot_api_headers,
@@ -62,7 +62,7 @@ pub(crate) use crate::credentials::{
 pub(crate) use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
 pub(crate) use crate::namespace::{extract_namespace_map, patch_response_namespaces};
 pub(crate) use crate::observability::utf8_prefix;
-pub(crate) use crate::plugins::{LoadParams, ManagedHosts, PluginFetchParams, ProviderPlugin};
+pub(crate) use crate::plugins::ManagedHosts;
 pub(crate) use crate::provider_pool::order_accounts;
 pub(crate) use crate::proxy::build_upstream_url_for_provider;
 pub(crate) use crate::request_log::{RequestLogContext, RequestLogger};
