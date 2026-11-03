@@ -29,6 +29,9 @@ use uuid::Uuid;
 
 use crate::credentials::Credential;
 use crate::credentials::account::AccountResolver;
+use crate::credentials::claude_signin::CLAUDE_INSTALL_HINT;
+use crate::credentials::claude_signin::ClaudeSignIn;
+use crate::credentials::claude_signin::find_claude_cli;
 use crate::credentials::codex_signin::CodexEndpoints;
 use crate::credentials::codex_signin::CodexSignIn;
 use crate::credentials::copilot::{CopilotEndpoints, CopilotSignIn};
@@ -52,13 +55,17 @@ const COPILOT_INSTRUCTIONS: &str = "Open the verification page and enter the cod
 const CODEX_INSTRUCTIONS: &str = "Open the URL in your browser. If the browser \
 cannot reach this host or port 1455 is busy, paste the callback URL from the \
 browser's address bar below.";
+/// Claude instructions shown to the user (magpie `claudePaste`'s refusal):
+/// the code its page shows, or the address the browser ended on.
+const CLAUDE_INSTRUCTIONS: &str =
+    "paste the code Claude's page shows, or the whole address the browser ended on";
 
 /// One sign-in task snapshot (magpie `SignInState`).
 #[derive(Debug, Clone, Serialize)]
 pub struct SignInTask {
     /// Registry id (`signin-<uuid>`); also the `id` of the sign-in route.
     pub id: String,
-    /// `gemini` | `antigravity` | `codex` | `copilot`.
+    /// `gemini` | `antigravity` | `codex` | `copilot` | `claude`.
     pub provider: String,
     /// `waiting` | `done` | `failed` | `canceled`.
     pub state: String,
@@ -96,6 +103,9 @@ enum TaskDriver {
         /// The OAuth `state` `submit` must pass to `finish_pasted`.
         oauth_state: String,
     },
+    /// The Claude driver lives in the background task (the `claude auth
+    /// login` it waits on); `submit` feeds the CLI's stdin / callback.
+    Claude { sign_in: Arc<ClaudeSignIn> },
     /// The Copilot driver lives entirely in the background task; the
     /// cancel handle is the task's `background` join handle.
     Copilot,
@@ -173,10 +183,10 @@ impl SignInTasks {
         }
     }
 
-    /// Start a gemini, antigravity, codex or copilot sign-in and return
-    /// the task at once (magpie `startSignIn`). Uses the server-level
-    /// proxy; callers that resolved a provider-level proxy use
-    /// [`Self::start_with_proxy`].
+    /// Start a gemini, antigravity, codex, copilot or claude sign-in and
+    /// return the task at once (magpie `startSignIn`). Uses the
+    /// server-level proxy; callers that resolved a provider-level proxy
+    /// use [`Self::start_with_proxy`].
     pub async fn start(
         &self,
         provider: &str,
@@ -205,8 +215,10 @@ impl SignInTasks {
             }
             "codex" => self.start_codex(proxy, accounts).await,
             "copilot" => self.start_copilot(proxy, accounts).await,
+            "claude" => self.start_claude(accounts).await,
             other => Err(format!(
-                "unknown provider: {other} (supported: gemini, antigravity, codex, copilot)"
+                "unknown provider: {other} (supported: gemini, antigravity, codex, copilot, \
+                 claude)"
             )),
         }
     }
@@ -229,26 +241,69 @@ impl SignInTasks {
     /// `failed` and returns the snapshot (magpie `signInFlow.finish`).
     /// Copilot has no pasted input; submitting one is an error.
     pub async fn submit(&self, id: &str, input: &str) -> Result<SignInTask, String> {
-        let (driver, background, accounts) = {
+        // Nothing is awaited while the registry lock is held: a guard alive
+        // across an await makes the whole future non-Send, and axum's
+        // `Handler` bound then rejects the route that calls this.
+        enum Action {
+            /// A paste that goes into a running CLI (Claude).
+            IntoCli(Arc<ClaudeSignIn>),
+            /// A paste that finishes the flow here (gemini/antigravity/codex).
+            Finish {
+                driver: TaskDriver,
+                background: Option<tokio::task::JoinHandle<()>>,
+                accounts: Arc<AccountResolver>,
+            },
+            /// The task is already settled; its snapshot is the answer.
+            Settled(SignInTask),
+        }
+
+        let action = {
             let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
             let handle = registry
                 .tasks
                 .get_mut(id)
                 .ok_or_else(|| format!("sign-in task {id} not found"))?;
             if handle.task.state != STATE_WAITING {
-                // A finished task keeps its snapshot; submit is a no-op.
-                return Ok(handle.task.clone());
-            }
-            match &handle.driver {
-                TaskDriver::Copilot => {
-                    return Err("copilot has no pasted input".to_string());
+                Action::Settled(handle.task.clone())
+            } else {
+                match &handle.driver {
+                    TaskDriver::Copilot => {
+                        return Err("copilot has no pasted input".to_string());
+                    }
+                    // Claude: the pasted input goes into the running
+                    // `claude auth login` (its stdin, or the URL its browser
+                    // tab ended on); the background wait stays and settles
+                    // the task when the CLI exits. A refused paste keeps the
+                    // flow alive so a corrected one can be submitted.
+                    TaskDriver::Claude { sign_in } => Action::IntoCli(Arc::clone(sign_in)),
+                    TaskDriver::Gemini { .. } | TaskDriver::Codex { .. } => Action::Finish {
+                        driver: handle.driver.clone(),
+                        background: handle.background.take(),
+                        accounts: Arc::clone(&handle.accounts),
+                    },
                 }
-                TaskDriver::Gemini { .. } | TaskDriver::Codex { .. } => (
-                    handle.driver.clone(),
-                    handle.background.take(),
-                    handle.accounts.clone(),
-                ),
             }
+        };
+
+        let (driver, background, accounts) = match action {
+            Action::Settled(task) => return Ok(task),
+            Action::IntoCli(sign_in) => {
+                if let Err(err) = sign_in.submit(input).await {
+                    update_task(&self.inner, id, |task| {
+                        task.state = STATE_FAILED.to_string();
+                        task.error = err.to_string();
+                    })
+                    .await;
+                }
+                return self
+                    .status(id)
+                    .ok_or_else(|| format!("sign-in task {id} vanished during submit"));
+            }
+            Action::Finish {
+                driver,
+                background,
+                accounts,
+            } => (driver, background, accounts),
         };
 
         // Close the loopback listener before consuming the session: the
@@ -281,7 +336,7 @@ impl SignInTasks {
                     settle_codex(&accounts, sign_in.finish_pasted(input, &oauth_state).await).await;
                 (state, user, plan, error)
             }
-            TaskDriver::Copilot => unreachable!("copilot was refused above"),
+            TaskDriver::Copilot | TaskDriver::Claude { .. } => unreachable!("refused above"),
         };
         update_task(&self.inner, id, |task| {
             task.state = state;
@@ -544,6 +599,64 @@ impl SignInTasks {
         );
         Ok(task)
     }
+
+    /// Start a Claude sign-in: Claude Code's own `claude auth login` runs
+    /// in a temp config dir with this process as its browser; the task
+    /// reports the page's link at once, `submit` feeds the pasted code (or
+    /// the browser's final address) back to the CLI, and the background
+    /// wait settles the task when the CLI exits. A machine without the
+    /// `claude` command line fails the start with the install hint.
+    async fn start_claude(&self, accounts: Arc<AccountResolver>) -> Result<SignInTask, String> {
+        let cli = find_claude_cli(|key| std::env::var(key).ok())
+            .ok_or_else(|| CLAUDE_INSTALL_HINT.to_string())?;
+        let sign_in = Arc::new(ClaudeSignIn::new(cli));
+        let started = sign_in.start().await.map_err(|err| err.to_string())?;
+
+        let id = format!("signin-{}", Uuid::new_v4());
+        let task = SignInTask {
+            id: id.clone(),
+            provider: "claude".to_string(),
+            state: STATE_WAITING.to_string(),
+            url: started.url.clone(),
+            code: String::new(),
+            instructions: CLAUDE_INSTRUCTIONS.to_string(),
+            paste_callback: !started.paste_code,
+            paste_code: started.paste_code,
+            user: String::new(),
+            plan: String::new(),
+            error: String::new(),
+        };
+
+        let inner = self.inner.clone();
+        let wait_sign_in = sign_in.clone();
+        let wait_accounts = accounts.clone();
+        let background = tokio::spawn(async move {
+            let result = wait_sign_in.wait_inner(DEFAULT_SIGN_IN_TIMEOUT).await;
+            let (state, user, plan, error) = settle_claude(&wait_accounts, result).await;
+            update_task(&inner, &id, |task| {
+                task.state = state;
+                task.user = user;
+                task.plan = plan;
+                task.error = error;
+            })
+            .await;
+            mark_finished(&inner, &id);
+        });
+
+        let mut registry = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        registry.prune();
+        registry.tasks.insert(
+            task.id.clone(),
+            TaskHandle {
+                task: task.clone(),
+                background: Some(background),
+                driver: TaskDriver::Claude { sign_in },
+                accounts,
+                finished_at: None,
+            },
+        );
+        Ok(task)
+    }
 }
 
 /// Persist a completed Gemini/Antigravity sign-in and report
@@ -649,6 +762,47 @@ async fn settle_copilot(
         Ok(()) => (STATE_DONE.to_string(), account_id, String::new()),
         Err(err) => (
             STATE_FAILED.to_string(),
+            String::new(),
+            format!("storing the account failed: {err}"),
+        ),
+    }
+}
+
+/// Persist a completed Claude sign-in and report
+/// `(state, user, plan, error)` (the background `wait` completion).
+async fn settle_claude(
+    accounts: &AccountResolver,
+    result: Result<crate::credentials::claude_signin::ClaudeAccount, SignInError>,
+) -> (String, String, String, String) {
+    let account = match result {
+        Ok(account) => account,
+        Err(err) => {
+            return (
+                STATE_FAILED.to_string(),
+                String::new(),
+                String::new(),
+                err.to_string(),
+            );
+        }
+    };
+    let account_id = account.account_id_key();
+    let credential = Credential::OAuth {
+        provider: "claude".to_string(),
+        account: account.user.clone(),
+        access_token: account.access_token.clone(),
+        refresh_token: (!account.refresh_token.is_empty()).then(|| account.refresh_token.clone()),
+        expires_at_unix: account.expires_at_unix,
+    };
+    match accounts.store_sign_in(&account_id, credential).await {
+        Ok(()) => (
+            STATE_DONE.to_string(),
+            account.user,
+            account.plan,
+            String::new(),
+        ),
+        Err(err) => (
+            STATE_FAILED.to_string(),
+            String::new(),
             String::new(),
             format!("storing the account failed: {err}"),
         ),

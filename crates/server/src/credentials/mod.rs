@@ -89,6 +89,7 @@ impl TokenSource for ApiKeySource {
 pub mod account;
 pub mod agent_import;
 pub mod allowance;
+pub mod claude_signin;
 pub mod codex_signin;
 pub mod codex_store;
 pub mod copilot;
@@ -108,6 +109,10 @@ pub use agent_import::{
     read_codex_with_env, to_credential,
 };
 pub use allowance::{Allowance, CopilotAllowances, Limit};
+pub use claude_signin::{
+    CLAUDE_INSTALL_HINT, CLAUDE_OPENED_URL_ENV, ClaudeAccount, ClaudeCli, ClaudeSignIn,
+    ClaudeStarted, find_claude_cli,
+};
 pub use codex_signin::{CodexAccount, CodexEndpoints, CodexSignIn, CodexStarted};
 pub use codex_store::{
     CodexStore, TokenUpdate, WriteBackError, codex_store, write_tokens, write_tokens_with_timeout,
