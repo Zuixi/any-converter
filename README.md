@@ -115,7 +115,45 @@ never spend the same refresh token twice.
 Credentials live in `secrets.json` (mode `0600`, atomic writes, last-good
 backup); `ANY_CONVERTER_SECRETS` overrides the path.
 
+## Connect coding agents in one command
+
+The `agents` commands wire a coding agent's own config to the gateway for you —
+base URL, a per-agent gateway key, and the full model catalog — and disconnect
+restores the config **byte for byte** (a `.before-any-converter` backup sits
+beside each touched file as the offline rescue copy):
+
+```bash
+any-converter agents list                    # who's installed, who's connected
+any-converter agents connect claude-code     # wire Claude Code (needs the server running)
+any-converter agents connect pi --model deepseek/deepseek-chat
+any-converter agents disconnect claude-code  # restore the pre-connect config
+any-converter agents sync                    # refresh model catalogs after config changes
+any-converter agents rotate-key pi           # issue a fresh per-agent key
+```
+
+Supported agents: **Claude Code**, **Codex**, **Gemini CLI**, and **Pi**.
+The Web UI (`/agents`) offers the same operations with drift detection: if
+another tool rewrites an agent's config while it is connected, the page shows
+a "config changed externally" banner and a one-click reapply.
+
+Each connected agent gets its own gateway key (`acw_<agent>_…`), so requests
+are attributed without relying on User-Agent, keys rotate independently, and
+agent keys can call inference endpoints but never the agents management API.
+
+Notes:
+
+- The server must be running (`any-converter serve`); the CLI is a thin client.
+  If the server is down and you need to disconnect urgently, restore the
+  `.before-any-converter` file beside the agent's config manually.
+- Codex wires `~/.codex` (the main `CODEX_HOME`); its OAuth sign-in is never
+  touched — the gateway key goes into `auth.json`'s `OPENAI_API_KEY` field.
+- Claude Code: a project-level `settings.local.json` overrides user-level
+  settings, so a per-project `env` block can shadow the wiring there.
+
 ## Common client setups
+
+Manual wiring, for clients without an `agents` integration (or when you prefer
+editing configs yourself):
 
 ### Claude Code
 
