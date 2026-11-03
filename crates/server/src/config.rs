@@ -567,7 +567,7 @@ fn default_host() -> String {
 }
 
 fn default_port() -> u16 {
-    8080
+    1228
 }
 
 /// Default Code Assist request base for Gemini CLI accounts.

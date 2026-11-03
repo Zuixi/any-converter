@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const AGENTS_DYNAMIC = "force-dynamic";
 
 function getServerUrl(): string {
-  return process.env.SERVER_URL ?? "http://127.0.0.1:8080";
+  return process.env.SERVER_URL ?? "http://127.0.0.1:1228";
 }
 
 /**

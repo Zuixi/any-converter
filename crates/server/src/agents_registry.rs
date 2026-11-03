@@ -580,7 +580,12 @@ impl AgentRegistry {
 /// Builds the normalized model catalog from configured providers.
 ///
 /// Each model is exposed as `<provider>/<model>` so routing remains
-/// unambiguous when several providers share a model name.
+/// unambiguous when several providers share a model name. Both explicit
+/// `model_map` entries and `[[model_routes]]` patterns contribute: the
+/// README's recommended setup routes via `model_routes`, so a catalog that
+/// ignored them would be empty for most real configs. Wildcard patterns
+/// (containing `*` or `?`) are skipped — a pattern is not a model an agent
+/// can pick.
 pub fn catalog_from_config(config: &ServerConfig) -> ModelCatalog {
     let mut seen = std::collections::HashSet::new();
     let mut models = Vec::new();
@@ -588,13 +593,26 @@ pub fn catalog_from_config(config: &ServerConfig) -> ModelCatalog {
         let mut names: Vec<&String> = provider.model_map.keys().collect();
         names.sort();
         for name in names {
-            if name == "*" {
+            if name.contains('*') || name.contains('?') {
                 continue;
             }
             let id = format!("{}/{}", provider.name, name);
             if seen.insert(id.clone()) {
                 models.push(CatalogModel::new(id, name.clone(), false, None));
             }
+        }
+    }
+    for route in &config.model_routes {
+        if route.pattern.contains('*') || route.pattern.contains('?') {
+            continue;
+        }
+        let provider_name = route.provider.as_deref().or_else(|| route.providers.first().map(String::as_str));
+        let Some(provider_name) = provider_name else {
+            continue;
+        };
+        let id = format!("{}/{}", provider_name, route.pattern);
+        if seen.insert(id.clone()) {
+            models.push(CatalogModel::new(id, route.pattern.clone(), false, None));
         }
     }
     ModelCatalog::new(models)

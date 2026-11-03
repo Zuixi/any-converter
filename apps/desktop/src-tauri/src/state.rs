@@ -63,7 +63,7 @@ pub fn seed_defaults(db: &DesktopDb) -> Result<(), DbError> {
         db.upsert_setting("server.host.lan_default_applied", "1")?;
     }
     if !settings.contains_key("server.port") {
-        db.upsert_setting("server.port", "8080")?;
+        db.upsert_setting("server.port", "1228")?;
     }
     if !settings.contains_key("logging.max_disk_mb") {
         db.upsert_setting("logging.max_disk_mb", "500")?;
