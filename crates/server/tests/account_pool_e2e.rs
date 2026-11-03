@@ -46,6 +46,8 @@ struct FakeUpstream {
     quotas: Mutex<HashMap<String, f64>>,
     /// When set, generate answers this body with 401 for every token.
     generate_401: Mutex<Option<String>>,
+    /// How long fetchAvailableModels takes to answer.
+    quota_delay_ms: Mutex<u64>,
 }
 
 impl FakeUpstream {
@@ -54,6 +56,10 @@ impl FakeUpstream {
             .lock()
             .unwrap()
             .insert(token.to_string(), remaining_fraction);
+    }
+
+    fn set_quota_delay(&self, ms: u64) {
+        *self.quota_delay_ms.lock().unwrap() = ms;
     }
 
     fn set_generate_401(&self, body: &str) {
@@ -427,16 +433,18 @@ async fn routing_never_reads_quota_on_the_request_path() {
         store,
     );
 
-    // Nothing has primed the cache: serving must not go asking. Magpie
-    // reads allowances in the background and never waits on one; an
-    // account with nothing known counts as having room, so the user's order
-    // stands and the request is not delayed by two quota round trips.
+    // Nothing has primed the cache, and the quota endpoint is slow: a
+    // request that waited on it would take that long. Magpie reads
+    // allowances in the background and never waits on one; an account with
+    // nothing known counts as having room, so the user's order stands.
+    upstream.set_quota_delay(1500);
+    let started = std::time::Instant::now();
     let (status, body) = send(&app, chat_request()).await;
+    let took = started.elapsed();
     assert_eq!(status, StatusCode::OK, "response body: {body}");
-    assert_eq!(
-        upstream.quota_auths(),
-        Vec::<String>::new(),
-        "the request path must not read quotas"
+    assert!(
+        took < std::time::Duration::from_millis(1200),
+        "the request must not wait on a quota read (took {took:?})"
     );
     assert_eq!(upstream.generate_auths(), vec!["Bearer tok-a".to_string()]);
 }

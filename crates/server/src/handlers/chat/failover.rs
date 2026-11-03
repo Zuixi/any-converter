@@ -39,25 +39,65 @@ pub(crate) async fn classify_account_auth(
     fo: &mut Failover,
     account_id: &str,
     text: &str,
+    status: StatusCode,
 ) -> Result<AuthStep, Response> {
     let Attempt {
         state, provider, ..
     } = att;
+    let forbidden = status == StatusCode::FORBIDDEN;
     let already_retried = fo.retried();
     let has_next = fo.has_next();
-    let step = match classify_401(text) {
-        AuthErr401::Expired if !already_retried => {
+    // Refresh first, then judge — magpie's order ("a saved ChatGPT account
+    // is refreshed first, as Codex does on a 401, and a refresh that goes
+    // through marks nothing"). A 401 whose words say the sign-in is gone
+    // still gets its one refresh: the words are the vendor's, the refresh is
+    // ours to try, and only a refused refresh proves the sign-in dead.
+    //
+    // A 403 is never a spent token — magpie marks nothing on one — so it
+    // takes no refresh and simply moves on.
+    let body_says = classify_401(text);
+    let mut refreshed = false;
+    let mut refresh_refused: Option<String> = None;
+    if !already_retried && !forbidden {
+        if body_says == AuthErr401::Expired {
             info!(
                 "upstream returned token_expired request_id={} provider={} account={account_id}, refreshing once",
                 ctx.req_id, provider.name
             );
-            match state.accounts.force_refresh(account_id).await {
-                Ok(_) => AuthStep::RetrySame,
-                Err(err) => {
-                    warn!(
-                        "refresh after token_expired failed request_id={} provider={} account={account_id} error={err}, trying next account/provider",
+        } else {
+            info!(
+                "upstream returned {} request_id={} provider={} account={account_id}, refreshing once before judging the sign-in",
+                status.as_u16(),
+                ctx.req_id,
+                provider.name
+            );
+        }
+        match state.accounts.force_refresh(account_id).await {
+            Ok(_) => refreshed = true,
+            Err(err) => {
+                warn!(
+                    "refresh refused request_id={} provider={} account={account_id} error={err}",
+                    ctx.req_id, provider.name
+                );
+                refresh_refused = Some(err.to_string());
+            }
+        }
+    }
+
+    let step = if refreshed {
+        // The token was merely stale: whatever the body said, the account is
+        // fine and the request goes again with the new one.
+        AuthStep::RetrySame
+    } else {
+        match body_says {
+            AuthErr401::Expired => {
+                if already_retried {
+                    debug!(
+                        "token_expired retry already consumed request_id={} provider={} account={account_id}",
                         ctx.req_id, provider.name
                     );
+                    AuthStep::FallThrough
+                } else {
                     fo.last_error = Some(format!(
                         "provider {} account {account_id}: refresh after token_expired failed",
                         provider.name
@@ -65,43 +105,46 @@ pub(crate) async fn classify_account_auth(
                     AuthStep::Next
                 }
             }
-        }
-        AuthErr401::Expired => {
-            // The single retry for this attempt was already spent.
-            debug!(
-                "token_expired retry already consumed request_id={} provider={} account={account_id}",
-                ctx.req_id, provider.name
-            );
-            AuthStep::FallThrough
-        }
-        AuthErr401::Revoked => {
-            warn!(
-                "upstream revoked credentials request_id={} provider={} account={account_id}, marking account revoked",
-                ctx.req_id, provider.name
-            );
-            if let Err(err) = state.accounts.mark_revoked(account_id, text).await {
+            AuthErr401::Revoked => {
                 warn!(
-                    "failed to persist revoked marker request_id={} account={account_id} error={err}",
-                    ctx.req_id
+                    "upstream revoked credentials request_id={} provider={} account={account_id}, marking account revoked",
+                    ctx.req_id, provider.name
                 );
-            }
-            fo.last_error = Some(format!(
-                "provider {} account {account_id} revoked",
-                provider.name
-            ));
-            if !has_next {
-                return Err(revoked_account_response(account_id));
-            }
-            AuthStep::Next
-        }
-        AuthErr401::Unknown => {
-            // No account semantics apply; with another target left (P9)
-            // the next account/provider takes the request, otherwise the
-            // upstream's own answer goes back unchanged.
-            if has_next {
+                if let Err(err) = state.accounts.mark_revoked(account_id, text).await {
+                    warn!(
+                        "failed to persist revoked marker request_id={} account={account_id} error={err}",
+                        ctx.req_id
+                    );
+                }
+                fo.last_error = Some(match &refresh_refused {
+                    Some(why) => {
+                        format!(
+                            "provider {} account {account_id} revoked ({why})",
+                            provider.name
+                        )
+                    }
+                    None => format!("provider {} account {account_id} revoked", provider.name),
+                });
+                if !has_next {
+                    return Err(revoked_account_response(account_id));
+                }
                 AuthStep::Next
-            } else {
-                AuthStep::FallThrough
+            }
+            AuthErr401::Unknown => {
+                // No sign-in refusal in the words; with another target left
+                // (P9) the next account/provider takes the request,
+                // otherwise the upstream's answer goes back unchanged.
+                if refresh_refused.is_some() {
+                    fo.last_error = Some(format!(
+                        "provider {} account {account_id}: refresh failed",
+                        provider.name
+                    ));
+                }
+                if has_next {
+                    AuthStep::Next
+                } else {
+                    AuthStep::FallThrough
+                }
             }
         }
     };

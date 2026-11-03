@@ -575,8 +575,15 @@ pub(crate) async fn process_request(
                             ) =>
                         {
                             let (rebuilt, text) = take_error_body(response).await;
-                            match classify_account_auth(&att, &ctx, &mut fo, &account_id, &text)
-                                .await
+                            match classify_account_auth(
+                                &att,
+                                &ctx,
+                                &mut fo,
+                                &account_id,
+                                &text,
+                                status,
+                            )
+                            .await
                             {
                                 Ok(AuthStep::RetrySame) => continue,
                                 Ok(AuthStep::Next) => {
@@ -635,7 +642,9 @@ pub(crate) async fn process_request(
                 if let Some(account_id) = provider.account.clone() {
                     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
                         let text = String::from_utf8_lossy(&upstream_body);
-                        match classify_account_auth(&att, &ctx, &mut fo, &account_id, &text).await {
+                        match classify_account_auth(&att, &ctx, &mut fo, &account_id, &text, status)
+                            .await
+                        {
                             Ok(AuthStep::RetrySame) => continue,
                             Ok(AuthStep::Next) => {
                                 fo.attempt += 1;
