@@ -193,3 +193,103 @@ async fn accounts_list_never_prints_token_material() {
     assert!(!body.contains("refresh-must-not-appear"), "{body}");
     assert!(body.contains("gemini:me@example.com"), "{body}");
 }
+
+// ── plugin provider sign-in over HTTP (P17) ────────────────────────────
+
+fn node_reachable() -> bool {
+    std::process::Command::new("node")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// A registry whose plugin hosts point at the fixture package.
+fn app_with_plugins(dir: &std::path::Path) -> axum::Router {
+    let store = FileSecretStore::new(dir.join("secrets.json"));
+    let hosts = Arc::new(ManagedHosts::with_store(Arc::new(PluginAuthStore::new(
+        dir.join("plugin-auth.json"),
+    ))));
+    let state = Arc::new(AppState {
+        config: ServerConfig {
+            server: ServerSettings {
+                host: "127.0.0.1".into(),
+                port: 0,
+                api_key: None,
+                pass_through_headers: PassThroughHeadersConfig::default(),
+                proxy: None,
+            },
+            providers: vec![],
+            model_routes: vec![],
+            routes: vec![],
+            model_metadata: Default::default(),
+            logging: Default::default(),
+        },
+        client: Client::new(),
+        accounts: Arc::new(AccountResolver::new(store, Client::new())),
+        copilot: Arc::new(any_converter_server::credentials::CopilotSessions::new(
+            Client::new(),
+        )),
+        copilot_allowances: Arc::new(
+            any_converter_server::credentials::CopilotAllowances::default(),
+        ),
+        hosts,
+        usage_logger: None,
+        request_logger: None,
+    });
+    create_router_with_state(state)
+}
+
+#[tokio::test]
+async fn a_plugin_provider_can_be_signed_in_over_http() {
+    if !node_reachable() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let spec = format!("{}/tests/fixtures/plugin-hello", env!("CARGO_MANIFEST_DIR"));
+    let app = app_with_plugins(dir.path());
+
+    // `plugin:<id>` names the provider; the spec says which package serves it.
+    let body = serde_json::json!({ "provider": "plugin:hello", "spec": spec }).to_string();
+    let (status, text) = call(&app, "POST", "/v1/accounts/signin", &body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let task: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(task["state"], "waiting");
+    assert_eq!(task["provider"], "plugin:hello");
+    assert!(
+        task["url"].as_str().is_some_and(|u| !u.is_empty()),
+        "the plugin's page is reported: {text}"
+    );
+    // The fixture's one method is a "code" flow.
+    assert_eq!(task["paste_code"], true, "{text}");
+
+    let id = task["id"].as_str().unwrap();
+    let submit = serde_json::json!({ "input": "code-123" }).to_string();
+    let (status, text) = call(
+        &app,
+        "POST",
+        &format!("/v1/accounts/signin/{id}/submit"),
+        &submit,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let done: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(done["state"], "done", "{text}");
+    assert!(
+        done["user"]
+            .as_str()
+            .is_some_and(|u| u.starts_with("hello:")),
+        "the account the plugin kept is reported: {text}"
+    );
+}
+
+#[tokio::test]
+async fn a_plugin_sign_in_without_its_spec_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = app_with_plugins(dir.path());
+    let body = serde_json::json!({ "provider": "plugin:hello" }).to_string();
+    let (status, text) = call(&app, "POST", "/v1/accounts/signin", &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("spec"), "{text}");
+}

@@ -145,9 +145,16 @@ pub async fn handle_account_signin(
     // `account` is accepted for magpie parity but unused: the account id
     // is discovered from the flow result (gemini email / copilot hint).
 
+    // A provider a plugin serves is named `plugin:<id>`, and the request
+    // says which package serves it (`spec`) and which of its methods to use.
+    let spec = body.get("spec").and_then(|v| v.as_str());
+    let method = body
+        .get("method")
+        .and_then(|v| v.as_u64())
+        .map(|m| m as usize);
     let proxy = account_proxy(&state, provider);
     match sign_ins
-        .start_with_proxy(provider, proxy, state.accounts.clone())
+        .start_with_proxy_at(provider, spec, method, proxy, state.accounts.clone())
         .await
     {
         Ok(task) => Json(task).into_response(),
