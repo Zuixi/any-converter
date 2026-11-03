@@ -4,6 +4,7 @@ members = [
   "crates/server",
   "crates/cli",
   "crates/web-bridge",
+  "crates/agent-wiring",
   "apps/desktop/src-tauri",
 ]
 resolver = "2"
