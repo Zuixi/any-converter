@@ -31,6 +31,8 @@ use any_converter_server::plugins::{
 use any_converter_server::{logging::init_logging, run};
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod agents_cmd;
+
 #[derive(Debug, Clone, ValueEnum)]
 enum CliFormat {
     OpenaiChat,
@@ -129,6 +131,11 @@ enum Commands {
         #[command(subcommand)]
         command: PluginCommand,
     },
+    /// Wire AnyConverter into coding agents (thin client for a running server)
+    Agents {
+        #[command(subcommand)]
+        command: AgentsCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -214,6 +221,55 @@ enum PluginCommand {
     },
     /// List installed plugins and the providers/methods they serve
     List,
+}
+
+/// `agents` talks to a *running* server: use `--config`-free
+/// `any-converter serve` (or the Desktop app), then point the CLI at it
+/// with `ANY_CONVERTER_URL` (or the older `ANY_CONVERTER_ADDR`) and
+/// `ANY_CONVERTER_API_KEY`.
+#[derive(Subcommand)]
+enum AgentsCommand {
+    /// Show every supported agent, its wiring status, model, and key
+    List {
+        /// Print the raw API JSON instead of a table
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Print the agent list as one JSON line (for scripts)
+    Status,
+    /// Wire the agent to this server (writes its config files)
+    Connect {
+        /// Agent id (see `agents list`)
+        id: String,
+        /// Model to make the agent's default (defaults to the catalog's first)
+        #[arg(long)]
+        model: Option<String>,
+        /// Agent home to wire (sent as codexHome; the server resolves the
+        /// home it writes into)
+        #[arg(long)]
+        home: Option<String>,
+    },
+    /// Restore the agent's original config from its backup
+    Disconnect {
+        /// Agent id (see `agents list`)
+        id: String,
+        /// Agent home to restore (the server resolves the home it restores)
+        #[arg(long)]
+        home: Option<String>,
+    },
+    /// Re-apply the current model catalog (default: every connected agent)
+    Sync {
+        /// Agent id; omit to sync every connected agent
+        id: Option<String>,
+    },
+    /// Rotate the agent's gateway key and rewrite its config
+    RotateKey {
+        /// Agent id (see `agents list`)
+        id: String,
+        /// Agent home to rewrite (the server resolves the home it writes)
+        #[arg(long)]
+        home: Option<String>,
+    },
 }
 
 /// Claude Code runs this executable as its browser (`BROWSER=<exe>`): the
@@ -390,6 +446,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Accounts { command } => accounts(command).await?,
         Commands::Plugin { command } => plugin(command).await?,
+        Commands::Agents { command } => {
+            let code = agents_cmd::run(command).await;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
     }
 
     Ok(())
