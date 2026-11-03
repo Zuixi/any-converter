@@ -122,6 +122,7 @@ impl Harness {
         let hosts = Arc::new(ManagedHosts::with_store(Arc::clone(&store)));
         let names: Vec<String> = providers.iter().map(|p| p.name.clone()).collect();
         let config = ServerConfig {
+            pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 8080,

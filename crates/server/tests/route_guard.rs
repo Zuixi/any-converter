@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use any_converter_core::convert::Format;
 use any_converter_server::config::{
-    ModelRouteConfig, PassThroughHeadersConfig, ProviderConfig, RouteStrategy, ServerConfig,
-    ServerSettings,
+    LoggingConfig, ModelRouteConfig, PassThroughHeadersConfig, ProviderConfig, RouteStrategy,
+    ServerConfig, ServerSettings,
 };
 use any_converter_server::credentials::AccountResolver;
 use any_converter_server::handlers::AppState;
@@ -28,6 +28,7 @@ const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/health", ""),
     ("GET", "/v1/models", ""),
     ("GET", "/models", ""),
+    ("GET", "/v1/usage", ""),
     ("GET", "/v1/models/guard-model", ""),
     ("GET", "/models/guard-model", ""),
     ("GET", "/v1/accounts/quotas", ""),
@@ -96,6 +97,10 @@ const ROUTES: &[(&str, &str, &str)] = &[
 ];
 
 fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
+    make_app_with_log_dir(base_url, api_key, None)
+}
+
+fn make_app_with_log_dir(base_url: &str, api_key: Option<&str>, log_dir: Option<&str>) -> Router {
     let config = ServerConfig {
         server: ServerSettings {
             host: "127.0.0.1".into(),
@@ -129,7 +134,11 @@ fn make_app(base_url: &str, api_key: Option<&str>) -> Router {
         }],
         routes: vec![],
         model_metadata: Default::default(),
-        logging: Default::default(),
+        pricing: Default::default(),
+        logging: LoggingConfig {
+            dir: log_dir.map(String::from),
+            ..Default::default()
+        },
     };
     create_router_with_state(Arc::new(AppState {
         config,
@@ -167,6 +176,16 @@ async fn spawn_upstream(hits: Arc<AtomicUsize>) -> String {
 }
 
 async fn send(app: Router, method: &str, path: &str, body: &str, auth: Option<&str>) -> StatusCode {
+    send_response(app, method, path, body, auth).await.status()
+}
+
+async fn send_response(
+    app: Router,
+    method: &str,
+    path: &str,
+    body: &str,
+    auth: Option<&str>,
+) -> axum::response::Response {
     let mut builder = Request::builder()
         .uri(path)
         .method(method)
@@ -177,7 +196,16 @@ async fn send(app: Router, method: &str, path: &str, body: &str, auth: Option<&s
     app.oneshot(builder.body(Body::from(body.to_string())).unwrap())
         .await
         .unwrap()
-        .status()
+}
+
+async fn send_json(app: Router, path: &str) -> (StatusCode, serde_json::Value) {
+    let response = send_response(app, "GET", path, "", None).await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    (status, json)
 }
 
 #[tokio::test]
@@ -224,6 +252,81 @@ async fn post_routes_require_auth_and_never_reach_upstream() {
         let status = send(app.clone(), "GET", path, "", None).await;
         assert_eq!(status, StatusCode::OK, "GET {path} should be public");
     }
+}
+
+#[tokio::test]
+async fn usage_api_is_503_without_a_log_directory() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let app = make_app(&base, None);
+
+    let response = send_response(app, "GET", "/v1/usage", "", None).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("logging"),
+        "the body should name logging: {json}"
+    );
+}
+
+#[tokio::test]
+async fn usage_api_answers_an_empty_summary_for_a_fresh_log_directory() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, None, Some(dir.path().to_str().unwrap()));
+
+    let (status, json) = send_json(app, "/v1/usage").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["totals"]["calls"], 0);
+    assert_eq!(json["totals"]["input_tokens"], 0);
+    assert_eq!(json["series"].as_array().unwrap().len(), 0);
+    assert_eq!(json["by_provider"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn usage_api_requires_the_client_key() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
+
+    let status = send(app.clone(), "GET", "/v1/usage", "", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // The configured key gets in, so the guard is not simply refusing everything.
+    let status = send(app, "GET", "/v1/usage", "", Some("Bearer sk-secret")).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn usage_api_rejects_an_unknown_preset() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, None, Some(dir.path().to_str().unwrap()));
+
+    let status = send(app, "GET", "/v1/usage?preset=nonsense", "", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn usage_api_accepts_granularity_and_split_by() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, None, Some(dir.path().to_str().unwrap()));
+
+    let (status, json) = send_json(app, "/v1/usage?granularity=week&split_by=provider").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["granularity"], "week");
 }
 
 #[test]

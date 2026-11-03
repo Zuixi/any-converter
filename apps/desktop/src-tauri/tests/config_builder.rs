@@ -2,13 +2,11 @@
 
 use any_converter_core::convert::Format;
 use any_converter_core::ir::Usage;
-use any_converter_desktop::commands::{
-    get_usage_summary_from_log_dir, list_request_logs_from_log_dir,
-};
+use any_converter_desktop::commands::{list_request_logs_from_log_dir, usage_summary_from_log_dir};
 use any_converter_desktop::db::DesktopDb;
 use any_converter_desktop::state::seed_defaults;
 use any_converter_server::request_log::{RequestLogRecord, ResponseBodyKind};
-use any_converter_server::storage::SqliteStorage;
+use any_converter_server::storage::{Granularity, SqliteStorage, UsageQuery};
 use std::path::PathBuf;
 
 fn desktop_tauri_dir() -> PathBuf {
@@ -169,6 +167,32 @@ fn reads_request_logs_and_usage_from_server_log_sqlite() {
             client_format: "openai_chat".to_string(),
             client_id: None,
             session_id: None,
+            provider_account: None,
+            served_model: None,
+            ttft_ms: 0,
+            cache_unknown: false,
+            cost_usd: None,
+            price_version: None,
+            decode_ms: 0,
+            decode_out: 0,
+            own_ms: 0,
+            sent_ms: 0,
+            retried_ms: 0,
+            queued_ms: 0,
+            masking_ms: 0,
+            flow_ms: 0,
+            upstream: None,
+            effort: None,
+            tier_asked: None,
+            tier_sent: None,
+            tier_served: None,
+            subagent: None,
+            parent_agent: None,
+            kind: None,
+            attempt: 0,
+            handed_on: false,
+            error: None,
+            err_type: None,
             provider: "openai".to_string(),
             client_model: "gpt-4.1".to_string(),
             upstream_model: "gpt-4.1".to_string(),
@@ -187,6 +211,7 @@ fn reads_request_logs_and_usage_from_server_log_sqlite() {
                 output_tokens: 5,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                cache_write_1h: None,
                 reasoning_tokens: None,
             },
             trace: None,
@@ -198,9 +223,22 @@ fn reads_request_logs_and_usage_from_server_log_sqlite() {
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].request_id, "req-from-log-db");
 
-    let usage = get_usage_summary_from_log_dir(&log_dir, 10).unwrap();
-    assert_eq!(usage.len(), 1);
-    assert_eq!(usage[0].total_tokens, 15);
+    let usage = usage_summary_from_log_dir(
+        &log_dir,
+        &UsageQuery {
+            from: "2026-07-16T00:00:00Z".to_string(),
+            to: "2026-07-17T00:00:00Z".to_string(),
+            granularity: Granularity::Day,
+            provider: None,
+            model: None,
+            agent: None,
+            account: None,
+            split_by: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(usage.totals.calls, 1);
+    assert_eq!(usage.totals.input_tokens + usage.totals.output_tokens, 15);
 
     let missing = temp.path().join("missing-logs");
     assert!(
@@ -208,9 +246,23 @@ fn reads_request_logs_and_usage_from_server_log_sqlite() {
             .unwrap()
             .is_empty()
     );
-    assert!(
-        get_usage_summary_from_log_dir(&missing, 10)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        usage_summary_from_log_dir(
+            &missing,
+            &UsageQuery {
+                from: "2026-07-16T00:00:00Z".to_string(),
+                to: "2026-07-17T00:00:00Z".to_string(),
+                granularity: Granularity::Day,
+                provider: None,
+                model: None,
+                agent: None,
+                account: None,
+                split_by: None,
+            },
+        )
+        .unwrap()
+        .totals
+        .calls,
+        0
     );
 }

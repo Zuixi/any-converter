@@ -16,6 +16,7 @@ use std::collections::HashMap;
 fn sample_state() -> AppState {
     AppState {
         config: ServerConfig {
+            pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 8080,
@@ -138,6 +139,7 @@ fn estimate_input_tokens_of_empty_body_is_zero() {
 async fn test_missing_route_returns_404() {
     let state = Arc::new(AppState {
         config: ServerConfig {
+            pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 8080,

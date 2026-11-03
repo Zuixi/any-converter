@@ -242,6 +242,7 @@ fn server_config(provider: ProviderConfig) -> ServerConfig {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     }
 }
@@ -587,6 +588,7 @@ async fn revoked_401_marks_account_and_fails_over() {
             }],
             routes: vec![],
             model_metadata: Default::default(),
+            pricing: Default::default(),
             logging: Default::default(),
         },
         client,

@@ -410,6 +410,24 @@ pub async fn forward_streaming(
         let mut captured_bytes: usize = 0;
         let mut response_truncated = false;
         let mut time_to_first_byte_ms: Option<u64> = None;
+        // The content window: the first and last converted block that actually
+        // carried content. Everything else (a heartbeat, the `[DONE]` sentinel)
+        // leaves it alone, so `decode_ms` cannot be stretched by them.
+        let mut first_content_ms: Option<u64> = None;
+        let mut last_content_ms: Option<u64> = None;
+
+        // Records a content timestamp, relative to the request's start.
+        macro_rules! mark_content {
+            ($block:expr) => {
+                if carries_content($block) {
+                    if let Some(ref ctx) = log_ctx {
+                        let at = ctx.start_time.elapsed().as_millis() as u64;
+                        first_content_ms.get_or_insert(at);
+                        last_content_ms = Some(at);
+                    }
+                }
+            };
+        }
 
         while let Some(chunk_result) = upstream_stream.next().await {
             match chunk_result {
@@ -448,6 +466,7 @@ pub async fn forward_streaming(
                         }
                         for line in lines {
                             let line = patch_sse_namespaces(&line, &ns_map_owned);
+                            mark_content!(&line);
                             if should_log && !response_truncated {
                                 let line_bytes = line.len();
                                 if captured_bytes + line_bytes <= max_capture_bytes {
@@ -488,6 +507,7 @@ pub async fn forward_streaming(
                 api,
             ) {
                 let line = patch_sse_namespaces(&line, &ns_map_owned);
+                mark_content!(&line);
                 if should_log && !response_truncated {
                     let line_bytes = line.len();
                     if captured_bytes + line_bytes <= max_capture_bytes {
@@ -508,6 +528,9 @@ pub async fn forward_streaming(
         if let (Some(ctx), Some(logger)) = (log_ctx, logger) {
             let out_usage = state_out.accumulated_usage.clone().unwrap_or_default();
             let in_usage = state_in.accumulated_usage.clone().unwrap_or_default();
+            // Tokens written inside the content window, read before `usage` may
+            // fall back to the inbound side. This is the numerator of the speed.
+            let decode_out = out_usage.output_tokens;
             let usage = if out_usage.input_tokens > 0
                 || out_usage.output_tokens > 0
                 || out_usage.cache_read_tokens.is_some()
@@ -518,6 +541,9 @@ pub async fn forward_streaming(
             } else {
                 in_usage
             };
+            // Zero content points (or only one) measure nothing, so the window
+            // stays 0 instead of reporting a speed from a single instant.
+            let decode_ms = content_window(first_content_ms, last_content_ms);
             log_streaming(
                 &logger,
                 &ctx,
@@ -525,6 +551,9 @@ pub async fn forward_streaming(
                 status,
                 from_format,
                 time_to_first_byte_ms.unwrap_or(0),
+                decode_ms,
+                decode_out,
+                decode_ms,
                 usage,
                 response_truncated,
                 max_capture_bytes,
@@ -631,6 +660,29 @@ fn patch_function_call_items(
     }
 }
 
+/// Whether a converted SSE block carries content: a `data:` payload that is
+/// neither empty nor the `[DONE]` sentinel. Heartbeats and the terminator are
+/// therefore not content points and cannot move the content clock.
+fn carries_content(block: &str) -> bool {
+    block.lines().any(|line| {
+        let Some(data) = line.strip_prefix("data:") else {
+            return false;
+        };
+        let data = data.trim();
+        !data.is_empty() && data != "[DONE]"
+    })
+}
+
+/// How long the reply's content took: first content point to last, in
+/// milliseconds. Fewer than two content points measure nothing, which is `0`
+/// here rather than a division by a made-up window.
+fn content_window(first_ms: Option<u64>, last_ms: Option<u64>) -> u64 {
+    match (first_ms, last_ms) {
+        (Some(first), Some(last)) => last.saturating_sub(first),
+        _ => 0,
+    }
+}
+
 fn take_complete_sse_blocks(buffer: &mut String) -> Vec<String> {
     let mut blocks = Vec::new();
     while let Some(pos) = buffer.find("\n\n") {
@@ -697,6 +749,29 @@ mod tests {
     use super::*;
 
     const BASE: &str = "https://api.example.com";
+
+    #[test]
+    fn only_blocks_with_content_move_the_content_clock() {
+        assert!(carries_content("data: {\"delta\":\"hi\"}\n\n"));
+        assert!(carries_content(
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n"
+        ));
+        // A heartbeat (comment only, or an empty payload) is not content.
+        assert!(!carries_content(": ping\n\n"));
+        assert!(!carries_content("data:\n\n"));
+        assert!(!carries_content("data: \n\n"));
+        // Neither is the terminator: it arrives after the last token.
+        assert!(!carries_content("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn content_window_spans_the_first_and_last_content_point() {
+        // 120 ms to 920 ms is where the vendor's content was written.
+        assert_eq!(content_window(Some(120), Some(920)), 800);
+        // One content point is an instant, not a window.
+        assert_eq!(content_window(Some(120), Some(120)), 0);
+        assert_eq!(content_window(None, None), 0);
+    }
 
     #[test]
     fn test_build_upstream_url_openai_chat() {

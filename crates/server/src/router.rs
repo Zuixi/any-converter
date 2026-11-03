@@ -25,7 +25,7 @@ use crate::handlers::{
     handle_account_quotas, handle_account_release, handle_account_remove, handle_account_signin,
     handle_account_signin_cancel, handle_account_signin_status, handle_account_signin_submit,
     handle_accounts, handle_claude, handle_count_tokens, handle_gemini, handle_health,
-    handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
+    handle_model_retrieve, handle_models, handle_openai_chat, handle_responses, handle_usage_api,
 };
 use crate::plugins::{ManagedHosts, PluginAuthStore};
 use crate::signin_task::SignInTasks;
@@ -100,12 +100,15 @@ fn plugin_auth_path() -> PathBuf {
 pub fn create_router(config: ServerConfig) -> Router {
     let log_dir = config.logging.dir.clone();
     let sqlite = crate::storage::open_sqlite_storage_for_log_dir(log_dir.as_deref());
-    let usage_logger = log_dir.as_ref().map(|dir| {
-        Arc::new(crate::usage::UsageLogger::with_sqlite(
-            PathBuf::from(dir),
-            sqlite.clone(),
-        ))
-    });
+    // The JSONL usage file is an operator convenience mirror, not the store:
+    // sqlite is the single query source. Only write it when asked to.
+    let usage_logger = if config.logging.jsonl_mirror {
+        log_dir
+            .as_ref()
+            .map(|dir| Arc::new(crate::usage::UsageLogger::new(PathBuf::from(dir))))
+    } else {
+        None
+    };
     let request_logger = if config.logging.request_log.enabled {
         log_dir.as_ref().map(|dir| {
             Arc::new(crate::request_log::RequestLogger::with_sqlite(
@@ -119,8 +122,17 @@ pub fn create_router(config: ServerConfig) -> Router {
 
     if let Some(ref dir) = log_dir {
         let max_bytes = config.logging.max_disk_mb * 1024 * 1024;
-        let _disk_quota =
-            crate::disk_quota::spawn_disk_quota_manager(PathBuf::from(dir), max_bytes);
+        let policy = crate::storage::RetentionPolicy {
+            rollup_days: config.logging.rollup_retention_days,
+            log_days: config.logging.retention_days,
+            body_days: config.logging.body_retention_days,
+        };
+        let _disk_quota = crate::disk_quota::spawn_disk_quota_manager(
+            PathBuf::from(dir),
+            max_bytes,
+            sqlite.clone(),
+            policy,
+        );
     }
 
     let client = crate::config::build_proxied_client(config.server.proxy.as_deref())
@@ -174,6 +186,7 @@ pub fn create_router_with_state(state: Arc<AppState>) -> Router {
     Router::new()
         // a new route here must be added to ROUTES in crates/server/tests/route_guard.rs
         .route("/health", get(handle_health))
+        .route("/v1/usage", get(handle_usage_api))
         .route("/v1/models", get(handle_models))
         .route("/models", get(handle_models))
         .route("/v1/models/{model_id}", get(handle_model_retrieve))
@@ -278,6 +291,7 @@ mod tests {
                 },
             ],
             model_metadata: std::collections::HashMap::new(),
+            pricing: Default::default(),
             logging: LoggingConfig::default(),
         }
     }

@@ -7,8 +7,6 @@ use any_converter_server::config::{
     ConsoleConfig, LogFileConfig, LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy,
     ServerConfig, ServerSettings,
 };
-use any_converter_server::request_log::RequestLogRecord;
-use any_converter_server::storage::HourlyUsage;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -274,81 +272,8 @@ impl DesktopDb {
             routes: Vec::new(),
             model_metadata: HashMap::new(),
             logging,
+            pricing: Default::default(),
         })
-    }
-
-    pub fn list_request_logs(&self, limit: u64) -> Result<Vec<RequestLogRecord>, DbError> {
-        let conn = self.conn.lock().map_err(|_| DbError::MutexPoisoned)?;
-        let mut stmt = conn.prepare(
-            "select record_json from request_logs order by timestamp desc, id desc limit ?1",
-        )?;
-        let rows = stmt.query_map([to_i64(limit)], |row| row.get::<_, String>(0))?;
-        let mut records = Vec::new();
-        for row in rows {
-            records.push(serde_json::from_str(&row?)?);
-        }
-        Ok(records)
-    }
-
-    pub fn hourly_usage(&self, limit: u64) -> Result<Vec<HourlyUsage>, DbError> {
-        let conn = self.conn.lock().map_err(|_| DbError::MutexPoisoned)?;
-        let mut stmt = conn.prepare(
-            r#"
-            select
-                hour,
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                request_count,
-                status,
-                avg_latency_ms,
-                max_latency_ms,
-                error_count,
-                provider,
-                client_model
-            from (
-                select
-                    strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hour,
-                    sum(input_tokens) as input_tokens,
-                    sum(output_tokens) as output_tokens,
-                    sum(total_tokens) as total_tokens,
-                    count(*) as request_count,
-                    max(response_status) as status,
-                    cast(round(avg(latency_ms)) as integer) as avg_latency_ms,
-                    max(latency_ms) as max_latency_ms,
-                    sum(case when response_status >= 400 then 1 else 0 end) as error_count,
-                    min(provider) as provider,
-                    min(client_model) as client_model
-                from request_logs
-                group by hour
-                order by hour desc
-                limit ?1
-            )
-            order by hour asc
-            "#,
-        )?;
-        let rows = stmt.query_map([to_i64(limit)], |row| {
-            let avg_latency_ms = row.get::<_, u64>(6)?;
-            Ok(HourlyUsage {
-                timestamp: row.get(0)?,
-                input_tokens: row.get(1)?,
-                output_tokens: row.get(2)?,
-                total_tokens: row.get(3)?,
-                request_count: row.get(4)?,
-                status: row.get(5)?,
-                latency_ms: avg_latency_ms,
-                avg_latency_ms,
-                max_latency_ms: row.get(7)?,
-                error_count: row.get(8)?,
-                provider: row.get(9)?,
-                client_model: row.get(10)?,
-            })
-        })?;
-        let mut usage = Vec::new();
-        for row in rows {
-            usage.push(row?);
-        }
-        Ok(usage)
     }
 }
 
@@ -397,37 +322,7 @@ fn initialize_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             primary key(route_id, provider_id)
         );
 
-        create table if not exists request_logs (
-            id integer primary key autoincrement,
-            request_id text not null unique,
-            timestamp text not null,
-            client_format text not null,
-            provider text not null,
-            client_model text not null,
-            upstream_model text not null,
-            streaming integer not null,
-            method text not null,
-            path text not null,
-            request_body_json text not null,
-            upstream_request_body_json text not null,
-            response_status integer not null,
-            response_body_kind text not null,
-            response_body_json text not null,
-            latency_ms integer not null,
-            input_tokens integer not null,
-            output_tokens integer not null,
-            total_tokens integer not null,
-            cache_read_tokens integer,
-            cache_write_tokens integer,
-            reasoning_tokens integer,
-            trace_json text not null,
-            truncated integer not null,
-            record_json text not null,
-            created_at text not null default current_timestamp
-        );
-
-        create index if not exists idx_desktop_request_logs_timestamp on request_logs(timestamp);
-        create index if not exists idx_desktop_request_logs_provider_model on request_logs(provider, client_model);
+        -- `request_logs` is owned by any_converter_server::storage (migrated via user_version), not here.
         "#,
     )
 }
@@ -581,8 +476,4 @@ fn parse_u64_setting(
             })
         })
         .unwrap_or(Ok(default))
-}
-
-fn to_i64(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
 }

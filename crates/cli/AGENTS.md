@@ -8,7 +8,13 @@
 
 ```
 src/
-└── main.rs    — CLI entry: clap subcommands, dispatch to core or server
+├── main.rs    — CLI entry: clap subcommands, dispatch to core or server
+├── stats.rs   — `stats`: the usage report, one shot or `--watch`
+├── format.rs  — pure formatters (compact/money/pct/bar/hit_rate)
+└── tui/
+    ├── mod.rs  — the `--tui` loop: raw mode, poll, redraw, restore
+    ├── app.rs  — state and key reducer; `refresh` is the only IO
+    └── view.rs — render only; never queries
 ```
 
 ## Domain Constraints
@@ -25,8 +31,21 @@ src/
 | `convert` | `core::convert_request` / `convert_response` | File or stdin | stdout (JSON) |
 | `stream` | `core::convert_stream_event` | stdin (SSE blocks) | stdout (SSE lines) |
 | `serve` | `server::run` | TOML config file or inline flags | HTTP server |
+| `stats` | `server::storage::{usage_summary, ledger_page}` (read-only) | `logging.dir` or `--log-dir` | report, JSON, `--watch`, or `--tui` |
+| `accounts` | `server::credentials` | subcommands | stored sign-ins |
 
-### 3. Stdin / Stdout Handling
+### 3. TUI Escapes Everything
+
+`stats --tui` is the only path that touches the terminal: raw mode, alternate
+screen, a panic hook that restores both. Two invariants:
+
+- **Non-TTY falls back to the plain report.** Piping the command must never
+  emit escape codes — CI logs and `| head` depend on it.
+- **`view.rs` stays a pure render function.** All querying happens in
+  `app::refresh`, on the loop's own thread. Rendering that reads the database
+  is how a TUI starts stuttering.
+
+### 4. Stdin / Stdout Handling
 - Default to stdin when no input file is provided or `--stdin` is set.
 - Always ensure output ends with a newline (`\n`) if it doesn't already.
 - Read stdin fully into memory before processing (acceptable for JSON/SSE payloads).

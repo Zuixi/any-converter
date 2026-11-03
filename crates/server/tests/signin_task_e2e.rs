@@ -47,6 +47,7 @@ fn oauth_credential(provider: &str, account: &str, access_token: &str) -> Creden
 
 fn server_config() -> ServerConfig {
     ServerConfig {
+        pricing: Default::default(),
         server: ServerSettings {
             host: "127.0.0.1".into(),
             port: 8080,

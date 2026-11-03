@@ -168,6 +168,7 @@ proptest! {
             output_tokens: output,
             cache_read_tokens: cache_read,
             cache_write_tokens: None,
+            cache_write_1h: None,
             reasoning_tokens: reasoning,
         };
         prop_assert_eq!(u.total_tokens(), input + output);

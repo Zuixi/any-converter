@@ -42,6 +42,7 @@ fn app(dir: &std::path::Path, accounts: Vec<String>) -> axum::Router {
     let store = FileSecretStore::new(dir.join("secrets.json"));
     let state = Arc::new(AppState {
         config: ServerConfig {
+            pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 0,
@@ -215,6 +216,7 @@ fn app_with_plugins(dir: &std::path::Path) -> axum::Router {
     ))));
     let state = Arc::new(AppState {
         config: ServerConfig {
+            pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 0,

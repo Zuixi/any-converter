@@ -275,6 +275,10 @@ Enable request logging:
 level = "info"
 dir = "./logs"
 max_disk_mb = 500
+retention_days = 30          # request metadata
+body_retention_days = 7      # captured bodies (biggest by far)
+rollup_retention_days = 0    # hourly aggregates, 0 = forever          # 0 keeps everything
+# jsonl_mirror = true        # optional usage.YYYY-MM-DD.jsonl mirror
 
 [logging.request_log]
 enabled = true

@@ -18,6 +18,7 @@ use super::super::{api_error_response, auth_error_response, is_streaming_request
 use super::{AppState, RequestContext};
 use crate::model::{extract_model_from_body, strip_private_fields};
 use crate::request_log::RequestLogContext;
+use crate::request_log::usage;
 
 /// Rough input-token estimate: total UTF-8 bytes of every string in the body / 4.
 pub(crate) fn estimate_input_tokens(body: &Value) -> u64 {
@@ -151,6 +152,33 @@ pub(crate) fn prepare_request(
             provider_name: String::new(),
             upstream_url: String::new(),
             upstream_request_body: Vec::new(),
+            provider_account: None,
+            price: None,
+            price_version: None,
+            attempt: 0,
+            error: None,
+            err_type: None,
+            first_attempt_at: None,
+            own_ms: 0,
+            sent_ms: 0,
+            retried_ms: 0,
+            queued_ms: 0,
+            masking_ms: 0,
+            flow_ms: 0,
+            upstream: None,
+            effort: usage::extract_effort(body),
+            tier_asked: usage::extract_tier(body),
+            tier_sent: None,
+            tier_served: None,
+            subagent: headers
+                .get("x-claude-code-agent-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
+            parent_agent: headers
+                .get("x-claude-code-parent-agent-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
+            kind: usage::extract_kind(body, client_id.as_deref()),
         })
     } else {
         None
