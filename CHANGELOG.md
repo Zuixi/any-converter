@@ -1,5 +1,21 @@
 # Any Converter CHANGELOGS
 
+## Unreleased — Agent Wiring
+
+### Added
+
+- **One-command agent wiring (`agents`)**: Claude Code, Codex, Gemini CLI, and Pi can now be connected to the gateway without hand-editing their configs. `any-converter agents connect <id>` writes the gateway URL, a per-agent key, and the full model catalog into the agent's own files; `disconnect` restores them **byte for byte** (a `.before-any-converter` backup sits beside each touched file as the offline rescue copy). Same flows in the Web UI's new `/agents` page, with drift detection and one-click reapply when another tool rewrites a connected agent's config.
+- **Per-agent gateway keys (`acw_<agent>_…`)**: every connected agent gets its own key, so request attribution no longer depends on User-Agent and keys rotate independently (`agents rotate-key`). Agent keys authenticate inference endpoints only — the agents management API requires the global server key.
+- **`/v1/agents` management API**: list (with lazy drift checks), connect, disconnect, sync, key rotation, and key metadata (never plaintext) under `/v1/agents/*`.
+- **`agent-wiring` crate**: format-preserving editors (JSON/JSONC, TOML, dotenv — comments, order, CRLF, BOM survive), atomic writes, and the backup trio (snapshot/stash/applied) behind the agents feature; reusable for future agents.
+- **Model catalog from `[[model_routes]]`**: concrete (non-wildcard) route patterns now feed the agents' model catalog, so the README-recommended routing setup yields a non-empty catalog; wildcard patterns from either `model_routes` or `model_map` are excluded (a pattern is not a model an agent can pick).
+- **Chinese/English "Agents" navigation** entry and page copy.
+
+### Changed
+
+- **Default gateway port is now `1228`** (was `8080`). The server, CLI defaults, Web UI proxy fallback, and Desktop defaults all agree. **Upgrade note**: deployments that relied on the old implicit `8080` default (no explicit `port` in config) move to `1228` on upgrade — set `port = 8080` explicitly to keep it, and update any client `base_url` accordingly.
+- `resolve_provider` now also accepts catalog ids of the form `<provider>/<model>` (what agent wiring writes into configs): specific routes match the bare model name, and a catch-all `"*"` can no longer shadow a named route for prefixed ids.
+
 ## Unreleased — Web UI
 
 ### Added
