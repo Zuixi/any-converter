@@ -1,5 +1,33 @@
 # Any Converter CHANGELOGS
 
+## Unreleased — Usage Statistics
+
+### Added
+
+- **`any-converter stats --tui`**: a live terminal screen for the usage page — period, granularity, split and metric switch on single keys (`p` `g` `s` `m`), the ledger scrolls, `space` freezes it, and it refreshes once a second. Built for the case the Web UI cannot serve: no browser, or a shell where opening one is slower than pressing `q`. A non-TTY (a pipe, CI) silently falls back to the one-shot report, so no escape codes ever reach a log.
+- **`GET /v1/usage`**: the same usage summary the Web UI serves, over the gateway, so a script or a remote widget can ask what it spent without reading the database file. Requires the client key when `server.api_key` is set — it exposes spend, not just liveness — and answers a zeroed summary, not an error, when the database does not exist yet.
+- **`any-converter stats`**: a terminal report of the usage page with `--period` / `--granularity` / `--split` / `--metric` / `--json` / `--watch`.
+- **Per-provider, per-model and per-agent usage statistics.** The Usage page now breaks token usage down by provider, by model (with its provider), and by agent (the normalized client id), for today / 7 days / 30 days / all time, bucketed by hour, day, week or month. A `GET /api/usage?preset=7d&granularity=day` answers the summary; `last:24h` and `2026-01-01..2026-01-31` select a rolling window or a picked day range.
+- **Cache hit rate.** `cache_read / (input + cache_read + cache_write − cache_unknown)`, shown as an em dash when no vendor in the range counted a cache — a vendor that reports no cache tokens is never rendered as a 0% hit rate. Anthropic's 1-hour cache writes are counted separately (`cache_write_1h`).
+- **Ledger view.** A second tab lists individual calls with time, agent, provider, requested vs served model, tokens, cache traffic, cost, status, latency and TTFT. Filters cover agent, provider, model, account, failures, a text query and a single day; paging is cursor-based, and the filtered set exports to CSV.
+- **Pre-aggregated hourly rollup.** Summary queries read `rollup_hourly` instead of scanning the detail table (measured 1.40 s → 0.008 s for a 30-day provider×model ranking over 1M rows). `rebuild_rollup()` recomputes it from the detail rows if it ever drifts.
+- **Data retention.** `logging.retention_days` (default 30, `0` keeps everything) prunes request logs and their bodies from the background sweep. Previously the SQLite database had no bound at all.
+- **Optional JSONL mirrors.** `logging.jsonl_mirror` (default `false`) writes `usage.YYYY-MM-DD.jsonl` beside the database for `tail`/`jq`/backup. Nothing reads it for queries.
+
+### Changed
+
+- **SQLite is the single source of truth.** The narrow metadata and the wide body payload now live in separate tables (`request_logs` / `request_bodies`) so aggregation never drags multi-megabyte rows through a scan. Schema changes are versioned with `pragma user_version` and applied in place.
+- **Inserts are batched.** Records commit in one transaction per 256 records or 200 ms, replacing one WAL fsync per request.
+- **`/api/logs` and `/api/usage` no longer fall back to JSONL files.** A silent fallback could hide a broken database; an empty one now answers zeroed data.
+
+### Fixed
+
+- **The database could grow without bound.** `pragma auto_vacuum` was never enabled, so `pragma incremental_vacuum` in the background sweep was a no-op and deleted rows kept their pages: a 1000-row/290 MB database stayed at 290 MB after deleting 90% of it. New databases are created with `auto_vacuum = incremental` and existing ones are converted once (a single `VACUUM` at open, tens of seconds on a multi-GB file); the sweep now releases pages every tick in bounded steps.
+- **Bodies and metadata shared one retention window.** `request_bodies` (three captured bodies plus the trace, up to ~3 MiB per row) lived as long as the 30-day metadata, so keeping a month of statistics also kept a month of conversation payload. Bodies now expire after 7 days (`logging.body_retention_days`), metadata after 30 (`logging.retention_days`), and the hourly rollup is configurable separately (`logging.rollup_retention_days`, 0 = forever). Measured end to end: 40 days × 40 calls/day × 64 KiB bodies went from 106.2 MB to 19.1 MB after one retention pass.
+- **`max_capture_bytes` default dropped from 10 MiB to 1 MiB**, capping a single stored row at roughly 3 MiB instead of 30 MiB.
+- **Hourly usage attributed a whole hour to one arbitrary provider.** The old aggregate used `min(provider)` and `min(client_model)` as placeholders, so every provider's tokens in an hour were summed onto one of them. Provider and model are now real grouping keys.
+- **The write-only `usage_logs` table is gone.** It duplicated a strict subset of `request_logs` on every request and was never read.
+- **Desktop no longer declares its own `request_logs` schema.** Two owners of one table could pin an old shape on a shared database file.
 ## Unreleased — Agent Wiring
 
 ### Added

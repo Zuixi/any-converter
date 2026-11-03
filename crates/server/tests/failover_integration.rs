@@ -54,6 +54,7 @@ fn make_config(providers: Vec<ProviderConfig>) -> ServerConfig {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     }
 }

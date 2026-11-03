@@ -277,6 +277,7 @@ fn copilot_credential() -> Credential {
 /// the session's `endpoints.api` is the only source of the upstream URL.
 fn server_config() -> ServerConfig {
     ServerConfig {
+        pricing: Default::default(),
         server: ServerSettings {
             host: "127.0.0.1".into(),
             port: 8080,

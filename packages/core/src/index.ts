@@ -1,6 +1,7 @@
 export * from "./components/conversion-playground";
 export * from "./components/log-table";
 export * from "./components/usage-chart";
+export * from "./components/usage-heatmap";
 export * from "./components/config-editor";
 export * from "./components/status-card";
 export * from "./hooks/use-convert";

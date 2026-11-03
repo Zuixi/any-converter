@@ -257,6 +257,7 @@ fn gateway(format: Format, base_url: String) -> Router {
         }],
         routes: vec![],
         model_metadata: Default::default(),
+        pricing: Default::default(),
         logging: Default::default(),
     };
     create_router_with_state(Arc::new(AppState {

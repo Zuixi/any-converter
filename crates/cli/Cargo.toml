@@ -18,6 +18,8 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 chrono = { workspace = true }
+crossterm = "0.28"
+ratatui = "0.29"
 
 [lints]
 workspace = true
