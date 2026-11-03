@@ -198,7 +198,7 @@ pub(crate) async fn resolve_upstream_api(
     state: &AppState,
     provider: &crate::config::ProviderConfig,
     model: &str,
-) -> Result<UpstreamApi, Response> {
+) -> Result<UpstreamApi, Box<Response>> {
     let Some(plugin_ref) = &provider.plugin else {
         return Ok(provider.api_for(model));
     };

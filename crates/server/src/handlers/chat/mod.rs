@@ -335,7 +335,7 @@ pub(crate) async fn build_plan(
     state: &AppState,
     ctx: &RequestContext,
     provider_names: &[String],
-) -> Result<(Vec<(ProviderConfig, UpstreamApi)>, Option<String>), Response> {
+) -> Result<(Vec<(ProviderConfig, UpstreamApi)>, Option<String>), Box<Response>> {
     // P9: flatten providers × accounts into one stable attempt plan. Each
     // provider contributes its accounts in the user's order, with the ones
     // past their quota line moved last rather than reordered
@@ -464,7 +464,7 @@ pub(crate) async fn process_request(
 
     let (plan, plan_error) = match build_plan(state, &ctx, &provider_names).await {
         Ok(built) => built,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     // Failover with account-aware 401/403 handling. `fo.expired_retried`
@@ -611,7 +611,7 @@ pub(crate) async fn process_request(
                                     continue;
                                 }
                                 Ok(AuthStep::FallThrough) => rebuilt,
-                                Err(response) => return response,
+                                Err(response) => return *response,
                             }
                         }
                         _ => response,
@@ -671,7 +671,7 @@ pub(crate) async fn process_request(
                                 continue;
                             }
                             Ok(AuthStep::FallThrough) => {}
-                            Err(response) => return response,
+                            Err(response) => return *response,
                         }
                     }
                 }
