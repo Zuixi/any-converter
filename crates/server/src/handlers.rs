@@ -97,14 +97,13 @@ pub async fn handle_models(
         if provider.effective_api() != UpstreamApi::CodeAssist {
             continue;
         }
-        let Some(account_id) = provider.account.as_deref() else {
+        let Some(account_id) = provider.account_ids().first().copied() else {
             continue;
         };
-        let base = if provider.base_url.is_empty() {
-            "https://cloudcode-pa.googleapis.com".to_string()
-        } else {
-            provider.base_url.clone()
-        };
+        // Project discovery happens on the regular Code Assist host even for
+        // Antigravity, whose generation goes to the daily one (magpie
+        // `LoadBase`).
+        let base = provider.code_assist_load_base();
         match state.accounts.list_models(account_id, &base).await {
             Ok(models) => {
                 for (id, _name) in models {
@@ -1142,7 +1141,9 @@ async fn convert_and_build_upstream(
         match api {
             UpstreamApi::CodeAssist => crate::wire::build_url(
                 UpstreamApi::CodeAssist,
-                &provider.base_url,
+                // Antigravity's generation host is the daily one; a provider
+                // that names its own base keeps it (magpie app.base).
+                &provider.code_assist_base(),
                 &ctx.upstream_model,
                 ctx.streaming,
             ),

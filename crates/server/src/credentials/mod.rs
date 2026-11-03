@@ -89,6 +89,7 @@ impl TokenSource for ApiKeySource {
 pub mod account;
 pub mod agent_import;
 pub mod allowance;
+pub mod codex_signin;
 pub mod codex_store;
 pub mod copilot;
 pub mod gemini;
@@ -107,6 +108,7 @@ pub use agent_import::{
     read_codex_with_env, to_credential,
 };
 pub use allowance::{Allowance, CopilotAllowances, Limit};
+pub use codex_signin::{CodexAccount, CodexEndpoints, CodexSignIn, CodexStarted};
 pub use codex_store::{
     CodexStore, TokenUpdate, WriteBackError, codex_store, write_tokens, write_tokens_with_timeout,
 };
@@ -114,7 +116,10 @@ pub use copilot::{
     CopilotAccount, CopilotEndpoints, CopilotError, CopilotSession, CopilotSessions, CopilotSignIn,
     DeviceCodeStarted, ReqwestDeviceHttp,
 };
-pub use gemini::{GeminiAccount, GeminiEndpoints, GeminiSignIn, SignInError, SignInStarted};
+pub use gemini::{
+    ANTIGRAVITY_RISK, GeminiAccount, GeminiEndpoints, GeminiSignIn, GoogleApp, SignInError,
+    SignInStarted,
+};
 pub use gemini_models::{GEMINI_MODELS, GeminiFlags, flags_from_experiments, offered};
 pub use import::{ImportStatus, ImportedAccount, import_path};
 pub use store::{FileSecretStore, SecretStore, SecretStoreError};

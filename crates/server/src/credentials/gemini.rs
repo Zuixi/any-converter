@@ -5,7 +5,8 @@
 //! 1. [`GeminiSignIn::start`] generates a PKCE pair, binds an ephemeral
 //!    loopback `TcpListener` and returns the authorize URL to open in a
 //!    browser.
-//! 2. [`GeminiSignIn::wait`] serves `GET /oauth2callback` on that port until
+//! 2. [`GeminiSignIn::wait`] serves the endpoints' callback path (e.g.
+//!    `GET /oauth2callback`) on that port until
 //!    a callback with a matching `state` arrives (mismatches get an error
 //!    page and the wait continues), then exchanges the code for tokens and
 //!    resolves the account email via userinfo.
@@ -15,7 +16,8 @@
 //!
 //! All network interaction goes through the [`HttpExchange`] trait so unit
 //! tests can inject a fake layer; endpoints default to the public Gemini CLI
-//! OAuth client. Nothing is persisted here — persisting the resulting
+//! OAuth client, and [`GeminiEndpoints::for_app`] switches the whole set to
+//! Antigravity's. Nothing is persisted here — persisting the resulting
 //! [`GeminiAccount`] is the caller's job.
 
 use std::{
@@ -38,15 +40,65 @@ pub const GEMINI_OAUTH_SCOPES: &str = concat!(
     " https://www.googleapis.com/auth/userinfo.profile"
 );
 
+/// Scope set used by the Antigravity OAuth client (space-joined): the
+/// Gemini scopes plus `cclog` and `experimentsandconfigs` (magpie
+/// `google.go`).
+pub const ANTIGRAVITY_OAUTH_SCOPES: &str = concat!(
+    "https://www.googleapis.com/auth/cloud-platform",
+    " https://www.googleapis.com/auth/userinfo.email",
+    " https://www.googleapis.com/auth/userinfo.profile",
+    " https://www.googleapis.com/auth/cclog",
+    " https://www.googleapis.com/auth/experimentsandconfigs"
+);
+
+/// Warning shown before adding an Antigravity account (magpie
+/// `AntigravityRisk`).
+pub const ANTIGRAVITY_RISK: &str = concat!(
+    "Google may suspend an Antigravity account it sees used outside Antigravity.\n",
+    "Use one you can afford to lose."
+);
+
+/// Which Google OAuth app this sign-in serves: the Gemini CLI client or
+/// Antigravity (magpie `googleApp`). The OAuth flow is shared; only the
+/// client id/secret, scopes, callback path, loopback host and the Code
+/// Assist bases differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoogleApp {
+    /// Gemini Code Assist CLI OAuth client.
+    Gemini,
+    /// Antigravity OAuth client.
+    Antigravity,
+}
+
+impl GoogleApp {
+    /// The Code Assist request base generation traffic goes to for this
+    /// app (Antigravity is served on the `daily-` host; magpie `Base`).
+    pub const fn base(self) -> &'static str {
+        match self {
+            GoogleApp::Gemini => crate::config::GEMINI_CODE_ASSIST_BASE,
+            GoogleApp::Antigravity => crate::config::ANTIGRAVITY_CODE_ASSIST_BASE,
+        }
+    }
+
+    /// The `loadCodeAssist` discovery base for this app — always the
+    /// regular Code Assist host, even for Antigravity (magpie `LoadBase`).
+    pub const fn load_base(self) -> &'static str {
+        crate::config::GEMINI_CODE_ASSIST_BASE
+    }
+}
+
 /// Suggested `wait` deadline when the caller has no opinion.
 pub const DEFAULT_SIGN_IN_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// OAuth endpoints and client credentials.
 ///
 /// Injectable so tests (and future providers) can point at fake endpoints;
-/// [`Default`] yields the public Gemini CLI OAuth client.
+/// [`Default`] yields the public Gemini CLI OAuth client
+/// ([`Self::for_app`] with [`GoogleApp::Gemini`]).
 #[derive(Debug, Clone)]
 pub struct GeminiEndpoints {
+    /// Which Google OAuth app this endpoints set serves.
+    pub app: GoogleApp,
     /// Authorization endpoint (Google's `o/oauth2/v2/auth`).
     pub authorize_url: String,
     /// Token exchange endpoint.
@@ -57,19 +109,61 @@ pub struct GeminiEndpoints {
     pub client_id: String,
     /// OAuth client secret (public for installed-app clients).
     pub client_secret: String,
+    /// Space-joined OAuth scopes.
+    pub scopes: String,
+    /// Callback path on the loopback server (`/oauth2callback` for
+    /// Gemini, `/oauth-callback` for Antigravity).
+    pub callback_path: String,
+    /// Loopback host the redirect URI names (`127.0.0.1` for Gemini,
+    /// `localhost` for Antigravity).
+    pub loopback_host: String,
+    /// Code Assist request base for this app's accounts (generation
+    /// traffic; magpie `Base`).
+    pub base: String,
+    /// Code Assist `loadCodeAssist` base for this app's accounts (magpie
+    /// `LoadBase`).
+    pub load_base: String,
+}
+
+impl GeminiEndpoints {
+    /// Endpoints for `app`, filled from magpie's per-app difference table
+    /// (`internal/provider/google.go:82-90`).
+    pub fn for_app(app: GoogleApp) -> Self {
+        let (client_id, client_secret, scopes, callback_path, loopback_host) = match app {
+            GoogleApp::Gemini => (
+                "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
+                "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",
+                GEMINI_OAUTH_SCOPES,
+                "/oauth2callback",
+                "127.0.0.1",
+            ),
+            GoogleApp::Antigravity => (
+                "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+                "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",
+                ANTIGRAVITY_OAUTH_SCOPES,
+                "/oauth-callback",
+                "localhost",
+            ),
+        };
+        Self {
+            app,
+            authorize_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+            token_url: "https://oauth2.googleapis.com/token".to_string(),
+            userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo".to_string(),
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+            scopes: scopes.to_string(),
+            callback_path: callback_path.to_string(),
+            loopback_host: loopback_host.to_string(),
+            base: app.base().to_string(),
+            load_base: app.load_base().to_string(),
+        }
+    }
 }
 
 impl Default for GeminiEndpoints {
     fn default() -> Self {
-        Self {
-            authorize_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
-            token_url: "https://oauth2.googleapis.com/token".to_string(),
-            userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo".to_string(),
-            client_id: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j\
-                        .apps.googleusercontent.com"
-                .to_string(),
-            client_secret: "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".to_string(),
-        }
+        Self::for_app(GoogleApp::Gemini)
     }
 }
 
@@ -343,7 +437,10 @@ impl GeminiSignIn {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
-        let redirect_uri = format!("http://127.0.0.1:{port}/oauth2callback");
+        let redirect_uri = format!(
+            "http://{}:{}{}",
+            self.endpoints.loopback_host, port, self.endpoints.callback_path
+        );
         let url = build_authorize_url(&self.endpoints, &redirect_uri, &state, &challenge);
 
         *self.session.lock().await = Some(PkceSession {
@@ -384,8 +481,9 @@ impl GeminiSignIn {
             tokio::sync::mpsc::unbounded_channel::<Result<String, SignInError>>();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
+        let callback_path = self.endpoints.callback_path.clone();
         let app = Router::new().route(
-            "/oauth2callback",
+            callback_path.as_str(),
             any(move |Query(params): Query<HashMap<String, String>>| {
                 let tx = done_tx.clone();
                 let expected = expected_state.clone();
@@ -549,11 +647,11 @@ fn classify_callback(params: &HashMap<String, String>, expected_state: &str) -> 
     }
 }
 
-const SUCCESS_PAGE: &str = "<html><body><h2>Sign-in complete</h2>\
+pub(crate) const SUCCESS_PAGE: &str = "<html><body><h2>Sign-in complete</h2>\
 <p>You can close this tab and return to the application.</p></body></html>";
-const MISMATCH_PAGE: &str = "<html><body><h2>Sign-in state mismatch</h2>\
+pub(crate) const MISMATCH_PAGE: &str = "<html><body><h2>Sign-in state mismatch</h2>\
 <p>Please restart the sign-in from the application.</p></body></html>";
-const ERROR_PAGE: &str = "<html><body><h2>Sign-in failed</h2>\
+pub(crate) const ERROR_PAGE: &str = "<html><body><h2>Sign-in failed</h2>\
 <p>The provider reported an error. Please retry.</p></body></html>";
 
 // ---------------------------------------------------------------------------
@@ -562,7 +660,7 @@ const ERROR_PAGE: &str = "<html><body><h2>Sign-in failed</h2>\
 
 /// SHA-256 (FIPS 180-4), self-contained: the workspace pins no `sha2` crate
 /// and adding one is out of scope for this module.
-fn sha256(message: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(message: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -649,7 +747,7 @@ fn sha256(message: &[u8]) -> [u8; 32] {
 }
 
 /// base64url without padding (RFC 7636 code challenge encoding).
-fn base64url(data: &[u8]) -> String {
+pub(crate) fn base64url(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
@@ -672,7 +770,7 @@ fn base64url(data: &[u8]) -> String {
 }
 
 /// Lowercase hex (verifier / state encoding).
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
@@ -684,7 +782,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 /// `count` random bytes from the OS CSPRNG (via uuid v4, the workspace's
 /// only rand source).
-fn random_bytes(count: usize) -> Vec<u8> {
+pub(crate) fn random_bytes(count: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(count);
     while out.len() < count {
         out.extend_from_slice(Uuid::new_v4().as_bytes());
@@ -694,7 +792,7 @@ fn random_bytes(count: usize) -> Vec<u8> {
 }
 
 /// Percent-encode for query strings (unreserved set kept literal).
-fn percent_encode(input: &str) -> String {
+pub(crate) fn percent_encode(input: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(input.len());
     for &byte in input.as_bytes() {
@@ -710,6 +808,33 @@ fn percent_encode(input: &str) -> String {
         }
     }
     out
+}
+
+/// base64url (RFC 4648 §5) decode, padding optional — hand-rolled because
+/// the workspace adds no base64 dependency. Lives next to [`base64url`] so
+/// every user of the PKCE helpers shares one implementation (the Codex
+/// sign-in decodes id tokens with it).
+pub(crate) fn base64url_decode(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut acc: u32 = 0;
+    let mut bits = 0;
+    for c in input.trim_end_matches('=').bytes() {
+        let value = match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a' + 26),
+            b'0'..=b'9' => u32::from(c - b'0' + 52),
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
 }
 
 fn hex_value(byte: u8) -> Option<u8> {
@@ -755,7 +880,7 @@ fn percent_decode(input: &str) -> String {
 }
 
 /// `application/x-www-form-urlencoded` body (keys are static and safe).
-fn form_urlencoded(pairs: &[(&str, &str)]) -> String {
+pub(crate) fn form_urlencoded(pairs: &[(&str, &str)]) -> String {
     pairs
         .iter()
         .map(|(k, v)| format!("{k}={}", percent_encode(v)))
@@ -764,7 +889,7 @@ fn form_urlencoded(pairs: &[(&str, &str)]) -> String {
 }
 
 /// Extract decoded `(key, value)` query pairs from a pasted callback URL.
-fn query_pairs(url: &str) -> Vec<(String, String)> {
+pub(crate) fn query_pairs(url: &str) -> Vec<(String, String)> {
     // Accept either a full URL (take everything after '?') or a bare query
     // string (tests pass the latter after splitting themselves).
     let query = match url.split_once('?') {
@@ -796,7 +921,7 @@ fn build_authorize_url(
         ("response_type", "code".to_string()),
         ("client_id", percent_encode(&endpoints.client_id)),
         ("redirect_uri", percent_encode(redirect_uri)),
-        ("scope", percent_encode(GEMINI_OAUTH_SCOPES)),
+        ("scope", percent_encode(&endpoints.scopes)),
         ("access_type", "offline".to_string()),
         ("prompt", "consent".to_string()),
         ("state", percent_encode(state)),
@@ -892,13 +1017,13 @@ mod tests {
     }
 
     fn test_endpoints() -> GeminiEndpoints {
-        GeminiEndpoints {
-            authorize_url: "https://auth.example.test/authorize".to_string(),
-            token_url: "https://token.example.test/token".to_string(),
-            userinfo_url: "https://userinfo.example.test/v1/userinfo".to_string(),
-            client_id: "test-client-id".to_string(),
-            client_secret: "test-client-secret".to_string(),
-        }
+        let mut endpoints = GeminiEndpoints::for_app(GoogleApp::Gemini);
+        endpoints.authorize_url = "https://auth.example.test/authorize".to_string();
+        endpoints.token_url = "https://token.example.test/token".to_string();
+        endpoints.userinfo_url = "https://userinfo.example.test/v1/userinfo".to_string();
+        endpoints.client_id = "test-client-id".to_string();
+        endpoints.client_secret = "test-client-secret".to_string();
+        endpoints
     }
 
     fn query_map(url: &str) -> HashMap<String, String> {
@@ -1289,6 +1414,7 @@ mod tests {
     #[tokio::test]
     async fn defaults_use_public_gemini_cli_client() {
         let endpoints = GeminiEndpoints::default();
+        assert_eq!(endpoints.app, GoogleApp::Gemini);
         assert_eq!(
             endpoints.authorize_url,
             "https://accounts.google.com/o/oauth2/v2/auth"
@@ -1305,6 +1431,64 @@ mod tests {
         assert_eq!(
             endpoints.client_secret,
             "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"
+        );
+        assert_eq!(endpoints.scopes, GEMINI_OAUTH_SCOPES);
+        assert_eq!(endpoints.callback_path, "/oauth2callback");
+        assert_eq!(endpoints.loopback_host, "127.0.0.1");
+        assert_eq!(endpoints.base, "https://cloudcode-pa.googleapis.com");
+        assert_eq!(endpoints.load_base, "https://cloudcode-pa.googleapis.com");
+    }
+
+    #[test]
+    fn for_app_antigravity_fills_the_difference_table() {
+        let endpoints = GeminiEndpoints::for_app(GoogleApp::Antigravity);
+        assert_eq!(endpoints.app, GoogleApp::Antigravity);
+        assert_eq!(
+            endpoints.client_id,
+            "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            endpoints.client_secret,
+            "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"
+        );
+        assert_eq!(endpoints.scopes, ANTIGRAVITY_OAUTH_SCOPES);
+        // The five scopes: the three Gemini ones plus cclog and experiments.
+        assert_eq!(endpoints.scopes.split(' ').count(), 5);
+        assert!(endpoints.scopes.contains("cclog"));
+        assert!(endpoints.scopes.contains("experimentsandconfigs"));
+        assert_eq!(endpoints.callback_path, "/oauth-callback");
+        assert_eq!(endpoints.loopback_host, "localhost");
+        assert_eq!(endpoints.base, "https://daily-cloudcode-pa.googleapis.com");
+        assert_eq!(endpoints.load_base, "https://cloudcode-pa.googleapis.com");
+    }
+
+    #[tokio::test]
+    async fn antigravity_start_url_uses_its_callback_and_scopes() {
+        let sign_in = GeminiSignIn::new(GeminiEndpoints::for_app(GoogleApp::Antigravity));
+        let started = sign_in.start().await.unwrap();
+
+        let params = query_map(started.url.split_once('?').unwrap().1);
+        assert_eq!(
+            params.get("client_id").unwrap(),
+            "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+        );
+        assert_eq!(params.get("scope").unwrap(), ANTIGRAVITY_OAUTH_SCOPES);
+        assert_eq!(
+            params.get("redirect_uri").unwrap(),
+            &format!("http://localhost:{}/oauth-callback", started.port)
+        );
+        // Regression: Gemini keeps its own client, scopes and callback.
+        let gemini = GeminiSignIn::new(GeminiEndpoints::default());
+        let gemini_started = gemini.start().await.unwrap();
+        let gemini_params = query_map(gemini_started.url.split_once('?').unwrap().1);
+        assert_eq!(
+            gemini_params.get("client_id").unwrap(),
+            "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+        );
+        assert_eq!(gemini_params.get("scope").unwrap(), GEMINI_OAUTH_SCOPES);
+        assert_eq!(
+            gemini_params.get("redirect_uri").unwrap(),
+            &format!("http://127.0.0.1:{}/oauth2callback", gemini_started.port)
         );
     }
 

@@ -570,6 +570,15 @@ fn default_port() -> u16 {
     8080
 }
 
+/// Default Code Assist request base for Gemini CLI accounts.
+pub const GEMINI_CODE_ASSIST_BASE: &str = "https://cloudcode-pa.googleapis.com";
+
+/// Default Code Assist request base for Antigravity accounts: generation
+/// traffic is served on the `daily-` host (magpie `Base`), while
+/// `loadCodeAssist` discovery stays on the regular host (magpie
+/// `LoadBase`).
+pub const ANTIGRAVITY_CODE_ASSIST_BASE: &str = "https://daily-cloudcode-pa.googleapis.com";
+
 impl ProviderConfig {
     /// The account ids in force: `accounts`, else `[account]`, else none.
     /// One source of truth — `account` is folded in on read, never merged.
@@ -638,6 +647,36 @@ impl ProviderConfig {
     /// `proxy`, else the server-level one, else none (P10).
     pub fn proxy_for<'a>(&'a self, server_proxy: Option<&'a str>) -> Option<&'a str> {
         self.proxy.as_deref().or(server_proxy)
+    }
+
+    /// The base Code Assist generation requests go to for this provider's
+    /// accounts: the provider's own `base_url` when set, else the account
+    /// prefix's default — `antigravity:` accounts default to the daily host
+    /// (magpie `Base`), everything else to the regular host.
+    pub fn code_assist_base(&self) -> String {
+        if !self.base_url.trim().is_empty() {
+            return self.base_url.clone();
+        }
+        match self
+            .account_ids()
+            .first()
+            .and_then(|id| id.split(':').next())
+        {
+            Some("antigravity") => ANTIGRAVITY_CODE_ASSIST_BASE.to_string(),
+            _ => GEMINI_CODE_ASSIST_BASE.to_string(),
+        }
+    }
+
+    /// The base `loadCodeAssist` project/flags discovery goes to for this
+    /// provider's accounts: the provider's own `base_url` when set, else
+    /// the regular Code Assist host — Antigravity accounts discover on the
+    /// regular host even though generation goes to the daily one (magpie
+    /// `LoadBase`).
+    pub fn code_assist_load_base(&self) -> String {
+        if !self.base_url.trim().is_empty() {
+            return self.base_url.clone();
+        }
+        GEMINI_CODE_ASSIST_BASE.to_string()
     }
 
     /// Resolve a client model name to the upstream model using model_map.
@@ -1034,6 +1073,59 @@ rotation = "never"
         provider.wire = Some(WireCompat::CodeAssist);
         provider.account = Some("gemini:me@example.com".into());
         assert_eq!(provider.effective_api(), UpstreamApi::Responses);
+    }
+
+    #[test]
+    fn test_code_assist_base_defaults_and_override() {
+        // The provider's own base_url always wins, for both bases.
+        let mut provider = sample_provider(HashMap::new());
+        provider.account = Some("antigravity:me@example.com".into());
+        provider.base_url = "https://my-host.example.test".into();
+        assert_eq!(provider.code_assist_base(), "https://my-host.example.test");
+        assert_eq!(
+            provider.code_assist_load_base(),
+            "https://my-host.example.test"
+        );
+
+        // Antigravity accounts default generation to the daily host; the
+        // loadCodeAssist discovery base stays on the regular host (magpie
+        // `Base` / `LoadBase`).
+        provider.base_url = String::new();
+        provider.account = Some("antigravity:me@example.com".into());
+        assert_eq!(
+            provider.code_assist_base(),
+            "https://daily-cloudcode-pa.googleapis.com"
+        );
+        assert_eq!(
+            provider.code_assist_load_base(),
+            "https://cloudcode-pa.googleapis.com"
+        );
+
+        // The `accounts` list form folds through account_ids like the
+        // single-account field.
+        provider.account = None;
+        provider.accounts = vec!["antigravity:me@example.com".into()];
+        assert_eq!(
+            provider.code_assist_base(),
+            "https://daily-cloudcode-pa.googleapis.com"
+        );
+
+        // Gemini (and everything else) defaults both bases to the regular
+        // host.
+        provider.accounts = vec!["gemini:me@example.com".into()];
+        assert_eq!(
+            provider.code_assist_base(),
+            "https://cloudcode-pa.googleapis.com"
+        );
+        assert_eq!(
+            provider.code_assist_load_base(),
+            "https://cloudcode-pa.googleapis.com"
+        );
+        provider.accounts.clear();
+        assert_eq!(
+            provider.code_assist_base(),
+            "https://cloudcode-pa.googleapis.com"
+        );
     }
 
     #[test]
