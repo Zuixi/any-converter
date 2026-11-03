@@ -1370,6 +1370,19 @@ async fn process_request(
         };
 
         for account in candidates {
+            // A revoked account is dropped before the body is converted for
+            // it: conversion is a full JSON parse/rewrite, and a pool whose
+            // first seat is revoked would otherwise pay for it on every
+            // request just to discover the account can't serve.
+            if let Some(id) = account.as_deref() {
+                if state.accounts.is_revoked(id) {
+                    warn!(
+                        "skipping revoked account request_id={} account={id}",
+                        ctx.req_id
+                    );
+                    continue;
+                }
+            }
             let mut effective = provider.clone();
             effective.account = account;
             let api = match resolve_upstream_api(state, &effective, &ctx.upstream_model).await {
