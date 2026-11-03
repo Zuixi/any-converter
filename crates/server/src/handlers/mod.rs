@@ -20,10 +20,10 @@ pub use chat::{
 };
 pub use models::{handle_model_retrieve, handle_models};
 
-// What the sibling modules reach through `use super::*`. The first block is
-// this family's own shared surface (the error shape, the redacting helpers,
-// the streaming question); the second is the import list every module here
-// needs, re-exported once instead of repeated in each file.
+// The family's own shared surface, reached by the sibling modules through
+// `use super::...` / `use super::super::...`. Nothing else is re-exported:
+// every module writes the imports it uses, so its dependencies are visible
+// where it is read.
 pub(crate) use redact::{sanitize_headers_for_log, truncated_body};
 pub(crate) use respond::{
     HandlerError, api_error_response, auth_error_response, conversion_error_response,
@@ -31,34 +31,19 @@ pub(crate) use respond::{
 };
 pub(crate) use stream::is_streaming_request;
 
-pub(crate) use std::collections::HashMap;
-pub(crate) use std::sync::Arc;
+use std::sync::Arc;
 
-pub(crate) use any_converter_core::convert::{Format, convert_request, convert_response};
-pub(crate) use axum::{
-    Json,
-    body::Body,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
-};
-pub(crate) use log::{error, info, warn};
-pub(crate) use reqwest::Client;
-pub(crate) use serde_json::Value;
+use crate::config::ServerConfig;
+use crate::credentials::AccountResolver;
+use crate::credentials::allowance::CopilotAllowances;
+use crate::credentials::copilot::CopilotSessions;
+use crate::plugins::ManagedHosts;
+use crate::request_log::RequestLogger;
+use crate::usage::UsageLogger;
+use reqwest::Client;
 
-pub(crate) use crate::auth::{self, AuthError};
-pub(crate) use crate::config::{RouteStrategy, ServerConfig, UpstreamApi};
-pub(crate) use crate::credentials::allowance::CopilotAllowances;
-pub(crate) use crate::credentials::copilot::CopilotSessions;
-pub(crate) use crate::credentials::{AccountResolver, Allowance, ApiKeySource, TokenSource};
-pub(crate) use crate::model::{extract_model_from_body, patch_model_in_body};
-pub(crate) use crate::observability::utf8_prefix;
-pub(crate) use crate::plugins::ManagedHosts;
-pub(crate) use crate::provider_pool::order_accounts;
-pub(crate) use crate::request_log::{RequestLogContext, RequestLogger};
-pub(crate) use crate::route_strategy::order_provider_names;
-pub(crate) use crate::router::RouteInfo;
-pub(crate) use crate::usage::UsageLogger;
+// Nothing is re-exported for the sibling modules: each of them writes its
+// own imports, so a module's dependencies are visible where it is read.
 
 #[derive(Clone)]
 pub struct AppState {

@@ -14,10 +14,10 @@ use crate::config::UpstreamApi;
 use crate::namespace::extract_namespace_map;
 use crate::router::RouteInfo;
 
-use super::super::RequestLogContext;
 use super::super::{api_error_response, auth_error_response, is_streaming_request};
 use super::{AppState, RequestContext};
 use crate::model::{extract_model_from_body, strip_private_fields};
+use crate::request_log::RequestLogContext;
 
 /// Rough input-token estimate: total UTF-8 bytes of every string in the body / 4.
 pub(crate) fn estimate_input_tokens(body: &Value) -> u64 {

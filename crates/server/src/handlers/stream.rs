@@ -1,6 +1,7 @@
 //! Whether one request asks its upstream for a stream.
 
-use super::*;
+use crate::router::RouteInfo;
+use serde_json::Value;
 
 /// Detect whether the request should be streamed.
 pub fn is_streaming_request(body: &[u8], route_info: RouteInfo) -> bool {

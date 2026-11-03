@@ -1,10 +1,34 @@
 //! Model requests: routing, conversion, account selection, failover and the
 //! plugin transport.
 
-use super::accounts::{QUOTA_SHARE, cached_account_allowance};
-use super::*;
-use crate::config::ProviderConfig;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use any_converter_core::convert::Format;
+use axum::{
+    Json,
+    body::Body,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+};
+use log::{error, info, warn};
+use serde_json::Value;
+
+use crate::auth;
+use crate::config::{ProviderConfig, RouteStrategy, UpstreamApi};
+use crate::credentials::{Allowance, ApiKeySource, TokenSource};
+use crate::model::{extract_model_from_body, patch_model_in_body};
+use crate::provider_pool::order_accounts;
 use crate::request_log::RequestLogContext;
+use crate::route_strategy::order_provider_names;
+use crate::router::RouteInfo;
+
+use super::accounts::{QUOTA_SHARE, cached_account_allowance};
+use super::{
+    AppState, api_error_response, auth_error_response, conversion_error_response,
+    upstream_error_response,
+};
 
 mod failover;
 mod forward;

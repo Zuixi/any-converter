@@ -1,7 +1,7 @@
 //! Keeping secrets out of the logs: request bodies and headers are cut down
 //! and their sensitive values replaced before anything is written.
 
-use super::*;
+use crate::observability::utf8_prefix;
 
 pub(crate) fn truncated_body(body: &[u8], max_len: usize) -> String {
     let s = String::from_utf8_lossy(body);
