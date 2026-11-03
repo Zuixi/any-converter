@@ -14,6 +14,9 @@ use any_converter_server::config::{
     ServerSettings, secrets_path, warn_if_world_readable,
 };
 use any_converter_server::credentials::account::clear_revoked_default_store;
+use any_converter_server::credentials::claude_signin::{
+    CLAUDE_INSTALL_HINT, CLAUDE_OPENED_URL_ENV, ClaudeSignIn, find_claude_cli,
+};
 use any_converter_server::credentials::{
     ANTIGRAVITY_RISK, CodexSignIn, CodexStore, CopilotEndpoints, CopilotSignIn, Credential,
     FileSecretStore, FoundAccount, GeminiAccount, GeminiEndpoints, GeminiSignIn, GoogleApp,
@@ -143,6 +146,10 @@ enum AccountsCommand {
         /// Method index (defaults to 0)
         #[arg(long)]
         method: Option<usize>,
+        /// Paste the code (or the callback address) instead of reading stdin
+        /// (claude)
+        #[arg(long)]
+        code: Option<String>,
     },
     /// List stored accounts (never prints tokens)
     List,
@@ -209,8 +216,47 @@ enum PluginCommand {
     List,
 }
 
+/// Claude Code runs this executable as its browser (`BROWSER=<exe>`): the
+/// page it asks to open is written `0600` into the file
+/// `ANY_CONVERTER_OPENED_URL` names, and nothing else runs (magpie
+/// TookOpenedURL). `main` checks this before parsing any command-line
+/// arguments and returns straight away.
+pub fn took_opened_url(args: &[String], env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    let file = match env(CLAUDE_OPENED_URL_ENV) {
+        Some(file) if !file.is_empty() => file,
+        _ => return None,
+    };
+    if args.len() != 1 || !args[0].starts_with("https://") {
+        return None;
+    }
+    let path = PathBuf::from(file);
+    // A failed write changes nothing: the sign-in reports the missing link.
+    let _ = write_private(&path, &args[0]);
+    Some(path)
+}
+
+/// Write `data` to `path`, creating it with `0600` (never world-readable).
+fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(data.as_bytes())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Claude Code's `claude auth login` invokes this executable as its
+    // browser: record the page it asks to open and exit, before any
+    // command-line parsing.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if took_opened_url(&args, |key| std::env::var(key).ok()).is_some() {
+        return Ok(());
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -359,7 +405,17 @@ async fn accounts(command: AccountsCommand) -> Result<(), Box<dyn std::error::Er
             plugin,
             provider_id,
             method,
-        } => accounts_add(&provider, plugin.as_deref(), provider_id.as_deref(), method).await,
+            code,
+        } => {
+            accounts_add(
+                &provider,
+                plugin.as_deref(),
+                provider_id.as_deref(),
+                method,
+                code.as_deref(),
+            )
+            .await
+        }
         AccountsCommand::List => accounts_list(),
         AccountsCommand::Remove { account_id } => accounts_remove(&account_id),
         AccountsCommand::Order {
@@ -384,6 +440,7 @@ async fn accounts_add(
     plugin: Option<&str>,
     provider_id: Option<&str>,
     method: Option<usize>,
+    code: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(spec) = plugin {
         if spec.is_empty() {
@@ -504,10 +561,50 @@ async fn accounts_add(
             println!("any-converter provider with `account = \"{account_id}\"` in config.toml");
             println!("once a Copilot wire is available.");
         }
+        "claude" => {
+            // Claude Code's own sign-in, run by the `claude` CLI (magpie
+            // claude_signin.go); a machine without it gets the install hint.
+            let cli = find_claude_cli(|key| std::env::var(key).ok())
+                .ok_or_else(|| CLAUDE_INSTALL_HINT.to_string())?;
+            let sign_in = ClaudeSignIn::new(cli);
+            let started = sign_in.start().await?;
+            if let Some(code) = code {
+                // Non-interactive: `--code` carries what the page shows or
+                // the address the browser ended on.
+                sign_in.submit(code.trim()).await?;
+            } else {
+                println!("Open this URL in your browser to sign in:");
+                println!("  {}", started.url);
+                if started.paste_code {
+                    println!("Paste the code Claude's page shows and press enter:");
+                    let mut line = String::new();
+                    io::stdin().read_line(&mut line)?;
+                    sign_in.submit(line.trim()).await?;
+                }
+            }
+            println!("Waiting for Claude Code to finish signing in...");
+            let account = sign_in.wait(DEFAULT_SIGN_IN_TIMEOUT).await?;
+            let account_id = account.account_id_key();
+            store.put(&account_id, &claude_credential(&account))?;
+            // A fresh sign-in restores a previously revoked account.
+            if let Err(err) = clear_revoked_default_store(&account_id).await {
+                log::warn!("failed to clear revoked marker for {account_id}: {err}");
+            }
+            println!("Signed in as {} (stored as {account_id})", account.user);
+            println!();
+            println!("Add this to config.toml to serve it:");
+            println!();
+            println!("  [[providers]]");
+            println!("  name = \"claude\"");
+            println!("  format = \"claude\"");
+            println!("  base_url = \"https://api.anthropic.com\"");
+            println!("  api_key = \"\"            # unused: the account signs the requests");
+            println!("  account = \"{account_id}\"");
+        }
         _ => {
             return Err(format!(
                 "invalid value '{provider}': unknown provider: {provider} \
-                 (built-in ones are gemini, antigravity, codex, copilot; \
+                 (built-in ones are gemini, antigravity, codex, copilot, claude; \
                  use --plugin for a plugin provider)"
             )
             .into());
@@ -967,6 +1064,18 @@ fn codex_credential(account: &any_converter_server::credentials::CodexAccount) -
         account: account.email.clone(),
         access_token: account.access_token.clone(),
         refresh_token: Some(account.refresh_token.clone()),
+        expires_at_unix: account.expires_at_unix,
+    }
+}
+
+/// The credential `accounts add claude` stores for a fresh Claude sign-in
+/// (provider `"claude"`).
+fn claude_credential(account: &any_converter_server::credentials::ClaudeAccount) -> Credential {
+    Credential::OAuth {
+        provider: "claude".to_string(),
+        account: account.user.clone(),
+        access_token: account.access_token.clone(),
+        refresh_token: (!account.refresh_token.is_empty()).then(|| account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
     }
 }
