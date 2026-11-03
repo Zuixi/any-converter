@@ -1,6 +1,17 @@
 //! The model list and one model's record, as an agent asks for them.
 
-use super::*;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use log::warn;
+
+use crate::config::UpstreamApi;
+
+use super::{AppState, api_error_response};
 
 pub async fn handle_models(
     State(state): State<Arc<AppState>>,

@@ -38,7 +38,7 @@ pub(crate) use any_converter_core::convert::{Format, convert_request, convert_re
 pub(crate) use axum::{
     Json,
     body::Body,
-    extract::{Extension, Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -48,12 +48,9 @@ pub(crate) use serde_json::Value;
 
 pub(crate) use crate::auth::{self, AuthError};
 pub(crate) use crate::config::{RouteStrategy, ServerConfig, UpstreamApi};
-pub(crate) use crate::credentials::allowance::{CopilotAllowances, copilot_allowance};
+pub(crate) use crate::credentials::allowance::CopilotAllowances;
 pub(crate) use crate::credentials::copilot::CopilotSessions;
-pub(crate) use crate::credentials::signout::{self, RevokeOutcome};
-pub(crate) use crate::credentials::{
-    AccountResolver, Allowance, ApiKeySource, Credential, Limit, TokenSource,
-};
+pub(crate) use crate::credentials::{AccountResolver, Allowance, ApiKeySource, TokenSource};
 pub(crate) use crate::model::{extract_model_from_body, patch_model_in_body};
 pub(crate) use crate::observability::utf8_prefix;
 pub(crate) use crate::plugins::ManagedHosts;
@@ -61,7 +58,6 @@ pub(crate) use crate::provider_pool::order_accounts;
 pub(crate) use crate::request_log::{RequestLogContext, RequestLogger};
 pub(crate) use crate::route_strategy::order_provider_names;
 pub(crate) use crate::router::RouteInfo;
-pub(crate) use crate::signin_task::SignInTasks;
 pub(crate) use crate::usage::UsageLogger;
 
 #[derive(Clone)]
