@@ -3,6 +3,7 @@
 
 use super::accounts::{QUOTA_SHARE, cached_account_allowance};
 use super::*;
+use crate::config::ProviderConfig;
 use crate::request_log::RequestLogContext;
 
 mod failover;
@@ -251,6 +252,49 @@ pub(crate) struct RequestContext {
     log_ctx: Option<RequestLogContext>,
 }
 
+/// One attempt to serve a request from one provider — and, for an account
+/// provider, one of its seats. Bundled once so the stages below take one
+/// reference instead of threading state/provider/api/route_info through
+/// every signature. The mutable `RequestContext` is passed separately: it
+/// is the only thing any stage writes, so keeping it out here avoids
+/// borrowing it for the whole loop body.
+#[derive(Clone, Copy)]
+pub(crate) struct Attempt<'a> {
+    pub state: &'a AppState,
+    pub provider: &'a ProviderConfig,
+    pub api: UpstreamApi,
+    pub route_info: RouteInfo,
+}
+
+/// Where the failover loop stands: which target it is on, whether this
+/// attempt already spent its one refresh-and-retry, and what to report if
+/// nothing answers.
+pub(crate) struct Failover {
+    pub attempt: usize,
+    pub expired_retried: Option<usize>,
+    pub last_error: Option<String>,
+    pub plan_len: usize,
+}
+
+impl Failover {
+    pub(crate) fn new(plan_len: usize) -> Self {
+        Self {
+            attempt: 0,
+            expired_retried: None,
+            last_error: None,
+            plan_len,
+        }
+    }
+    /// Whether another target remains after this one.
+    pub(crate) fn has_next(&self) -> bool {
+        self.attempt + 1 < self.plan_len
+    }
+    /// Whether this attempt already took its one `token_expired` round.
+    pub(crate) fn retried(&self) -> bool {
+        self.expired_retried == Some(self.attempt)
+    }
+}
+
 pub(crate) async fn process_request(
     state: &AppState,
     headers: &HeaderMap,
@@ -272,6 +316,7 @@ pub(crate) async fn process_request(
     // (provider_pool); a provider with no accounts contributes a single
     // api_key slot. The same account is never tried twice in one request.
     let mut plan: Vec<(crate::config::ProviderConfig, UpstreamApi)> = Vec::new();
+    let mut plan_error: Option<String> = None;
     for provider_name in &provider_names {
         let provider = match state.config.find_provider(provider_name) {
             Some(p) => p,
@@ -280,7 +325,7 @@ pub(crate) async fn process_request(
                     "provider not found: {} request_id={}",
                     provider_name, ctx.req_id
                 );
-                last_error = Some(format!("provider not found: {provider_name}"));
+                plan_error = Some(format!("provider not found: {provider_name}"));
                 continue;
             }
         };
@@ -357,44 +402,48 @@ pub(crate) async fn process_request(
         }
     }
 
-    // Failover with account-aware 401/403 handling. `expired_retried`
+    // Failover with account-aware 401/403 handling. `fo.expired_retried`
     // remembers which attempt already consumed its single `token_expired`
     // → refresh → retry round, so an account that keeps answering
     // `token_expired` cannot loop forever.
-    let mut attempt: usize = 0;
-    let mut expired_retried: Option<usize> = None;
-    let has_next = |attempt: usize| attempt + 1 < plan.len();
+    let mut fo = Failover::new(plan.len());
+    if fo.last_error.is_none() {
+        fo.last_error = plan_error;
+    }
 
-    while attempt < plan.len() {
-        let (provider, api) = &plan[attempt];
-
-        let (converted_body, url, upstream_headers) = match convert_and_build_upstream(
-            state, headers, &body, route_info, &mut ctx, provider, *api,
-        )
-        .await
-        {
-            Ok(AccountStep::Ready {
-                converted_body,
-                url,
-                upstream_headers,
-            }) => (converted_body, url, upstream_headers),
-            Ok(AccountStep::Unavailable { response }) => {
-                // The account cannot serve this request (not signed in /
-                // revoked / Copilot refused): try the next account; the
-                // guidance below goes back only when no target remains.
-                last_error = Some(format!(
-                    "provider {} account {} unavailable",
-                    provider.name,
-                    provider.account.as_deref().unwrap_or("")
-                ));
-                if has_next(attempt) {
-                    attempt += 1;
-                    continue;
-                }
-                return response;
-            }
-            Err(response) => return *response,
+    while fo.attempt < plan.len() {
+        let (provider, api) = &plan[fo.attempt];
+        let att = Attempt {
+            state,
+            provider,
+            api: *api,
+            route_info,
         };
+
+        let (converted_body, url, upstream_headers) =
+            match convert_and_build_upstream(&att, &mut ctx, headers, &body).await {
+                Ok(AccountStep::Ready {
+                    converted_body,
+                    url,
+                    upstream_headers,
+                }) => (converted_body, url, upstream_headers),
+                Ok(AccountStep::Unavailable { response }) => {
+                    // The account cannot serve this request (not signed in /
+                    // revoked / Copilot refused): try the next account; the
+                    // guidance below goes back only when no target remains.
+                    fo.last_error = Some(format!(
+                        "provider {} account {} unavailable",
+                        provider.name,
+                        provider.account.as_deref().unwrap_or("")
+                    ));
+                    if fo.has_next() {
+                        fo.attempt += 1;
+                        continue;
+                    }
+                    return response;
+                }
+                Err(response) => return *response,
+            };
 
         // Code Assist responses are enveloped in a response wrapper that the
         // proxy unwraps to plain Gemini before conversion.
@@ -407,7 +456,7 @@ pub(crate) async fn process_request(
             provider.name,
             ctx.upstream_model,
             ctx.streaming,
-            attempt + 1
+            fo.attempt + 1
         );
 
         // Plugin transport (P6.2): the request goes through the plugin's
@@ -415,17 +464,8 @@ pub(crate) async fn process_request(
         // here is shared — the body is already converted to the per-model
         // wire protocol and the plugin URL is computed inside the branch.
         if let Some(plugin_ref) = &provider.plugin {
-            match forward_via_plugin(
-                state,
-                plugin_ref,
-                provider,
-                *api,
-                upstream_headers,
-                converted_body,
-                &mut ctx,
-                route_info,
-            )
-            .await
+            match forward_via_plugin(&att, &mut ctx, plugin_ref, upstream_headers, converted_body)
+                .await
             {
                 PluginOutcome::Answered(response, status) => {
                     // The same retry rule the http path applies: a retryable
@@ -433,14 +473,14 @@ pub(crate) async fn process_request(
                     // remains. 401/403 pass through unchanged — the plugin
                     // owns its credentials, so no local account refresh
                     // applies.
-                    if is_retryable_status(status) && has_next(attempt) {
+                    if is_retryable_status(status) && fo.has_next() {
                         warn!(
                             "plugin provider returned {} request_id={} provider={}, trying next account/provider",
                             status, ctx.req_id, provider.name
                         );
                         last_error =
                             Some(format!("provider {} returned {}", provider.name, status));
-                        attempt += 1;
+                        fo.attempt += 1;
                         continue;
                     }
                     return response;
@@ -450,8 +490,8 @@ pub(crate) async fn process_request(
                         "plugin forward failed request_id={} provider={} error={error}",
                         ctx.req_id, provider.name
                     );
-                    last_error = Some(error);
-                    attempt += 1;
+                    fo.last_error = Some(error);
+                    fo.attempt += 1;
                     continue;
                 }
             }
@@ -490,23 +530,12 @@ pub(crate) async fn process_request(
                             ) =>
                         {
                             let (rebuilt, text) = take_error_body(response).await;
-                            match classify_account_auth(
-                                state,
-                                &ctx,
-                                provider,
-                                &account_id,
-                                &text,
-                                expired_retried == Some(attempt),
-                                attempt,
-                                has_next(attempt),
-                                &mut expired_retried,
-                                &mut last_error,
-                            )
-                            .await
+                            match classify_account_auth(&att, &ctx, &mut fo, &account_id, &text)
+                                .await
                             {
                                 Ok(AuthStep::RetrySame) => continue,
                                 Ok(AuthStep::Next) => {
-                                    attempt += 1;
+                                    fo.attempt += 1;
                                     continue;
                                 }
                                 Ok(AuthStep::FallThrough) => rebuilt,
@@ -520,14 +549,14 @@ pub(crate) async fn process_request(
                     // retryable status moves to the next account/provider
                     // while one remains; otherwise the client sees the
                     // upstream answer
-                    if is_retryable_status(status) && has_next(attempt) {
+                    if is_retryable_status(status) && fo.has_next() {
                         warn!(
                             "upstream returned {} request_id={} provider={}, trying next account/provider",
                             status, ctx.req_id, provider.name
                         );
                         last_error =
                             Some(format!("provider {} returned {}", provider.name, status));
-                        attempt += 1;
+                        fo.attempt += 1;
                         continue;
                     }
                     return response;
@@ -537,8 +566,8 @@ pub(crate) async fn process_request(
                         "streaming forward failed request_id={} provider={} error={}",
                         ctx.req_id, provider.name, err
                     );
-                    last_error = Some(err);
-                    attempt += 1;
+                    fo.last_error = Some(err);
+                    fo.attempt += 1;
                     continue;
                 }
             }
@@ -561,23 +590,10 @@ pub(crate) async fn process_request(
                 if let Some(account_id) = provider.account.clone() {
                     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
                         let text = String::from_utf8_lossy(&upstream_body);
-                        match classify_account_auth(
-                            state,
-                            &ctx,
-                            provider,
-                            &account_id,
-                            &text,
-                            expired_retried == Some(attempt),
-                            attempt,
-                            has_next(attempt),
-                            &mut expired_retried,
-                            &mut last_error,
-                        )
-                        .await
-                        {
+                        match classify_account_auth(&att, &ctx, &mut fo, &account_id, &text).await {
                             Ok(AuthStep::RetrySame) => continue,
                             Ok(AuthStep::Next) => {
-                                attempt += 1;
+                                fo.attempt += 1;
                                 continue;
                             }
                             Ok(AuthStep::FallThrough) => {}
@@ -586,23 +602,21 @@ pub(crate) async fn process_request(
                     }
                 }
 
-                if is_retryable_status(status) && has_next(attempt) {
+                if is_retryable_status(status) && fo.has_next() {
                     warn!(
                         "upstream returned {} request_id={} provider={}, trying next account/provider",
                         status, ctx.req_id, provider.name
                     );
-                    last_error = Some(format!("provider {} returned {}", provider.name, status));
-                    attempt += 1;
+                    fo.last_error = Some(format!("provider {} returned {}", provider.name, status));
+                    fo.attempt += 1;
                     continue;
                 }
 
                 return match build_non_streaming_response(
-                    state,
+                    &att,
+                    &ctx,
                     &upstream_body,
                     status,
-                    route_info,
-                    &ctx,
-                    provider,
                     response_format,
                 ) {
                     Ok(response) => response,
@@ -614,8 +628,8 @@ pub(crate) async fn process_request(
                     "upstream request failed request_id={} provider={} error={}",
                     ctx.req_id, provider.name, err
                 );
-                last_error = Some(err);
-                attempt += 1;
+                fo.last_error = Some(err);
+                fo.attempt += 1;
                 continue;
             }
         }

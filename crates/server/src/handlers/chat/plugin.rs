@@ -6,12 +6,11 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use log::error;
 
-use crate::config::{PluginRef, UpstreamApi};
+use crate::config::PluginRef;
 use crate::plugins::{LoadParams, PluginFetchParams, ProviderPlugin};
-use crate::router::RouteInfo;
 
 use super::super::api_error_response;
-use super::{AppState, RequestContext};
+use super::{Attempt, RequestContext};
 
 /// Outcome of one plugin-transport attempt in the failover loop.
 pub(crate) enum PluginOutcome {
@@ -29,15 +28,19 @@ pub(crate) enum PluginOutcome {
 /// steering credentialed requests anywhere but its own base host.
 #[allow(clippy::too_many_arguments)] // provider-branch boundary: state, config, and converted request parts
 pub(crate) async fn forward_via_plugin(
-    state: &AppState,
+    att: &Attempt<'_>,
+    ctx: &mut RequestContext,
     plugin_ref: &PluginRef,
-    provider: &crate::config::ProviderConfig,
-    api: UpstreamApi,
     upstream_headers: Vec<(String, String)>,
     converted_body: Vec<u8>,
-    ctx: &mut RequestContext,
-    route_info: RouteInfo,
 ) -> PluginOutcome {
+    let Attempt {
+        state,
+        provider,
+        api,
+        route_info,
+    } = att;
+    let api = *api;
     let account = provider.account.clone().unwrap_or_default();
 
     // Lazily start (and reuse) the plugin subprocess; `host_for` restarts

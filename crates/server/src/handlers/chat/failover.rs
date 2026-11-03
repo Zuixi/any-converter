@@ -11,7 +11,7 @@ use log::{debug, info, warn};
 use crate::credentials::token::{AuthErr401, classify_401};
 
 use super::super::api_error_response;
-use super::{AppState, RequestContext};
+use super::{Attempt, Failover, RequestContext};
 
 /// Failover-loop action for one provider attempt after an account-aware
 /// 401/403.
@@ -33,19 +33,18 @@ pub(crate) enum AuthStep {
 /// Only the account id and the verdict are logged — never the response
 /// body, which can echo tokens. `Err(response)` ends the request right
 /// here (revoked account without another target).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn classify_account_auth(
-    state: &AppState,
+    att: &Attempt<'_>,
     ctx: &RequestContext,
-    provider: &crate::config::ProviderConfig,
+    fo: &mut Failover,
     account_id: &str,
     text: &str,
-    already_retried: bool,
-    attempt: usize,
-    has_next: bool,
-    expired_retried: &mut Option<usize>,
-    last_error: &mut Option<String>,
 ) -> Result<AuthStep, Response> {
+    let Attempt {
+        state, provider, ..
+    } = att;
+    let already_retried = fo.retried();
+    let has_next = fo.has_next();
     let step = match classify_401(text) {
         AuthErr401::Expired if !already_retried => {
             info!(
@@ -59,7 +58,7 @@ pub(crate) async fn classify_account_auth(
                         "refresh after token_expired failed request_id={} provider={} account={account_id} error={err}, trying next account/provider",
                         ctx.req_id, provider.name
                     );
-                    *last_error = Some(format!(
+                    fo.last_error = Some(format!(
                         "provider {} account {account_id}: refresh after token_expired failed",
                         provider.name
                     ));
@@ -86,7 +85,7 @@ pub(crate) async fn classify_account_auth(
                     ctx.req_id
                 );
             }
-            *last_error = Some(format!(
+            fo.last_error = Some(format!(
                 "provider {} account {account_id} revoked",
                 provider.name
             ));
@@ -109,7 +108,7 @@ pub(crate) async fn classify_account_auth(
 
     match step {
         AuthStep::RetrySame => {
-            *expired_retried = Some(attempt);
+            fo.expired_retried = Some(fo.attempt);
             Ok(AuthStep::RetrySame)
         }
         AuthStep::Next => Ok(AuthStep::Next),
