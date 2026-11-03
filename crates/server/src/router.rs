@@ -148,7 +148,10 @@ pub fn create_router(config: ServerConfig) -> Router {
 /// seeded here with the server-level proxy so `run_with_shutdown` can
 /// cancel every outstanding task on exit.
 pub fn create_router_with_state(state: Arc<AppState>) -> Router {
-    let sign_ins = SignInTasks::init(state.config.server.proxy.clone());
+    let sign_ins = SignInTasks::init(
+        state.config.server.proxy.clone(),
+        Some(Arc::clone(&state.hosts)),
+    );
     Router::new()
         // a new route here must be added to ROUTES in crates/server/tests/route_guard.rs
         .route("/health", get(handle_health))
