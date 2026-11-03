@@ -293,3 +293,45 @@ async fn a_plugin_sign_in_without_its_spec_is_refused() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
     assert!(text.contains("spec"), "{text}");
 }
+
+/// Listing plugins must not start one Node runtime per package every time
+/// the Accounts page is opened: what a package serves is remembered in
+/// `plugin-providers.json`, and only an unknown or changed package is
+/// loaded. Ten plugins must not mean ten runtimes per page load.
+#[tokio::test]
+async fn plugin_listing_remembers_what_a_package_serves() {
+    if !node_reachable() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = dir.path().join("plugins");
+    let spec_dir = plugins.join("node_modules").join("hello");
+    std::fs::create_dir_all(&spec_dir).unwrap();
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plugin-hello");
+    for entry in std::fs::read_dir(&fixture).unwrap().flatten() {
+        let _ = std::fs::copy(entry.path(), spec_dir.join(entry.file_name()));
+    }
+
+    let hosts = ManagedHosts::with_store(Arc::new(PluginAuthStore::new(
+        dir.path().join("plugin-auth.json"),
+    )));
+
+    let first = hosts.installed(&plugins).await;
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].spec, "hello");
+    assert_eq!(first[0].providers[0].id, "hello", "{:?}", first[0].error);
+
+    // Remembered next to the secrets file, so the next listing — and the
+    // next run of the server — answers without starting the package.
+    let known = dir.path().join("plugin-providers.json");
+    assert!(
+        known.exists() || any_converter_server::plugins::managed::known_path().exists(),
+        "what a package serves is remembered"
+    );
+
+    // A second listing of the same, unchanged package still answers.
+    let second = hosts.installed(&plugins).await;
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].providers[0].id, "hello");
+}

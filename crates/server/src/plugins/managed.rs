@@ -68,6 +68,69 @@ pub struct InstalledPlugin {
     pub error: String,
 }
 
+/// What a package was found to serve, and the state of its directory when
+/// we found it (`plugin-providers.json`, as magpie keeps it).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Known {
+    /// Modification time and size of the package directory, so an upgrade
+    /// of the package is noticed without loading it.
+    stamp: u64,
+    #[serde(default)]
+    providers: Vec<PluginProviderInfo>,
+    #[serde(default)]
+    error: String,
+}
+
+/// `<config>/plugin-providers.json`.
+pub fn known_path() -> std::path::PathBuf {
+    crate::config::secrets_path()
+        .parent()
+        .map(|dir| dir.join("plugin-providers.json"))
+        .unwrap_or_else(|| std::path::PathBuf::from("plugin-providers.json"))
+}
+
+fn load_known() -> std::collections::BTreeMap<String, Known> {
+    std::fs::read(known_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// A cheap fingerprint of the package directory: installed or upgraded, the
+/// entry we remembered is stale and the package is loaded again.
+fn package_stamp(r: &PluginRef) -> u64 {
+    let dir = std::path::Path::new(if r.target.is_empty() { "." } else { &r.target })
+        .join("node_modules")
+        .join(&r.spec);
+    let Ok(meta) = std::fs::metadata(&dir) else {
+        return 0;
+    };
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    mtime ^ meta.len().wrapping_mul(1_000_003)
+}
+
+/// Remember what `spec` serves. Best effort: a listing that can't be
+/// written is still a correct listing.
+fn remember(spec: &str, stamp: u64, providers: &[PluginProviderInfo], error: &str) {
+    let mut all = load_known();
+    all.insert(
+        spec.to_string(),
+        Known {
+            stamp,
+            providers: providers.to_vec(),
+            error: error.to_string(),
+        },
+    );
+    if let Ok(bytes) = serde_json::to_vec_pretty(&all) {
+        let _ = crate::credentials::store::write_private(&known_path(), &bytes);
+    }
+}
+
 /// `<config>/plugins`: where `plugin install` puts a package. `ANY_CONVERTER_PLUGINS`
 /// overrides it (the same name the CLI uses).
 pub fn plugins_dir() -> std::path::PathBuf {
@@ -193,25 +256,50 @@ impl ManagedHosts {
     }
 
     /// Every plugin installed under `dir`, with the providers each serves.
-    /// A spec that won't load is reported with why, never skipped silently.
+    ///
+    /// Listing must not start a process per package: an account page that
+    /// spawns ten Node runtimes before it can draw is not a listing, it is a
+    /// stampede. What each package serves is therefore remembered in
+    /// `plugin-providers.json` (magpie keeps the same file for the same
+    /// reason) and only a package we have never loaded — or one whose
+    /// directory has changed since — is started. A package that won't load
+    /// is reported with why, never skipped silently.
     pub async fn installed(&self, dir: &std::path::Path) -> Vec<InstalledPlugin> {
+        let known = load_known();
         let mut out = Vec::new();
         for spec in installed_specs(dir) {
             let r = PluginRef {
                 spec: spec.clone(),
                 target: dir.to_string_lossy().into_owned(),
             };
+            let stamp = package_stamp(&r);
+            if let Some(entry) = known.get(&spec) {
+                if entry.stamp == stamp {
+                    out.push(InstalledPlugin {
+                        spec,
+                        providers: entry.providers.clone(),
+                        error: entry.error.clone(),
+                    });
+                    continue;
+                }
+            }
             match self.providers(&r).await {
-                Ok(providers) => out.push(InstalledPlugin {
-                    spec,
-                    providers,
-                    error: String::new(),
-                }),
-                Err(err) => out.push(InstalledPlugin {
-                    spec,
-                    providers: Vec::new(),
-                    error: err.to_string(),
-                }),
+                Ok(providers) => {
+                    remember(&spec, stamp, &providers, "");
+                    out.push(InstalledPlugin {
+                        spec,
+                        providers,
+                        error: String::new(),
+                    });
+                }
+                Err(err) => {
+                    remember(&spec, stamp, &[], &err.to_string());
+                    out.push(InstalledPlugin {
+                        spec,
+                        providers: Vec::new(),
+                        error: err.to_string(),
+                    });
+                }
             }
         }
         out
