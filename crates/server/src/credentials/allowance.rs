@@ -87,13 +87,20 @@ impl Allowance {
             .fold(0.0, f64::max)
     }
 
-    /// Whether the account is past `share` on every window counting for
-    /// it: at least one window counts for the model and each of them
-    /// reads `share` percent used or more at `now`. An account with no
-    /// matching window is not exhausted — nothing says it is.
+    /// Whether the account is past `share` on the window that decides it.
+    ///
+    /// magpie reads an account's use as the **fullest** of the windows that
+    /// count for the model (`Allowance.For` takes a max), so one spent window
+    /// is enough: a five-hour window at 100% beside a weekly at 10% is an
+    /// account that answers 429 until the shorter one renews, and routing
+    /// moves it last. Requiring every window to be spent would keep it in
+    /// front and spend a request discovering that.
+    ///
+    /// An account with no matching window is not exhausted — nothing says
+    /// it is.
     pub fn exhausted(&self, model: &str, share: f64, now: SystemTime) -> bool {
         let windows = self.for_model(model, now);
-        !windows.is_empty() && windows.iter().all(|limit| limit.used_now(now) >= share)
+        !windows.is_empty() && windows.iter().any(|limit| limit.used_now(now) >= share)
     }
 }
 
@@ -424,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn test_exhausted_when_every_window_is_past_the_share() {
+    fn test_exhausted_when_windows_are_past_the_share() {
         let allowance = Allowance::new(vec![
             limit(96.0, resets_in(3600), None),
             limit(99.0, resets_in(7200), Some("gemini")),
@@ -434,19 +441,26 @@ mod tests {
 
     #[test]
     fn test_exhausted_when_only_one_window_is_over() {
-        // One window over the share is not enough: the account still has
-        // room in the other window counting for the model.
+        // One spent window is enough (magpie reads an account's use as the
+        // fullest of its windows): the five-hour one answers 429 until it
+        // renews, whatever the weekly says.
         let allowance = Allowance::new(vec![
             limit(99.0, resets_in(3600), Some("gemini")),
             limit(50.0, resets_in(7200), Some("gemini")),
         ]);
-        assert!(!allowance.exhausted("gemini-3.5-flash", 95.0, NOW));
-        // An expired window reads 0: past the line once, it leaves room.
+        assert!(allowance.exhausted("gemini-3.5-flash", 95.0, NOW));
+        // An expired window reads 0, so it no longer is the fullest.
         let allowance = Allowance::new(vec![
             limit(99.0, resets_in(-1), None),
             limit(50.0, resets_in(7200), None),
         ]);
         assert!(!allowance.exhausted("anything", 95.0, NOW));
+        // A window of other models doesn't count for this one.
+        let allowance = Allowance::new(vec![
+            limit(99.0, resets_in(3600), Some("claude")),
+            limit(50.0, resets_in(7200), Some("gemini")),
+        ]);
+        assert!(!allowance.exhausted("gemini-3.5-flash", 95.0, NOW));
     }
 
     #[test]

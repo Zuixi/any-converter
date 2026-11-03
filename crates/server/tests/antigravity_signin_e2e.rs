@@ -10,6 +10,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::sync::Arc;
+
 use std::collections::HashMap;
 
 use any_converter_server::credentials::gemini::{
@@ -173,4 +175,76 @@ fn antigravity_endpoints_carry_the_difference_table() {
     assert_eq!(gemini.loopback_host, "127.0.0.1");
     assert_eq!(gemini.base, "https://cloudcode-pa.googleapis.com");
     assert_eq!(gemini.load_base, "https://cloudcode-pa.googleapis.com");
+}
+
+/// Google sets an Antigravity account up as Antigravity, not as Gemini CLI:
+/// `loadCodeAssist` takes `{"metadata":{"ideType":"ANTIGRAVITY"}}`, and
+/// onboarding names the tier in snake_case (magpie `antigravityProject`).
+/// Asking as Gemini CLI gives the account a Gemini project and tier.
+#[tokio::test]
+async fn antigravity_onboards_with_its_own_identity() {
+    use any_converter_server::credentials::{
+        AccountResolver, Credential, FileSecretStore, SecretStore,
+    };
+
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let hits = Arc::clone(&seen);
+    let app = axum::Router::new()
+        .route(
+            "/v1internal:loadCodeAssist",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let hits = Arc::clone(&hits);
+                async move {
+                    hits.lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&body).into_owned());
+                    axum::Json(serde_json::json!({
+                        "currentTier": { "id": "free-tier", "name": "Free" },
+                        "cloudaicompanionProject": "proj-1",
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/v1/internal/fetchAvailableModels",
+            axum::routing::post(|| async { axum::Json(serde_json::json!({ "models": {} })) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileSecretStore::new(dir.path().join("secrets.json"));
+    let id = "antigravity:me@example.com";
+    store
+        .put(
+            id,
+            &Credential::OAuth {
+                provider: "antigravity".into(),
+                account: "me@example.com".into(),
+                access_token: "tok".into(),
+                refresh_token: Some("r".into()),
+                expires_at_unix: Some(now_unix() + 3600),
+            },
+        )
+        .unwrap();
+    let resolver = AccountResolver::new(store, reqwest::Client::new())
+        .with_siwc_meta_path(dir.path().join("siwc.json"));
+    let found = resolver.project(id, &base, None).await.unwrap();
+    assert_eq!(found.id, "proj-1");
+
+    let bodies = seen.lock().unwrap().clone();
+    assert!(
+        bodies
+            .iter()
+            .any(|b| b.contains("ANTIGRAVITY") && !b.contains("pluginType")),
+        "Antigravity asks as Antigravity, not as Gemini CLI: {bodies:?}"
+    );
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }

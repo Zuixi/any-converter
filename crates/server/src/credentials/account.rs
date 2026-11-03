@@ -91,6 +91,15 @@ pub enum AccountError {
     Store(#[from] SecretStoreError),
 }
 
+/// The Antigravity build this setup names (magpie `antigravityVersion`,
+/// which reads the installed app and falls back to this).
+pub const ANTIGRAVITY_VERSION: &str = "1.0.0";
+
+/// Whether this account is an Antigravity sign-in.
+pub fn is_antigravity(account_id: &str) -> bool {
+    account_id.split(':').next() == Some("antigravity")
+}
+
 /// How early before `expires_at_unix` a token counts as expired.
 pub const REFRESH_MARGIN_SECS: i64 = 300;
 
@@ -643,11 +652,20 @@ impl AccountResolver {
         let account = self.resolve(account_id).await?;
         let base = base.trim_end_matches('/');
 
-        let mut metadata = serde_json::json!({
-            "ideType": "IDE_UNSPECIFIED",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI",
-        });
+        // Antigravity is set up as Antigravity, not as Gemini CLI: Google
+        // serves it a different project and tier for `ideType: ANTIGRAVITY`
+        // (magpie `antigravityProject`, google.go:726). Everything else
+        // asks as the Gemini CLI does.
+        let antigravity = is_antigravity(account_id);
+        let mut metadata = if antigravity {
+            serde_json::json!({ "ideType": "ANTIGRAVITY" })
+        } else {
+            serde_json::json!({
+                "ideType": "IDE_UNSPECIFIED",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI",
+            })
+        };
         let mut body = serde_json::json!({});
         if let Some(want) = project_override {
             metadata["duetProject"] = serde_json::json!(want);
@@ -694,10 +712,28 @@ impl AccountResolver {
             return Err(needs_project(account_id, &ineligible_reason(&reply)));
         }
 
-        let mut req = serde_json::json!({ "tierId": tier.id, "metadata": metadata });
-        if tier.id != "free-tier" {
-            req["cloudaicompanionProject"] = serde_json::json!(project_override.unwrap_or(""));
-        }
+        let req = if antigravity {
+            // Antigravity names the tier and itself in snake_case, and
+            // onboards against the host its requests use (google.go:747).
+            let mut tier_id = tier.id.clone();
+            if tier_id.is_empty() || tier_id == "legacy-tier" {
+                tier_id = "free-tier".to_string();
+            }
+            serde_json::json!({
+                "tier_id": tier_id,
+                "metadata": {
+                    "ide_type": "ANTIGRAVITY",
+                    "ide_name": "antigravity",
+                    "ide_version": ANTIGRAVITY_VERSION,
+                },
+            })
+        } else {
+            let mut req = serde_json::json!({ "tierId": tier.id, "metadata": metadata });
+            if tier.id != "free-tier" {
+                req["cloudaicompanionProject"] = serde_json::json!(project_override.unwrap_or(""));
+            }
+            req
+        };
         let mut id = self.onboard(base, &account.access_token, &req).await?;
         if id.is_empty() {
             id = project_override.unwrap_or("").to_string();
