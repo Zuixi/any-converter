@@ -979,6 +979,7 @@ async fn settle_google(
                 .as_secs() as i64;
             unix_now() + secs_left
         }),
+        siwc: None,
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (STATE_DONE.to_string(), account_id, String::new()),
@@ -1022,6 +1023,12 @@ async fn settle_siwc(
         access_token: account.access.clone(),
         refresh_token: Some(account.refresh.clone()),
         expires_at_unix: Some(account.expires_at_unix),
+        siwc: Some(crate::credentials::SiwcMeta {
+            client_id: account.client_id.clone(),
+            host_id: account.host_id.clone(),
+            id_token: account.id_token.clone(),
+            scopes: account.scopes.clone(),
+        }),
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (
@@ -1061,6 +1068,7 @@ async fn settle_codex(
         access_token: account.access_token.clone(),
         refresh_token: Some(account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (
@@ -1099,6 +1107,7 @@ async fn settle_copilot(
         access_token: account.access_token,
         refresh_token: None,
         expires_at_unix: None,
+        siwc: None,
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (STATE_DONE.to_string(), account_id, String::new()),
@@ -1134,6 +1143,7 @@ async fn settle_claude(
         access_token: account.access_token.clone(),
         refresh_token: (!account.refresh_token.is_empty()).then(|| account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     };
     match accounts.store_sign_in(&account_id, credential).await {
         Ok(()) => (

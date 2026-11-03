@@ -269,6 +269,7 @@ fn copilot_credential() -> Credential {
         access_token: "gho_github_token".into(),
         refresh_token: None,
         expires_at_unix: None,
+        siwc: None,
     }
 }
 

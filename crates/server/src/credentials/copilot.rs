@@ -1256,6 +1256,7 @@ mod tests {
             access_token: "gho_access_1".to_string(),
             refresh_token: None,
             expires_at_unix: Some(1_700_000_000),
+            siwc: None,
         };
 
         let json = serde_json::to_value(&cred).unwrap();

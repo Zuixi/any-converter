@@ -191,6 +191,7 @@ fn oauth_credential(access_token: &str) -> Credential {
         access_token: access_token.into(),
         refresh_token: None,
         expires_at_unix: None,
+        siwc: None,
     }
 }
 

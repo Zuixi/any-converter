@@ -549,6 +549,7 @@ async fn accounts_add(
                     access_token: account.access_token,
                     refresh_token: None,
                     expires_at_unix: None,
+                    siwc: None,
                 },
             )?;
             // A fresh sign-in restores a previously revoked account.
@@ -601,6 +602,7 @@ async fn accounts_add(
                     access_token: account.access.clone(),
                     refresh_token: Some(account.refresh.clone()),
                     expires_at_unix: Some(account.expires_at_unix),
+                    siwc: None,
                 },
             )?;
             if let Err(err) = clear_revoked_default_store(&account_id).await {
@@ -1109,6 +1111,7 @@ fn gemini_credential(provider: &str, account: &GeminiAccount) -> Credential {
         access_token: account.tokens.access_token.clone(),
         refresh_token: account.tokens.refresh_token.clone(),
         expires_at_unix: account.tokens.expires_at.and_then(instant_to_unix),
+        siwc: None,
     }
 }
 
@@ -1121,6 +1124,7 @@ fn codex_credential(account: &any_converter_server::credentials::CodexAccount) -
         access_token: account.access_token.clone(),
         refresh_token: Some(account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     }
 }
 
@@ -1133,6 +1137,7 @@ fn claude_credential(account: &any_converter_server::credentials::ClaudeAccount)
         access_token: account.access_token.clone(),
         refresh_token: (!account.refresh_token.is_empty()).then(|| account.refresh_token.clone()),
         expires_at_unix: account.expires_at_unix,
+        siwc: None,
     }
 }
 

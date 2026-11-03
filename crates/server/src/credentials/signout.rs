@@ -171,6 +171,7 @@ mod tests {
             access_token: "ya29.access".to_string(),
             refresh_token: refresh_token.map(String::from),
             expires_at_unix: Some(1_900_000_000),
+            siwc: None,
         }
     }
 

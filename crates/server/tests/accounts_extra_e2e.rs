@@ -183,6 +183,7 @@ async fn accounts_list_never_prints_token_material() {
                 access_token: "tok-must-not-appear".into(),
                 refresh_token: Some("refresh-must-not-appear".into()),
                 expires_at_unix: Some(1),
+                siwc: None,
             },
         )
         .unwrap();

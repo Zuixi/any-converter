@@ -711,6 +711,7 @@ fn write_entry(
         access_token: entry.access_token.clone(),
         refresh_token: entry.refresh_token.clone(),
         expires_at_unix: entry.expires_at_unix,
+        siwc: None,
     };
     match store.put(id, &credential) {
         Ok(()) => out.push(ImportedAccount {

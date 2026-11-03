@@ -225,6 +225,7 @@ async fn antigravity_onboards_with_its_own_identity() {
                 access_token: "tok".into(),
                 refresh_token: Some("r".into()),
                 expires_at_unix: Some(now_unix() + 3600),
+                siwc: None,
             },
         )
         .unwrap();

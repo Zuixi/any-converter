@@ -41,6 +41,7 @@ fn oauth_credential(provider: &str, account: &str, access_token: &str) -> Creden
         access_token: access_token.into(),
         refresh_token: Some("1//refresh-secret-value".into()),
         expires_at_unix: Some(1_900_000_000),
+        siwc: None,
     }
 }
 
