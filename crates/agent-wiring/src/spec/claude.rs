@@ -147,6 +147,15 @@ impl AgentSpec for ClaudeSpec {
         }
     }
 
+    fn base_url_key(&self) -> Option<&'static str> {
+        Some("env.ANTHROPIC_BASE_URL")
+    }
+
+    fn read_key(&self, ctx: &HomeCtx, key: &str) -> Option<String> {
+        let current = read_config(&Self::settings_path(ctx)).ok()??;
+        json::get(&current, key)
+    }
+
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {
         let Ok(Some(current)) = read_config(&Self::settings_path(ctx)) else {
             return BTreeMap::new();

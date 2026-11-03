@@ -174,6 +174,15 @@ impl AgentSpec for GeminiSpec {
         }
     }
 
+    fn base_url_key(&self) -> Option<&'static str> {
+        Some("GOOGLE_GEMINI_BASE_URL")
+    }
+
+    fn read_key(&self, ctx: &HomeCtx, key: &str) -> Option<String> {
+        let env_text = read_config(&Self::env_path(ctx)).ok().flatten()?;
+        env_edit::get(&env_text, key)
+    }
+
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {
         let mut values = BTreeMap::new();
         if let Ok(Some(env_text)) = read_config(&Self::env_path(ctx)) {

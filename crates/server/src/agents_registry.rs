@@ -253,7 +253,7 @@ impl AgentRegistry {
                         }
                     })
                     .unwrap_or_else(|| STATUS_DISCONNECTED.to_owned());
-                if status == STATUS_CONNECTED && spec.read_state(&ctx) == WiredState::Drifted {
+                if status == STATUS_CONNECTED && self.agent_drifted(spec.as_ref(), &ctx) {
                     status = STATUS_DRIFTED.to_owned();
                     drifted.push(id.clone());
                 }
@@ -279,6 +279,30 @@ impl AgentRegistry {
             }
         }
         rows
+    }
+
+    /// Reports whether a connected agent's files no longer hold the values we
+    /// applied — precise drift detection by reconciling against the applied
+    /// audit (`agent_applied.json`, written by `agent_wiring::Wiring` on every
+    /// connect), with a gateway-authority check as a fallback when no audit
+    /// exists for the agent.
+    ///
+    /// The audit answers a fact ("do our keys still hold the values we
+    /// wrote?"); the fallback asks only "does the base URL still point at
+    /// THIS gateway" — never "does it look like a gateway", which cannot
+    /// tell a third-party proxy from our wiring. The audit lives in this
+    /// registry's `data_dir`, the same directory `Wiring::new` was given at
+    /// connect time.
+    fn agent_drifted(&self, spec: &dyn AgentSpec, ctx: &HomeCtx) -> bool {
+        let applied =
+            agent_wiring::backup::applied::Applied::load(&self.data_dir.join("agent_applied.json"));
+        if !applied.recorded(spec.id()).is_empty() {
+            let current = spec.applied_values(ctx);
+            return !applied.drifted_keys(spec.id(), &current).is_empty();
+        }
+        spec.base_url_key()
+            .and_then(|key| spec.read_key(ctx, &key))
+            .is_some_and(|value| !agent_wiring::gw_base_match(&value, &self.gateway_url))
     }
 
     /// Wires `agent_id` onto the gateway, reusing its key when one exists.
