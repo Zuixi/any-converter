@@ -11,7 +11,9 @@ pub mod logging;
 pub(crate) mod model;
 pub(crate) mod namespace;
 pub mod observability;
+pub mod period;
 pub mod plugins;
+pub mod pricing;
 pub mod provider_pool;
 pub mod proxy;
 pub mod request_log;
@@ -26,6 +28,13 @@ use log::info;
 
 use crate::config::ServerConfig;
 use crate::router::create_router;
+
+pub use storage::LedgerRow;
+
+/// RFC 4180 CSV of the ledger rows, header included.
+pub fn ledger_csv(rows: &[LedgerRow]) -> String {
+    LedgerRow::ledger_csv(rows)
+}
 
 /// Start the HTTP proxy server with the given configuration.
 pub async fn run(config: ServerConfig) -> Result<(), Box<dyn std::error::Error>> {

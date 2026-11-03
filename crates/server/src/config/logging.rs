@@ -21,6 +21,19 @@ pub struct LoggingConfig {
     pub files: Vec<LogFileConfig>,
     #[serde(default)]
     pub request_log: RequestLogConfig,
+    /// Days of request metadata (`request_logs`) to keep; 0 keeps everything.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u64,
+    /// Days of captured bodies and traces (`request_bodies`); 0 keeps everything.
+    #[serde(default = "default_body_retention_days")]
+    pub body_retention_days: u64,
+    /// Days of hourly rollup buckets to keep; 0 keeps everything.
+    #[serde(default)]
+    pub rollup_retention_days: u64,
+    /// Write one JSON line per request beside the database. Off by default:
+    /// the file is an operator convenience, not the store.
+    #[serde(default)]
+    pub jsonl_mirror: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,9 +106,19 @@ pub(super) fn default_false() -> bool {
 }
 
 pub(super) fn default_max_capture_bytes() -> usize {
-    10 * 1024 * 1024
+    // 1 MiB: a stored row holds three bodies plus the trace, so the old 10 MiB
+    // cap let one row reach ~30 MiB in a table that is scanned by statistics.
+    1_048_576
 }
 
 pub(super) fn default_trace_preview_bytes() -> usize {
     2048
+}
+
+pub(crate) fn default_retention_days() -> u64 {
+    30
+}
+
+pub(crate) fn default_body_retention_days() -> u64 {
+    7
 }

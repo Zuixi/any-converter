@@ -115,6 +115,11 @@ pub fn read_response(resp: ClaudeResponse) -> IrResponse {
             output_tokens: usage.output_tokens,
             cache_read_tokens: usage.cache_read_input_tokens,
             cache_write_tokens: usage.cache_creation_input_tokens,
+            // The breakdown, when Anthropic sends it: the 1-hour part of the
+            // write is billed higher, so it is kept apart from the total.
+            cache_write_1h: usage
+                .cache_creation
+                .and_then(|c| c.ephemeral_1h_input_tokens),
             reasoning_tokens: None,
         },
     }
@@ -402,6 +407,41 @@ mod tests {
             }]
         );
         assert_eq!(ir.stop_reason, StopReason::EndTurn);
+    }
+
+    #[test]
+    fn response_cache_creation_splits_the_one_hour_part() {
+        let wire: ClaudeResponse = serde_json::from_str(
+            r#"{"id":"msg_cache","type":"message","role":"assistant",
+                "model":"claude-sonnet-4-20250514",
+                "content":[{"type":"text","text":"hi"}],
+                "stop_reason":"end_turn","stop_sequence":null,
+                "usage":{"input_tokens":10,"output_tokens":5,
+                          "cache_creation_input_tokens":150,
+                          "cache_creation":{"ephemeral_5m_input_tokens":50,
+                                             "ephemeral_1h_input_tokens":100}}}"#,
+        )
+        .unwrap();
+        let ir = read_response(wire);
+        // Total stays the total; the 1h part is reported next to it, not subtracted.
+        assert_eq!(ir.usage.cache_write_tokens, Some(150));
+        assert_eq!(ir.usage.cache_write_1h, Some(100));
+    }
+
+    #[test]
+    fn response_without_cache_creation_has_no_one_hour_part() {
+        let wire: ClaudeResponse = serde_json::from_str(
+            r#"{"id":"msg_plain","type":"message","role":"assistant",
+                "model":"claude-sonnet-4-20250514",
+                "content":[{"type":"text","text":"hi"}],
+                "stop_reason":"end_turn","stop_sequence":null,
+                "usage":{"input_tokens":10,"output_tokens":5,
+                          "cache_creation_input_tokens":150}}"#,
+        )
+        .unwrap();
+        let ir = read_response(wire);
+        assert_eq!(ir.usage.cache_write_tokens, Some(150));
+        assert_eq!(ir.usage.cache_write_1h, None);
     }
 
     #[test]

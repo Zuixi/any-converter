@@ -219,6 +219,7 @@ impl TestEnv {
 
         let state = Arc::new(AppState {
             config: ServerConfig {
+                pricing: Default::default(),
                 server: ServerSettings {
                     host: "127.0.0.1".into(),
                     port: 8080,

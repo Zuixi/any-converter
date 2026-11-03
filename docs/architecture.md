@@ -303,23 +303,67 @@ Two responsibilities:
 
 ### 4.6 Request/Response Logging
 
-An optional audit logger captures the full lifecycle of every request:
+An optional audit logger captures the full lifecycle of every request.
+
+**SQLite is the single query source.** The schema is versioned with `pragma user_version`
+(`crates/server/src/storage/schema.rs`) so existing databases are migrated in place.
+
+| Table | Holds | Read by |
+|---|---|---|
+| `request_logs` | narrow metadata + token columns (one row per request) | aggregation, ledger |
+| `request_bodies` | the wide `record_json` blob (bodies, trace) | ledger drill-down only |
+| `rollup_hourly` | pre-aggregate by `(hour, provider, model, agent)` | every summary query |
+
+The split exists because a wide row makes aggregation scan megabytes per call. Measured
+on 1M rows: a provider×model ranking took 91.8 s with the bodies inline, 1.40 s split
+out, and 0.008 s from the rollup.
 
 - **Config:** `[logging.request_log] enabled = true` plus `logging.dir`.
-- **Storage:** 10 MiB JSON Lines segments per UTC day: `{dir}/requests.YYYY-MM-DD.000.jsonl`, `.001`, and so on. Records are mirrored through a shared SQLite connection pool into `{dir}/any-converter.sqlite3` when initialization succeeds.
+- **Retention:** `logging.retention_days` (default 30, `0` disables). The background
+  sweep deletes older rows and their bodies.
+- **Writing:** records are buffered and committed in one transaction per 256 records or
+  200 ms, on a background task.
 - **Capture:**
   - Non-streaming: full JSON request body, upstream request body, and response body.
   - Streaming: request bodies plus every converted SSE line emitted to the client.
-- **Latency:** non-streaming records total elapsed time; streaming records time-to-first-byte (TTFB).
-- **Usage:** token counts extracted from upstream responses (non-streaming) or accumulated by `StreamState` (streaming).
-- **Trace summary:** each record may include `trace.client`, `trace.upstream`, and `trace.response` summaries. These extract message previews, tool definitions, tool calls, and tool results from OpenAI Responses, OpenAI Chat, Claude Messages, Gemini JSON, and captured SSE lines. Codex tool calls are parsed from OpenAI Responses events such as `response.output_item.done`.
-- **Privacy:** sensitive headers and body keys (`api_key`, `authorization`, etc.) are redacted; bodies are truncated at `max_capture_bytes` and marked `truncated: true`.
-- **Fallback:** JSONL writes and SQLite writes are independent. SQLite errors are logged but must not block JSONL audit files.
-- **Read path:** the Web UI reads `any-converter.sqlite3` first for `/logs` and `/usage`; if SQLite is missing, empty, or unreadable, it falls back to scanning the JSONL files.
+- **Timing:** `latency_ms` is total elapsed; `ttft_ms` is the streaming
+  time-to-first-token and `0` for a non-streaming reply.
+- **Usage:** token counts from the upstream reply, including Anthropic's 1-hour cache
+  writes (`cache_write_1h`). `cache_unknown` marks a vendor that reports no cache tokens
+  at all, so its `0` reads as "no data" rather than "a miss".
+- **Trace summary:** each record may include `trace.client`, `trace.upstream`, and
+  `trace.response` summaries. These extract message previews, tool definitions, tool
+  calls, and tool results from OpenAI Responses, OpenAI Chat, Claude Messages, Gemini
+  JSON, and captured SSE lines.
+- **Privacy:** sensitive headers and body keys (`api_key`, `authorization`, etc.) are
+  redacted; bodies are truncated at `max_capture_bytes` and marked `truncated: true`.
+- **JSONL mirror:** `logging.jsonl_mirror` (default `false`) additionally writes each
+  record to `{dir}/usage.YYYY-MM-DD.jsonl`. Nothing reads it for queries; it exists for
+  `tail`, `jq` and backup.
+- **Read path:** the Web UI opens `any-converter.sqlite3` read-only. There is no JSONL
+  fallback any more — a fallback that silently switches data source hides storage bugs,
+  so an empty database answers zeroed totals instead.
+
+**Statistics.** `SqliteStorage::usage_summary` answers a `UsageQuery`
+(`from`/`to` half-open UTC range, `hour|day|week|month` granularity, optional
+provider/model/agent filter) with totals, a bucketed series, and provider/model/agent
+rankings. `Totals::hit_rate` is `cache_read / (input + cache_read + cache_write −
+cache_unknown)` and is `None` when nothing is left, so a vendor that counts no cache
+never reads as a 0% hit rate. `ledger_page` answers "which call was that?" with keyset
+paging (never `offset`) and a filter over day, provider, model, agent, account, failure
+and a case-insensitive text query.
 
 ### 4.7 Disk Quota
 
-The server spawns a background task that enforces `logging.max_disk_mb` on JSONL log files. Every five minutes it deletes the oldest logs until usage is below the limit. The active SQLite database and its WAL/SHM files are never deleted by quota cleanup.
+The server spawns a background task that, every five minutes:
+
+1. enforces `logging.max_disk_mb` on JSONL files, deleting the oldest first;
+2. applies `logging.retention_days` to `request_logs` (bodies cascade), on a blocking
+   thread so it never occupies a runtime worker;
+3. every twelfth tick (≈1 h) runs `pragma optimize` to refresh the query planner's
+   statistics.
+
+The SQLite database and its WAL/SHM files are never deleted by file quota cleanup.
 
 ---
 

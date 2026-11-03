@@ -214,6 +214,10 @@ api_key = "sk-proj-xxx"
 level = "info"
 dir = "./logs"
 max_disk_mb = 500
+retention_days = 30          # 明细元数据
+body_retention_days = 7      # 抓取的 body（体积最大）
+rollup_retention_days = 0    # 小时聚合，0 表示永久          # 0 表示永久保留
+# jsonl_mirror = true        # 可选：额外写 usage.YYYY-MM-DD.jsonl
 
 [logging.request_log]
 enabled = true

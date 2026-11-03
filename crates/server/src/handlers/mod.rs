@@ -8,6 +8,7 @@ pub mod models;
 pub mod redact;
 pub mod respond;
 pub mod stream;
+pub mod usage;
 
 pub use accounts::{
     handle_account_adopt, handle_account_order, handle_account_plugins, handle_account_quotas,
@@ -19,6 +20,7 @@ pub use chat::{
     handle_claude, handle_count_tokens, handle_gemini, handle_openai_chat, handle_responses,
 };
 pub use models::{handle_model_retrieve, handle_models};
+pub use usage::handle_usage_api;
 
 // The family's own shared surface, reached by the sibling modules through
 // `use super::...` / `use super::super::...`. Nothing else is re-exported:

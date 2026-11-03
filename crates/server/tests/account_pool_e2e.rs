@@ -245,6 +245,7 @@ fn make_app(providers: Vec<ProviderConfig>, store: FileSecretStore) -> Router {
     let accounts = Arc::new(AccountResolver::new(store, client.clone()));
     let state = Arc::new(AppState {
         config: ServerConfig {
+            pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 8080,

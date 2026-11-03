@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AggregatedUsage, RequestLogRecord } from "@any-converter/shared";
+import type {
+  Heatmap,
+  LedgerFilter,
+  LedgerPage,
+  RequestLogRecord,
+  UsageSummary,
+} from "@any-converter/shared";
 
 import type {
   ConvertPayloadRequest,
@@ -49,8 +55,15 @@ export const api = {
     return invoke("list_request_logs", { limit });
   },
 
-  getUsageSummary(limit = 50): Promise<AggregatedUsage[]> {
-    return invoke("get_usage_summary", { limit });
+  getUsageSummary(preset = "7d", granularity = "day"): Promise<UsageSummary> {
+    return invoke("get_usage_summary", { preset, granularity });
+  },
+
+  getHeatmap(filter: LedgerFilter): Promise<Heatmap> {
+    return invoke("get_heatmap", { filter });
+  },
+  getLedgerPage(filter: LedgerFilter, cursor?: number, limit?: number): Promise<LedgerPage> {
+    return invoke("list_ledger_page", { filter, cursor, limit });
   },
 
   getServerStatus(): Promise<ServerStatus> {

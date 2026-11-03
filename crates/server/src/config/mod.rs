@@ -86,7 +86,7 @@ fn config_mode(path: &Path) -> Option<u32> {
         .map(|meta| meta.permissions().mode() & 0o777)
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ServerConfig {
     pub server: ServerSettings,
     #[serde(default)]
@@ -97,6 +97,9 @@ pub struct ServerConfig {
     pub routes: Vec<RouteConfig>,
     #[serde(default)]
     pub model_metadata: HashMap<String, ModelMetadata>,
+    /// `[pricing."model-prefix"]` → USD per million tokens.
+    #[serde(default)]
+    pub pricing: crate::pricing::PriceTable,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -172,6 +175,10 @@ impl Default for LoggingConfig {
             console: ConsoleConfig::default(),
             files: Vec::new(),
             request_log: RequestLogConfig::default(),
+            retention_days: logging::default_retention_days(),
+            body_retention_days: logging::default_body_retention_days(),
+            rollup_retention_days: 0,
+            jsonl_mirror: false,
         }
     }
 }
@@ -383,6 +390,18 @@ impl ServerConfig {
     }
 }
 
+impl Default for ServerSettings {
+    fn default() -> Self {
+        Self {
+            host: default_host(),
+            port: default_port(),
+            api_key: None,
+            pass_through_headers: PassThroughHeadersConfig::default(),
+            proxy: None,
+        }
+    }
+}
+
 /// `$ANY_CONVERTER_SECRETS` overrides the store location; otherwise it is
 /// `<config_dir>/secrets.json` where `config_dir` is
 /// `$HOME/.config/any-converter` (or `$APPDATA/any-converter` on Windows).
@@ -555,9 +574,56 @@ provider = "openai"
         assert_eq!(config.console.format, "pretty");
         assert!(config.files.is_empty());
         assert!(!config.request_log.enabled);
-        assert_eq!(config.request_log.max_capture_bytes, 10 * 1024 * 1024);
+        assert_eq!(config.request_log.max_capture_bytes, 1024 * 1024);
         assert!(config.request_log.trace_enabled);
         assert_eq!(config.request_log.trace_max_preview_bytes, 2048);
+        assert_eq!(config.retention_days, 30);
+        assert_eq!(config.body_retention_days, 7);
+        assert_eq!(config.rollup_retention_days, 0);
+        assert!(!config.jsonl_mirror);
+    }
+
+    #[test]
+    fn test_retention_defaults_when_keys_absent() {
+        let toml_str = r#"
+[server]
+api_key = "sk-test"
+
+[logging]
+dir = "./logs"
+"#;
+        let config = ServerConfig::from_toml(toml_str).unwrap();
+        assert_eq!(config.logging.retention_days, 30);
+        assert_eq!(config.logging.body_retention_days, 7);
+        assert_eq!(config.logging.rollup_retention_days, 0);
+    }
+
+    #[test]
+    fn test_jsonl_mirror_defaults_to_false_when_key_absent() {
+        let toml_str = r#"
+[server]
+api_key = "sk-test"
+
+[logging]
+level = "info"
+dir = "./logs"
+"#;
+        let config = ServerConfig::from_toml(toml_str).unwrap();
+        assert!(!config.logging.jsonl_mirror);
+    }
+
+    #[test]
+    fn test_jsonl_mirror_parses_true() {
+        let toml_str = r#"
+[server]
+api_key = "sk-test"
+
+[logging]
+dir = "./logs"
+jsonl_mirror = true
+"#;
+        let config = ServerConfig::from_toml(toml_str).unwrap();
+        assert!(config.logging.jsonl_mirror);
     }
 
     #[test]
@@ -831,6 +897,7 @@ accounts = ["gemini:a@x", "gemini:b@x"]
         provider.account = Some("gemini:me@example.com".into());
         provider.accounts = vec!["gemini:a@x".into()];
         let config = ServerConfig {
+            pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 8080,
@@ -1074,6 +1141,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
             ],
             routes: vec![],
             model_metadata: HashMap::new(),
+            pricing: Default::default(),
             logging: LoggingConfig::default(),
         };
 
@@ -1132,6 +1200,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 provider: "openai".into(),
             }],
             model_metadata: HashMap::new(),
+            pricing: Default::default(),
             logging: LoggingConfig::default(),
         };
         let r = config.resolve_provider("claude-sonnet-4").unwrap();
@@ -1197,6 +1266,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
             }],
             routes: vec![],
             model_metadata: HashMap::new(),
+            pricing: Default::default(),
             logging: LoggingConfig::default(),
         };
 
@@ -1228,6 +1298,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 provider: "also-nonexistent".into(),
             }],
             model_metadata: HashMap::new(),
+            pricing: Default::default(),
             logging: LoggingConfig::default(),
         };
 
@@ -1287,6 +1358,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
             ],
             routes: vec![],
             model_metadata: HashMap::new(),
+            pricing: Default::default(),
             logging: LoggingConfig::default(),
         };
 

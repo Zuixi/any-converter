@@ -32,6 +32,9 @@ use any_converter_server::{logging::init_logging, run};
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod agents_cmd;
+mod format;
+mod stats;
+mod tui;
 
 #[derive(Debug, Clone, ValueEnum)]
 enum CliFormat {
@@ -74,6 +77,9 @@ impl AgentProvider {
 #[derive(Parser)]
 #[command(name = "any-converter", about = "LLM API format conversion tool")]
 struct Cli {
+    /// Path to a TOML configuration file (`serve`, and `stats` log-dir fallback)
+    #[arg(long, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -108,19 +114,21 @@ enum Commands {
         config: Option<PathBuf>,
         #[arg(long, default_value_t = 1228)]
         port: u16,
-        #[arg(long, default_value = "default")]
+        #[arg(long, default_value = "default", conflicts_with = "config")]
         provider: String,
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, conflicts_with = "config")]
         format: Option<CliFormat>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "config")]
         base_url: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "config")]
         upstream_key: Option<String>,
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
         #[arg(long)]
         api_key: Option<String>,
     },
+    /// Show what the proxy has spent (the usage page, in the terminal)
+    Stats(stats::StatsArgs),
     /// Manage stored provider accounts (OAuth sign-ins)
     Accounts {
         #[command(subcommand)]
@@ -373,6 +381,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             host,
             api_key,
         } => {
+            // clap only sees the conflict when `--config` follows `serve`; the
+            // other flags would be silently ignored, so reject them here too.
+            if config.is_some()
+                && (port != 8080
+                    || provider != "default"
+                    || format.is_some()
+                    || base_url.is_some()
+                    || upstream_key.is_some())
+            {
+                return Err(
+                    "--config cannot be combined with --port/--provider/--format/--base-url/--upstream-key"
+                        .into(),
+                );
+            }
             let server_config = if let Some(path) = config {
                 let content = std::fs::read_to_string(&path)?;
                 let config = ServerConfig::from_toml(&content)?;
@@ -418,6 +440,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     routes: vec![],
                     model_metadata: HashMap::new(),
                     logging: LoggingConfig::default(),
+                    pricing: Default::default(),
                 }
             };
 
@@ -444,6 +467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             run(server_config).await?;
         }
+        Commands::Stats(args) => stats::run(args)?,
         Commands::Accounts { command } => accounts(command).await?,
         Commands::Plugin { command } => plugin(command).await?,
         Commands::Agents { command } => {

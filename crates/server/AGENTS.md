@@ -18,12 +18,49 @@ src/
 ├── model.rs         — Model extraction, model patching, private-field filtering
 ├── namespace.rs     — Responses namespace tool map extraction and response patching
 ├── route_strategy.rs — Provider pool ordering (priority / round_robin)
-├── usage.rs         — Async usage logger: UsageRecord → JSON Lines files
-├── disk_quota.rs    — Background disk quota manager for the logging directory
+├── usage.rs         — Async usage logger: UsageRecord → JSON Lines mirror (off by default)
+├── period.rs        — Period presets → half-open UTC ranges (today/7d/30d/all/last:/..)
+├── disk_quota.rs    — Background sweep: file quota, sqlite retention, pragma optimize
 ├── observability.rs — Structured message/tool trace summaries for request logs
-├── storage.rs       — SQLite mirror for structured request/usage logs
-└── request_log.rs   — Async full request/response logger → JSON Lines files
+├── storage.rs       — SqliteStorage: the only module that touches SQLite
+├── storage/
+│   ├── schema.rs    — Versioned migrations, tracked in `pragma user_version`
+│   ├── query.rs     — Granularity, UsageQuery/Summary, Totals (+hit_rate), LedgerFilter
+│   └── ledger.rs    — LedgerRow/Page/By, keyset paging, CSV export
+└── request_log.rs   — Async full request/response logger
+    ├── redactor.rs  — Body/header redaction and truncation
+    └── usage.rs     — Per-format usage and served-model extraction
 ```
+
+## Storage Model
+
+Three layers, one owner each:
+
+| Layer | Owner | Storage |
+|---|---|---|
+| Write | `RequestLogger` batch task (one transaction per 256 records / 200 ms) | `request_logs` (narrow) + `request_bodies` (wide) |
+| Read (aggregate) | `SqliteStorage::usage_summary` | `rollup_hourly` pre-aggregate |
+| Read (detail) | `SqliteStorage::ledger_page` | `request_logs`, keyset paging |
+
+**`storage.rs` and its submodules are the only code that may issue SQL.** Handlers,
+period resolution and the API layer stay above it.
+
+**Single writer invariant.** One process writes; everything else opens read-only
+(`SqliteStorage::open_readonly_in_log_dir`, which deliberately skips migration so it
+never fights the writer's lock). Desktop and the embedded server share one file —
+adding a second writer will produce `SQLITE_BUSY` under load.
+
+**The rollup is a cache.** It is written in the same transaction as the detail row,
+but only for a first-time `request_id` (a replay updates the detail and leaves the
+rollup contribution alone). `rebuild_rollup()` recomputes it from `request_logs` and
+is the only way back to the truth; run it after any suspected drift.
+
+**Cost is frozen at write time.** `cost_usd` and `price_version` are stored with the
+row. A later price change must not rewrite history: it needs an explicit recompute,
+not a re-read.
+
+**`pragma optimize` is not optional.** Without statistics SQLite picks the wrong
+index and aggregation degrades by ~65×. The background sweep runs it hourly.
 
 ## Domain Constraints
 
