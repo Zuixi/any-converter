@@ -19,7 +19,7 @@ const navItems: NavItem[] = [
   { href: "/logs", label: "nav.logs" },
   { href: "/usage", label: "nav.usage" },
   { href: "/status", label: "nav.status" },
-  { href: "/agents", label: "nav.agents" as TranslationKey, fallback: "Agents" },
+  { href: "/agents", label: "nav.agents" },
   { href: "/config", label: "nav.config" },
 ];
 
