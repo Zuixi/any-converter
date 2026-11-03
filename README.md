@@ -84,11 +84,17 @@ automatically, and the wire it speaks is the vendor's own:
 | Account | Wire |
 |---|---|
 | `gemini:<email>` | Google Code Assist — `POST {base}/v1internal:generateContent`, body wrapped as `{"model":…,"request":<gemini body>}` |
+| `antigravity:<email>` | The same, on Antigravity's own OAuth app and daily Code Assist host |
+| `codex:<email>` | ChatGPT's Codex backend, `POST {base}/responses` |
+| `copilot:<login>` | `api.githubcopilot.com`, Chat or Responses per model |
+| `chatgpt-api:<email>` | OpenAI's own API, `POST https://api.openai.com/v1/responses` |
+| `claude:<email>` | Anthropic Messages, signed in through Claude Code |
 
 ```bash
 # 1. Sign in (runs the browser PKCE flow; paste the callback address if the
 #    browser can't reach this machine)
-any-converter accounts add gemini
+any-converter accounts add gemini      # or antigravity / codex / copilot /
+                                       #    chatgpt-api / claude
 
 # 2. See what is stored — ids and kinds only, never token material
 any-converter accounts list
@@ -104,6 +110,16 @@ base_url = "https://cloudcode-pa.googleapis.com"
 api_key = ""                            # unused: the account signs
 account = "gemini:you@example.com"
 ```
+
+**Sign in with ChatGPT** (`chatgpt-api`) is the one flow that always ends by
+pasting: OpenAI registers this app as it signs in, so the address the browser
+ends on carries both the code and the client id it issued. Each account keeps
+that client id, and this machine keeps one `urn:uuid:` id (`chatgpt-api-host`)
+that OpenAI sees every time.
+
+**Claude** is signed in by Claude Code itself — any-converter runs
+`claude auth login --claudeai` in a temporary config directory and takes what
+it produces, so the `claude` command line must be installed.
 
 An account replaces `api_key` entirely. A `401` that says the token expired
 refreshes and retries once; one that says the sign-in was revoked marks the

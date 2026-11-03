@@ -1139,6 +1139,19 @@ async fn convert_and_build_upstream(
         String::new()
     } else {
         match api {
+            UpstreamApi::Responses
+                if provider
+                    .account_ids()
+                    .first()
+                    .is_some_and(|id| id.starts_with("chatgpt-api:")) =>
+            {
+                crate::proxy::build_upstream_url(
+                    Format::OpenAIResponses,
+                    &provider.chatgpt_api_base(),
+                    &ctx.upstream_model,
+                    ctx.streaming,
+                )
+            }
             UpstreamApi::CodeAssist => crate::wire::build_url(
                 UpstreamApi::CodeAssist,
                 // Antigravity's generation host is the daily one; a provider

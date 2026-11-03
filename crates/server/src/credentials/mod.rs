@@ -96,6 +96,14 @@ pub mod copilot;
 pub mod gemini;
 pub mod gemini_models;
 pub mod import;
+pub mod siwc_signin;
+pub mod siwc_store;
+
+pub use siwc_signin::{
+    ReqwestSiwc, SIWC_DIRECT_SCOPE, SIWC_SCOPES, SIWC_USAGE_URL, SiwcAccount, SiwcEndpoints,
+    SiwcError, SiwcSignIn, SiwcStarted, SiwcTokens,
+};
+pub use siwc_store::SiwcMeta;
 pub mod signout;
 pub mod store;
 pub mod token;

@@ -11,6 +11,8 @@
 //! those accounts are simply removed ([`RevokeOutcome::NotOffered`]).
 
 use crate::config::build_proxied_client;
+use crate::credentials::siwc_signin::SiwcSignIn;
+use crate::credentials::siwc_store;
 use crate::credentials::{AccountResolver, Credential};
 
 /// How the revocation part of a removal went.
@@ -54,6 +56,27 @@ pub async fn remove(
 
     // Read the token first, revoke, then delete — in that order (magpie).
     let credential = accounts.stored(id).map_err(|error| error.to_string())?;
+
+    // A Sign in with ChatGPT account revokes at the endpoint OpenAI
+    // publishes in its OIDC metadata (magpie `siwcRevoke`), which is the
+    // only place it is named.
+    if provider == "chatgpt-api" {
+        let outcome = match SiwcSignIn::new(reqwest::Client::new())
+            .with_meta_path(siwc_store::default_path())
+            .revoke(id)
+            .await
+        {
+            Ok(true) => RevokeOutcome::Revoked,
+            Ok(false) => RevokeOutcome::NotOffered,
+            Err(err) => RevokeOutcome::Failed(err.to_string()),
+        };
+        accounts
+            .delete_stored(id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = siwc_store::remove(&siwc_store::default_path(), id);
+        return Ok(outcome);
+    }
 
     let outcome = match revocation_endpoint(provider) {
         None => RevokeOutcome::NotOffered,
