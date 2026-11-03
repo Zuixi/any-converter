@@ -321,3 +321,152 @@ pub(crate) async fn read_account_allowance(
     };
     state.accounts.allowance(account_id, base).await
 }
+
+/// `GET /v1/accounts/plugins` (P17): every installed plugin and what it
+/// serves, so the window can offer a plugin's provider beside the built-in
+/// ones. A spec that won't load is listed with why.
+pub async fn handle_account_plugins(State(state): State<Arc<AppState>>) -> Response {
+    let dir = crate::plugins::managed::plugins_dir();
+    let installed = state.hosts.installed(&dir).await;
+    let plugins: Vec<Value> = installed
+        .into_iter()
+        .map(|plugin| {
+            let providers: Vec<Value> = plugin
+                .providers
+                .iter()
+                .map(|provider| {
+                    serde_json::json!({
+                        "id": provider.id,
+                        "name": provider.name,
+                        "methods": provider.methods.iter().map(|method| serde_json::json!({
+                            "type": match method.kind {
+                                crate::plugins::AuthMethodKind::Oauth => "oauth",
+                                crate::plugins::AuthMethodKind::Api => "api",
+                            },
+                            "label": method.label,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "spec": plugin.spec,
+                "providers": providers,
+                "error": plugin.error,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "dir": dir.to_string_lossy(),
+        "plugins": plugins,
+    }))
+    .into_response()
+}
+
+/// `POST /v1/accounts/order` {provider, accounts:[id...]} (P17): the order
+/// routing tries an account provider's seats in. Fully-qualified account
+/// ids, saved to `<config>/account-order.json` beside the secrets file —
+/// the provider config stays the user's to edit.
+pub async fn handle_account_order(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+    let Some(provider) = body.get("provider").and_then(|v| v.as_str()) else {
+        return api_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "provider is required",
+        );
+    };
+    let Some(ids) = body.get("accounts").and_then(|v| v.as_array()) else {
+        return api_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "accounts is required",
+        );
+    };
+    let ids: Vec<String> = ids
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    match crate::provider_pool::save_order(&crate::config::secrets_path(), provider, &ids) {
+        Ok(()) => Json(serde_json::json!({ "order": ids })).into_response(),
+        Err(err) => api_error_response(StatusCode::BAD_REQUEST, "invalid_request_error", err),
+    }
+}
+
+/// `POST /v1/accounts/{id}/adopt` (P17): write this Codex account's rotated
+/// tokens back to the `auth.json` it came from. `POST .../release` stops.
+pub async fn handle_account_adopt(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+    let secrets = crate::config::secrets_path();
+    // Every Codex home this machine has, and the account each one holds:
+    // an adopted account is written back where Codex itself reads it.
+    let Ok(home) = std::env::var("HOME") else {
+        return api_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid_request_error",
+            "HOME is not set",
+        );
+    };
+    let homes = crate::credentials::codex_homes(
+        &|key| std::env::var(key).ok(),
+        std::path::Path::new(&home),
+    );
+    let found = homes.into_iter().find(|dir| {
+        crate::credentials::read_codex(dir)
+            .iter()
+            .any(|a| a.account == id.trim_start_matches("codex:"))
+    });
+    let Some(dir) = found else {
+        return api_error_response(
+            StatusCode::NOT_FOUND,
+            "invalid_request_error",
+            format!("no Codex sign-in for {id}"),
+        );
+    };
+    match crate::credentials::mark_adopted(&secrets, &id, &dir) {
+        Ok(()) => Json(serde_json::json!({
+            "adopted": id,
+            "home": dir.to_string_lossy(),
+        }))
+        .into_response(),
+        Err(err) => api_error_response(StatusCode::BAD_REQUEST, "invalid_request_error", err),
+    }
+}
+
+/// Stop writing tokens back for an adopted account.
+pub async fn handle_account_release(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
+    {
+        return auth_error_response(err);
+    }
+    match crate::credentials::release_adopted(&crate::config::secrets_path(), &id) {
+        Ok(released) => Json(serde_json::json!({ "released": released })).into_response(),
+        Err(err) => api_error_response(StatusCode::BAD_REQUEST, "invalid_request_error", err),
+    }
+}

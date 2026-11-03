@@ -7,7 +7,8 @@ pub mod chat;
 pub mod models;
 
 pub use accounts::{
-    handle_account_quotas, handle_account_remove, handle_account_signin,
+    handle_account_adopt, handle_account_order, handle_account_plugins, handle_account_quotas,
+    handle_account_release, handle_account_remove, handle_account_signin,
     handle_account_signin_cancel, handle_account_signin_status, handle_account_signin_submit,
     handle_accounts, handle_health,
 };

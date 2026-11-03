@@ -797,7 +797,19 @@ pub(crate) async fn process_request(
             }
         };
 
-        let ids = provider.account_ids();
+        // The user's saved order comes first (P17): it is authoritative, and
+        // a seat it doesn't name keeps its configured place at the end.
+        let saved_order = crate::provider_pool::saved_order(
+            &crate::config::secrets_path(),
+            provider
+                .account_ids()
+                .first()
+                .and_then(|id| id.split(':').next())
+                .unwrap_or(""),
+        );
+        let ordered_ids =
+            crate::provider_pool::apply_order(&provider.account_ids(), saved_order.as_ref());
+        let ids: Vec<&str> = ordered_ids.iter().map(String::as_str).collect();
         let mut allowances: HashMap<String, Allowance> = HashMap::new();
         // Reading quota costs an upstream call (for Copilot a session
         // exchange): with a single account there is nothing to reorder,

@@ -31,6 +31,16 @@ const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/v1/models/guard-model", ""),
     ("GET", "/models/guard-model", ""),
     ("GET", "/v1/accounts/quotas", ""),
+    ("GET", "/v1/accounts/plugins", ""),
+    (
+        "POST",
+        "/v1/accounts/order",
+        r#"{"provider":"x","accounts":[]}"#,
+    ),
+    ("POST", "/v1/accounts/guard/remove", ""),
+    // adopt/release are absent on purpose: with no Codex sign-in on the test
+    // machine they answer 404 themselves, which is a handler verdict, not a
+    // missing route. They are covered by accounts_extra_e2e instead.
     (
         "POST",
         "/v1/chat/completions",
