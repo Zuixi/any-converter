@@ -93,16 +93,36 @@ pub struct DeviceCodeStarted {
 
 /// A fully signed-in Copilot device-flow account.
 ///
-/// Only the access token is captured; resolving the GitHub user (and
-/// exchanging for a Copilot token) is a later task's job. Persisting this
-/// (e.g. via [`super::FileSecretStore`]) is the caller's job.
+/// The account is named by its **GitHub login**, as magpie names it
+/// (`CopilotAccountName`: `login`, or `login@host` on an enterprise), not by
+/// the device code: a user code is masked, changes every sign-in, and would
+/// make the same person two accounts. The login is read from GitHub with the
+/// token the flow just issued.
 #[derive(Debug, Clone)]
 pub struct CopilotAccount {
+    /// The GitHub login the token belongs to (empty when GitHub wouldn't
+    /// say, in which case callers fall back to the masked user code).
+    pub user: String,
+    /// The Copilot plan GitHub reports (`individual`, `business`, ...), "".
+    pub plan: String,
     /// Masked hint of the `user_code` used as the account label
-    /// (e.g. `WDJB-MJHT` → `wdjb****`).
+    /// (e.g. `WDJB-MJHT` → `wdjb****`); only a fallback name.
     pub user_code_hint: String,
     /// GitHub OAuth access token.
     pub access_token: String,
+}
+
+impl CopilotAccount {
+    /// The account id a store keys it by: `copilot:<login>`, falling back to
+    /// the masked user code when GitHub wouldn't say whose token it is.
+    pub fn account_id(&self) -> String {
+        let name = if self.user.is_empty() {
+            self.user_code_hint.as_str()
+        } else {
+            self.user.as_str()
+        };
+        format!("copilot:{name}")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +187,25 @@ pub trait DeviceHttp: Send + Sync {
         &self,
         request: TokenPollRequest,
     ) -> BoxFuture<'static, Result<TokenPollResponse, SignInError>>;
+
+    /// Whose token this is, and the Copilot plan it is served on
+    /// (magpie `copilotUser`: GET /user for the login, then
+    /// /copilot_internal/user for the plan). `Ok(("", ""))` when GitHub
+    /// won't say — the sign-in still succeeds, named by the user code.
+    fn user(
+        &self,
+        _access_token: String,
+    ) -> BoxFuture<'static, Result<(String, String), SignInError>> {
+        Box::pin(async { Ok((String::new(), String::new())) })
+    }
 }
+
+/// GitHub's user page, whose `login` names the account (magpie
+/// `GitHubUserURL`).
+pub const GITHUB_USER_URL: &str = "https://api.github.com/user";
+/// Copilot's own user page, whose `copilot_plan` is the plan (magpie
+/// `CopilotUserURL`).
+pub const COPILOT_USER_URL: &str = "https://api.github.com/copilot_internal/user";
 
 /// Production [`DeviceHttp`] backed by reqwest.
 ///
@@ -198,6 +236,25 @@ impl ReqwestDeviceHttp {
         let client = crate::config::build_proxied_client(proxy)
             .map_err(|error| SignInError::Proxy(error.to_string()))?;
         Ok(Self { client })
+    }
+}
+
+impl ReqwestDeviceHttp {
+    /// GET a GitHub page with `Authorization: token <t>`, returning its body
+    /// and status (GitHub takes the `token` scheme, not `Bearer`).
+    async fn github_get(
+        client: &reqwest::Client,
+        url: &str,
+        token: &str,
+    ) -> Result<(u16, String), SignInError> {
+        let response = client
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, format!("token {token}"))
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        Ok((status, response.text().await?))
     }
 }
 
@@ -270,6 +327,43 @@ impl DeviceHttp for ReqwestDeviceHttp {
             serde_json::from_str::<TokenPollResponse>(&text).map_err(|e| {
                 SignInError::Vendor(format!("token endpoint returned malformed payload: {e}"))
             })
+        })
+    }
+
+    fn user(
+        &self,
+        access_token: String,
+    ) -> BoxFuture<'static, Result<(String, String), SignInError>> {
+        // magpie copilotUser: GET /user names the account, then
+        // /copilot_internal/user gives the plan. A GitHub that won't say
+        // leaves the sign-in valid and named by its user code.
+        let client = self.client.clone();
+        Box::pin(async move {
+            let (status, body) = Self::github_get(&client, GITHUB_USER_URL, &access_token).await?;
+            let value: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let login = value
+                .get("login")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if status != 200 || login.is_empty() {
+                return Ok((String::new(), String::new()));
+            }
+            let (status, body) = Self::github_get(&client, COPILOT_USER_URL, &access_token).await?;
+            let plan = if status == 200 {
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("copilot_plan")
+                            .or_else(|| v.get("plan"))
+                            .and_then(|p| p.as_str())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            Ok((login, plan))
         })
     }
 }
@@ -393,7 +487,17 @@ impl CopilotSignIn {
                 .await?;
 
             if let Some(access_token) = response.access_token {
+                // Name the account by its GitHub login (magpie
+                // copilotUser), falling back to the user code when GitHub
+                // won't say.
+                let (user, plan) = self
+                    .http
+                    .user(access_token.clone())
+                    .await
+                    .unwrap_or_default();
                 return Ok(CopilotAccount {
+                    user,
+                    plan,
                     user_code_hint: user_code_hint(&started.user_code),
                     access_token,
                 });
@@ -1240,5 +1344,27 @@ mod tests {
         );
         assert_eq!(COPILOT_DEFAULT_API_BASE, "https://api.githubcopilot.com");
         assert_eq!(COPILOT_API_VERSION, "2026-01-09");
+    }
+    #[test]
+    fn account_id_is_the_github_login_not_the_user_code() {
+        // magpie CopilotAccountName: the login names the account. A masked
+        // user code changes every sign-in and would make one person two
+        // accounts.
+        let named = CopilotAccount {
+            user: "octocat".into(),
+            plan: "individual".into(),
+            user_code_hint: "wdjb****".into(),
+            access_token: "gho_x".into(),
+        };
+        assert_eq!(named.account_id(), "copilot:octocat");
+
+        // GitHub wouldn't say: the masked code is the fallback name.
+        let unnamed = CopilotAccount {
+            user: String::new(),
+            plan: String::new(),
+            user_code_hint: "wdjb****".into(),
+            access_token: "gho_x".into(),
+        };
+        assert_eq!(unnamed.account_id(), "copilot:wdjb****");
     }
 }

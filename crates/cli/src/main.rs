@@ -423,12 +423,17 @@ async fn accounts_add(
             println!("  {}", started.user_code);
             println!("Waiting up to 600s for the device flow to complete...");
             let account = sign_in.wait(&started, DEFAULT_SIGN_IN_TIMEOUT).await?;
-            let account_id = format!("copilot:{}", account.user_code_hint);
+            // Named by its GitHub login (magpie CopilotAccountName), not by
+            // the masked device code, which changes every sign-in.
+            let account_id = account.account_id();
             store.put(
                 &account_id,
                 &Credential::OAuth {
                     provider: "copilot".to_string(),
-                    account: account.user_code_hint.clone(),
+                    account: account_id
+                        .strip_prefix("copilot:")
+                        .unwrap_or(&account_id)
+                        .to_string(),
                     access_token: account.access_token,
                     refresh_token: None,
                     expires_at_unix: None,
