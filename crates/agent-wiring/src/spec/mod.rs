@@ -90,21 +90,13 @@ pub trait AgentSpec {
     /// Semantically extracts this spec's keys, restoring stashed values.
     fn disconnect(&self, ctx: &HomeCtx) -> Result<Vec<PathBuf>, WiringError>;
 
-    /// Reads the cheap drift state from the agent configuration.
-    fn read_state(&self, ctx: &HomeCtx) -> WiredState;
-
-    /// The key whose value carries the gateway base URL, for the drift
-    /// fallback that checks the URL still points at THIS gateway.
-    /// `None` for specs without a URL-shaped key.
-    fn base_url_key(&self) -> Option<&'static str> {
-        None
-    }
-
-    /// Reads one of `our_keys` from the agent's files as a plain string.
-    /// `None` when the key is absent or the file cannot be read.
-    fn read_key(&self, _ctx: &HomeCtx, _key: &str) -> Option<String> {
-        None
-    }
+    /// Reads the drift state from the agent configuration against the actual
+    /// gateway address (magpie `Agent.Drift`'s wiring check): Connected when
+    /// every wiring key points at THIS gateway, Disconnected when none do,
+    /// Drifted when only some do. Asking "is this URL the gateway" instead
+    /// of "does it look like a gateway" is what keeps third-party proxies
+    /// from reading as our wiring.
+    fn read_state(&self, ctx: &HomeCtx, gateway_url: &str) -> WiredState;
 
     /// Values the spec just wrote, used for the drift audit.
     ///
@@ -181,29 +173,6 @@ pub(crate) fn record_old_values(stash: &mut Stash, agent: &str, values: BTreeMap
     if !fresh.is_empty() {
         stash.record(agent, fresh);
     }
-}
-
-/// Classifies a base URL as a gateway URL for drift detection.
-///
-/// Upstream defaults are excluded; every other absolute URL is treated as ours.
-/// This keeps `read_state` dependency-free while still distinguishing a pristine
-/// upstream configuration from a wired one.
-pub(crate) fn is_gateway_base(value: &str) -> bool {
-    let lowered = value.to_lowercase();
-    if !(lowered.starts_with("http://") || lowered.starts_with("https://")) {
-        return false;
-    }
-    const UPSTREAM: &[&str] = &[
-        "api.anthropic.com",
-        "api.openai.com",
-        "generativelanguage.googleapis.com",
-        "openai.azure.com",
-        "api.openrouter.ai",
-        "openrouter.ai",
-        "api.mistral.ai",
-        "api.groq.com",
-    ];
-    !UPSTREAM.iter().any(|host| lowered.contains(host))
 }
 
 /// Reports whether `value` starts with the gateway URL's host and port.

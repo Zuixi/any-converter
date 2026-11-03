@@ -70,7 +70,7 @@ fn connect_rewrites_oauth_selected_type_and_removes_legacy_key() {
     );
     assert!(settings_text.contains("// auth comment"));
     assert_eq!(GeminiSpec.our_keys(), OUR_KEYS);
-    assert_eq!(GeminiSpec.read_state(&ctx), WiredState::Connected);
+    assert_eq!(GeminiSpec.read_state(&ctx, common::GATEWAY), WiredState::Connected);
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn drift_is_detected_from_base_url() {
     );
     common::write(&env_path, &drifted);
 
-    assert_eq!(GeminiSpec.read_state(&ctx), WiredState::Drifted);
+    assert_eq!(GeminiSpec.read_state(&ctx, common::GATEWAY), WiredState::Drifted);
 }
 
 #[test]
