@@ -39,3 +39,4 @@ build/
 *.so
 *.dylib
 *.dll
+.worktrees/
