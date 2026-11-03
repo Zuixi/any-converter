@@ -42,32 +42,27 @@ pub(crate) use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-pub(crate) use log::{debug, error, info, warn};
+pub(crate) use log::{error, info, warn};
 pub(crate) use reqwest::Client;
 pub(crate) use serde_json::Value;
 
-pub(crate) use crate::agent_id::agent_of;
 pub(crate) use crate::auth::{self, AuthError};
 pub(crate) use crate::config::{RouteStrategy, ServerConfig, UpstreamApi};
 pub(crate) use crate::credentials::allowance::{CopilotAllowances, copilot_allowance};
-pub(crate) use crate::credentials::copilot::{
-    COPILOT_DEFAULT_API_BASE, CopilotError, CopilotSessions, copilot_api_headers,
-};
+pub(crate) use crate::credentials::copilot::CopilotSessions;
 pub(crate) use crate::credentials::signout::{self, RevokeOutcome};
 pub(crate) use crate::credentials::{
     AccountResolver, Allowance, ApiKeySource, Credential, Limit, TokenSource,
 };
-pub(crate) use crate::model::{extract_model_from_body, patch_model_in_body, strip_private_fields};
-pub(crate) use crate::namespace::{extract_namespace_map, patch_response_namespaces};
+pub(crate) use crate::model::{extract_model_from_body, patch_model_in_body};
 pub(crate) use crate::observability::utf8_prefix;
 pub(crate) use crate::plugins::ManagedHosts;
 pub(crate) use crate::provider_pool::order_accounts;
-pub(crate) use crate::proxy::build_upstream_url_for_provider;
 pub(crate) use crate::request_log::{RequestLogContext, RequestLogger};
 pub(crate) use crate::route_strategy::order_provider_names;
 pub(crate) use crate::router::RouteInfo;
 pub(crate) use crate::signin_task::SignInTasks;
-pub(crate) use crate::usage::{self, UsageLogger, UsageRecord};
+pub(crate) use crate::usage::UsageLogger;
 
 #[derive(Clone)]
 pub struct AppState {
