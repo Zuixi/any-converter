@@ -349,7 +349,7 @@ Tauri 后端需要管理一个 `tokio::task::JoinHandle`，实现：
 - `start_server()`：从 DB 读取配置 → 构造 `ServerConfig` → `tokio::spawn(any_converter_server::run(config))`
 - `stop_server()`：`handle.abort()` + 等待优雅关闭
 - 通过 Tauri Event 向前端推送状态变更
-- 默认 `server.host=0.0.0.0`（局域网可达）；旧默认 `127.0.0.1` 经一次性标记 `server.host.lan_default_applied` 迁移
+- 默认 `server.host=127.0.0.1`（仅回环）；局域网绑定是运维的显式选择。曾短暂默认过 `0.0.0.0`（带 `server.host.lan_default_applied` 一次性迁移标记），已回退，标记行会被种子逻辑清理
 
 ### 2. 配置与 DB 的同步
 

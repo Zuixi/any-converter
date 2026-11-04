@@ -10,6 +10,7 @@ use tauri::State;
 use crate::db::{DesktopModelRoute, DesktopProvider};
 use crate::secrets;
 use crate::server_manager::ServerStatus;
+use crate::server_proxy::{self, ProxyError};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +64,32 @@ pub async fn update_setting(
     db.upsert_setting(&request.key, &request.value)
         .map_err(to_error)?;
     db.settings().map_err(to_error)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerRequestArgs {
+    pub method: String,
+    pub path: String,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// Thin IPC entrypoint forwarding one management call to the embedded
+/// server; the webview must never `fetch` the server cross-origin. The
+/// typed `ProxyError` rejects as a structured object, not a JSON string.
+#[tauri::command]
+pub async fn server_request(
+    state: State<'_, AppState>,
+    args: ServerRequestArgs,
+) -> Result<serde_json::Value, ProxyError> {
+    server_proxy::forward(
+        state.db(),
+        state.server_manager(),
+        &args.method,
+        &args.path,
+        args.body.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]

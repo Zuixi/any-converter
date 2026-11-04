@@ -43,9 +43,10 @@ apps/desktop/
 1. Desktop frontend should compose shared packages whenever possible.
 2. Prefer `react-router-dom` `HashRouter` for in-app navigation; do not reintroduce `useState` page switching.
 3. Frontend pages and hooks must call `src/lib/api.ts` instead of raw `invoke("command_name")` strings.
-4. Tauri commands should be thin IPC entrypoints around focused backend modules such as `db.rs`, `server_manager.rs`, and `secrets.rs`.
-5. If Desktop changes embedded server behavior or config shape, sync with the corresponding Rust crate docs under [`../../crates/AGENTS.md`](../../crates/AGENTS.md).
-6. After pulling dependency changes, install from the **repo root** (`pnpm install`). `tauri build` also runs `pnpm install` via `beforeBuildCommand` / `pretauri` so packaging does not use a stale `node_modules`.
-7. Embedded server defaults to `server.host=0.0.0.0` (LAN-reachable). Keep intentional localhost binds after the one-time `server.host.lan_default_applied` migration marker is set.
-8. Window minimum size is `1024×700` (`tauri.conf.json` + `lib.rs` `set_min_size`). Keep both in sync.
-9. Logs/Usage IPC must open `{app_data}/logs/any-converter.sqlite3` **read-only** while the embedded server may be writing; do not call `SqliteStorage::open_in_log_dir` from those read paths.
+4. The webview must NEVER `fetch` the embedded server directly — a browser origin cannot cross into loopback (the CORS preflight the server never answers surfaces as `TypeError: Failed to fetch`). Management calls go through `src/lib/management.ts` (the `server_request` Tauri command); adding a management operation = adding one typed method there. `scripts/guard-no-loopback-fetch.sh` (pre-commit + CI) rejects any loopback `fetch` under `src/`.
+5. Tauri commands should be thin IPC entrypoints around focused backend modules such as `db.rs`, `server_manager.rs`, and `secrets.rs`.
+6. If Desktop changes embedded server behavior or config shape, sync with the corresponding Rust crate docs under [`../../crates/AGENTS.md`](../../crates/AGENTS.md).
+7. After pulling dependency changes, install from the **repo root** (`pnpm install`). `tauri build` also runs `pnpm install` via `beforeBuildCommand` / `pretauri` so packaging does not use a stale `node_modules`.
+8. Embedded server defaults to `server.host=127.0.0.1` (loopback only). A LAN bind is an explicit operator choice; the retired `server.host.lan_default_applied` marker is cleaned up by `seed_defaults`.
+9. Window minimum size is `1024×700` (`tauri.conf.json` + `lib.rs` `set_min_size`). Keep both in sync.
+10. Logs/Usage IPC must open `{app_data}/logs/any-converter.sqlite3` **read-only** while the embedded server may be writing; do not call `SqliteStorage::open_in_log_dir` from those read paths.

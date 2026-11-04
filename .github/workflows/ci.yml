@@ -38,6 +38,10 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: test
         run: cargo test --workspace
+      # The desktop webview must never dial the embedded server directly
+      # (CORS makes every such call a TypeError at runtime).
+      - name: desktop webview loopback-fetch guard
+        run: ./scripts/guard-no-loopback-fetch.sh
       # Keep the release pipeline green on ordinary pushes: the CLI release
       # binary must always build, not just on tag day.
       - name: release CLI builds

@@ -20,6 +20,7 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 any-converter-core = { workspace = true }
 any-converter-server = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

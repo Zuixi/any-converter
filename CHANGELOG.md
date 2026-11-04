@@ -20,6 +20,8 @@
 ### Added
 
 - **`server_proxy.rs` end-to-end tests**: a real embedded server is spawned per test, verifying wildcard-host rewriting (`0.0.0.0` → dialable loopback), health/model forwarding, the `not_running` typed error when nothing answers, and path validation — the same paths the webview used to attempt.
+- **`src/lib/management.ts`**: the single typed façade for the server's management API. Every management path, payload shape and polling helper lives in exactly one file; pages import typed methods and never assemble URLs. Adding a management operation = adding one method there.
+- **`scripts/guard-no-loopback-fetch.sh`** (pre-commit + CI): rejects any `fetch` of `127.0.0.1` / `localhost` / `:1228` under `apps/desktop/src/` — the bug class that produced the original `TypeError` now fails the build instead of shipping. Pooled `reqwest` client on the Rust side replaces per-call construction (pages poll at 1–10s intervals).
 
 ## Unreleased — Build & Release pipeline
 
