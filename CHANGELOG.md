@@ -1,5 +1,26 @@
 # Any Converter CHANGELOGS
 
+## v0.1.1 (2026-11-04)
+
+### Fixed
+
+- **Desktop Agents page**: the agent-wiring release shipped a WebUI `/agents` page but the Desktop app — a separate Vite SPA, not the WebUI — had no Agents entry at all; installed desktop builds showed no tab. Desktop now has a native Agents page (connect/reapply/disconnect/sync/rotate-key, drift banner, 10s polling) talking to the embedded server over loopback (PR #5).
+
+### Documentation
+
+- Design-spec errata: §4.4's "Desktop reuses the WebUI page" premise never held; process lesson recorded in the spec.
+
+## Unreleased — Desktop management IPC
+
+### Fixed
+
+- **Accounts/Agents pages no longer fetch the embedded server cross-origin from the webview.** The browser origin (`http://localhost:1420` in dev, `tauri://localhost` or `http://tauri.localhost` in production) crossing into `http://127.0.0.1:1228` requires a CORS preflight the server never answered, so both pages failed instantly with `TypeError: Failed to fetch`. Management calls now travel over Tauri IPC (`server_request` command in `server_proxy.rs`), where the Rust side — the same process that hosts the server — dials loopback directly. Failures come back typed: `not_running` renders the localized “server not running” hint instead of a raw `TypeError`, and non-2xx bodies keep the server's own `error.message — error.hint` text. Path traversal and non-GET/POST methods are rejected before dialing.
+- **`server.host` now defaults to `127.0.0.1` (loopback only).** The previous default `0.0.0.0` exposed an unauthenticated management API to the LAN by default. Existing installs keep their chosen host; the retired `server.host.lan_default_applied` marker row is removed from Settings so it stops surfacing as a phantom option.
+
+### Added
+
+- **`server_proxy.rs` end-to-end tests**: a real embedded server is spawned per test, verifying wildcard-host rewriting (`0.0.0.0` → dialable loopback), health/model forwarding, the `not_running` typed error when nothing answers, and path validation — the same paths the webview used to attempt.
+
 ## Unreleased — Build & Release pipeline
 
 ### Added
