@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
       # The desktop crate links GTK 3 and WebKitGTK 4.1 through Tauri (cgo-
       # style system deps); clippy --all-targets needs their headers. Timeout:
-      # a stuck apt mirror once held another project's queue for 2.5h.
+      # a stuck apt mirror can hold the queue for hours.
       - name: Install GTK and WebKitGTK headers
         timeout-minutes: 15
         run: |
@@ -39,7 +39,7 @@ jobs:
       - name: test
         run: cargo test --workspace
       # Keep the release pipeline green on ordinary pushes: the CLI release
-      # binary must always build, not just on tag day (magpie lesson).
+      # binary must always build, not just on tag day.
       - name: release CLI builds
         run: cargo build --release -p any-converter
       - name: contract fixtures hold no raw secrets
