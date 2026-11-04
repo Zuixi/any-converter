@@ -1,0 +1,247 @@
+name: Release
+
+# Builds desktop installers and CLI binaries for three platforms, smoke-tests
+# the server binary, and publishes everything as a DRAFT GitHub release for
+# manual review. Unsigned for now (no notarization); signing can be layered
+# on later by switching the bundle step to tauri-action with signing env.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+            # macOS builds both arm64 and x86_64 CLI binaries; desktop is arm64 only.
+            extra_cli_target: x86_64-apple-darwin
+            cli_rename: 'any-converter-aarch64-apple-darwin.tar.gz'
+            cli_rename_x64: 'any-converter-x86_64-apple-darwin.tar.gz'
+          - name: linux-amd64
+            os: ubuntu-22.04
+            cli_rename: 'any-converter-x86_64-unknown-linux-gnu.tar.gz'
+          - name: windows-x64
+            os: windows-latest
+            cli_rename: 'any-converter-x86_64-pc-windows-msvc.zip'
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tag version must match tauri.conf.json's version, so a release never
+      # ships installers whose About box disagrees with the tag.
+      - name: Check tag version matches tauri.conf.json
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          CONF=$(jq -r '.version' apps/desktop/src-tauri/tauri.conf.json)
+          if [ "$TAG" != "$CONF" ]; then
+            echo "::error::tag v$TAG does not match tauri.conf.json version $CONF" >&2
+            exit 1
+          fi
+          echo "Releasing $TAG (tauri.conf.json agrees)"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          standalone: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.extra_cli_target || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The desktop crate links GTK 3 and WebKitGTK 4.1 through Tauri; the
+      # bundle step needs their headers and tools. Timeout: a stuck apt
+      # mirror once held a CI queue for 2.5h in another project.
+      - name: Install GTK and WebKitGTK
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop installers
+        run: pnpm --filter @any-converter/desktop tauri build
+
+      # CLI shares the workspace target dir with the desktop build, so this
+      # is mostly a relink; smoke test runs against this very binary.
+      - name: Build CLI
+        shell: bash
+        run: cargo build --release -p any-converter
+
+      - name: Build CLI (x86_64-apple-darwin)
+        if: runner.os == 'macOS'
+        run: cargo build --release -p any-converter --target x86_64-apple-darwin
+
+      # Smoke test (magpie-style): the release binary must boot, answer
+      # /health and /v1/models, and reject an unknown model with a
+      # structured error without crashing. No real upstream needed — a dummy
+      # base-url is enough for the server to start.
+      - name: Smoke test the server
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=target/release/any-converter
+          "$BIN" serve --port 18931 --format openai-chat \
+            --base-url https://api.example.com --upstream-key sk-ci-dummy \
+            >/tmp/ac-smoke.log 2>&1 &
+          SRV=$!
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:18931/health >/dev/null && break
+            sleep 1
+          done
+          H=$(curl -sf http://127.0.0.1:18931/health)
+          echo "$H" | jq -e '.status == "ok"' >/dev/null || { echo "bad /health: $H"; exit 1; }
+          curl -sf http://127.0.0.1:18931/v1/models | jq -e '.data and (.data | type == "array")' >/dev/null
+          CODE=$(curl -s -o /tmp/ac-err.json -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"ci-unknown-model","messages":[{"role":"user","content":"hi"}]}' \
+            http://127.0.0.1:18931/v1/chat/completions)
+          echo "chat answered HTTP $CODE"; cat /tmp/ac-err.json; echo
+          if [ "$CODE" -lt 400 ]; then echo "unknown model must fail 4xx/5xx, got $CODE"; exit 1; fi
+          jq -e '.error.type' /tmp/ac-err.json >/dev/null || { echo "error body not structured"; exit 1; }
+          kill $SRV 2>/dev/null || true
+          echo "smoke ok"
+
+      # Windows: same checks with PowerShell; curl.exe ships with the runner.
+      - name: Smoke test the server (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target\release\any-converter.exe"
+          $srv = Start-Process -FilePath $bin -ArgumentList @(
+            'serve','--port','18931','--format','openai-chat',
+            '--base-url','https://api.example.com','--upstream-key','sk-ci-dummy'
+          ) -PassThru -RedirectStandardOutput 'ac-smoke-out.log' -RedirectStandardError 'ac-smoke-err.log'
+          try {
+            $ok = $false
+            foreach ($i in 1..30) {
+              try { Invoke-RestMethod http://127.0.0.1:18931/health -TimeoutSec 2 | Out-Null; $ok = $true; break } catch { Start-Sleep 1 }
+            }
+            if (-not $ok) { Get-Content ac-smoke-err.log -ErrorAction SilentlyContinue | Select-Object -First 20; throw 'server never became healthy' }
+            $h = Invoke-RestMethod http://127.0.0.1:18931/health -TimeoutSec 5
+            if ($h.status -ne 'ok') { throw "bad /health: $($h | ConvertTo-Json -Compress)" }
+            $m = Invoke-RestMethod http://127.0.0.1:18931/v1/models -TimeoutSec 5
+            if (-not ($m.data -is [array])) { throw '/v1/models returned no array' }
+            try {
+              Invoke-RestMethod http://127.0.0.1:18931/v1/chat/completions -TimeoutSec 10 -Method Post `
+                -ContentType 'application/json' `
+                -Body '{"model":"ci-unknown-model","messages":[{"role":"user","content":"hi"}]}' | Out-Null
+              throw 'unknown model must not succeed'
+            } catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+              # 4xx/5xx from the server is the expected outcome (dummy upstream).
+              "chat answered HTTP $([int]$_.Exception.Response.StatusCode) (expected failure)"
+            }
+            'smoke ok'
+          } finally {
+            Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Rename and package CLI (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -czf "dist/${{ matrix.cli_rename }}" \
+            -C target/release any-converter
+          if [ -n "${{ matrix.cli_rename_x64 }}" ]; then
+            tar -czf "dist/${{ matrix.cli_rename_x64 }}" \
+              -C target/x86_64-apple-darwin/release any-converter
+          fi
+          ls -la dist/
+
+      - name: Rename and package CLI (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target\release\any-converter.exe -DestinationPath dist\${{ matrix.cli_rename }}
+          Get-ChildItem dist
+
+      - name: Collect desktop bundles
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find target/release/bundle -type f \
+            \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.appimage' \) \
+            -exec cp {} dist/ \;
+          ls -la dist/
+
+      - name: Collect desktop bundles (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $files = Get-ChildItem target\release\bundle -Recurse -File |
+            Where-Object { $_.Extension -in '.msi','.exe','.zip' }
+          $files | ForEach-Object { Copy-Item $_.FullName dist }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    # workflow_dispatch builds and uploads artifacts only; publishing needs a real tag.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF="${GITHUB_REF_NAME}"
+          gh release create "$REF" dist/* -R "$GITHUB_REPOSITORY" \
+            --draft --verify-tag \
+            --title "Any Converter $REF" \
+            --generate-notes
