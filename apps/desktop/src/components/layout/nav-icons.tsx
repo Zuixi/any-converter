@@ -136,3 +136,22 @@ export function ExpandIcon(props: IconProps) {
     </NavIcon>
   );
 }
+
+/** Agents: a plug meeting a socket (wiring an agent onto the gateway). */
+export function AgentsIcon(props: IconProps) {
+  return (
+    <NavIcon {...props}>
+      <path
+        d="M28 6V16H22C16.4772 16 12 20.4772 12 26V30H6"
+        stroke="currentColor"
+        strokeWidth="4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M22 26H34V38H22V26Z" stroke="currentColor" strokeWidth="4" strokeLinejoin="round" />
+      <path d="M6 30V38" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+      <path d="M2 34H10" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+      <path d="M38 20H46" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+    </NavIcon>
+  );
+}
