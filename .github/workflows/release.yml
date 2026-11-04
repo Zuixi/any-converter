@@ -102,7 +102,7 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo build --release -p any-converter --target x86_64-apple-darwin
 
-      # Smoke test (magpie-style): the release binary must boot, answer
+      # Smoke test: the release binary must boot, answer
       # /health and /v1/models, and reject an unknown model with a
       # structured error without crashing. No real upstream needed — a dummy
       # base-url is enough for the server to start.

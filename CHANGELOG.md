@@ -5,7 +5,7 @@
 ### Added
 
 - **Release workflow (`.github/workflows/release.yml`)**: pushing a `v*` tag now builds unsigned installers and CLI binaries — macOS `.dmg` (arm64) + CLI (arm64 & x86_64), Linux `.AppImage`/`.deb` + CLI (x86_64), Windows installer + CLI (x64) — after checking the tag matches `tauri.conf.json`'s version and smoke-testing the server binary (`/health`, `/v1/models`, and an unknown-model request must fail with a structured error). All assets ship with a `SHA256SUMS` file on a **draft** GitHub release for manual review before publishing. `workflow_dispatch` runs the builds without publishing.
-- **CI hardening**: GTK/WebKitGTK apt installs now time out after 15 minutes (a stuck mirror once held another project's queue for hours), CI runs with read-only permissions, and every push to `main` builds the release CLI binary so the release pipeline stays green between tags.
+- **CI hardening**: GTK/WebKitGTK apt installs now time out after 15 minutes (a stuck mirror can hold the queue for hours), CI runs with read-only permissions, and every push to `main` builds the release CLI binary so the release pipeline stays green between tags.
 
 ## Unreleased — Usage Statistics
 
