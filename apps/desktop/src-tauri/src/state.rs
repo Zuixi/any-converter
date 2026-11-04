@@ -50,17 +50,13 @@ impl AppState {
 
 pub fn seed_defaults(db: &DesktopDb) -> Result<(), DbError> {
     let settings = db.settings()?;
-    // Bind all interfaces by default so LAN clients can reach the embedded server.
+    // Bind loopback by default; a LAN bind is an explicit operator choice.
     if !settings.contains_key("server.host") {
-        db.upsert_setting("server.host", "0.0.0.0")?;
-    } else if !settings.contains_key("server.host.lan_default_applied")
-        && settings.get("server.host").map(String::as_str) == Some("127.0.0.1")
-    {
-        // One-time migration from the previous localhost-only product default.
-        db.upsert_setting("server.host", "0.0.0.0")?;
+        db.upsert_setting("server.host", "127.0.0.1")?;
     }
-    if !settings.contains_key("server.host.lan_default_applied") {
-        db.upsert_setting("server.host.lan_default_applied", "1")?;
+    // Remove the retired LAN-default marker so it stops showing in Settings.
+    if settings.contains_key("server.host.lan_default_applied") {
+        db.delete_setting("server.host.lan_default_applied")?;
     }
     if !settings.contains_key("server.port") {
         db.upsert_setting("server.port", "1228")?;

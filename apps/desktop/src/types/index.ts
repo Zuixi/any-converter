@@ -32,6 +32,13 @@ export interface ServerStatus {
   last_error?: string;
 }
 
+/** One management call forwarded to the embedded server over IPC. */
+export interface ServerProxyRequest {
+  method: "GET" | "POST";
+  path: string;
+  body?: string;
+}
+
 export interface CreateProviderRequest {
   name: string;
   format: string;

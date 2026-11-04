@@ -14,6 +14,7 @@ import type {
   CreateProviderRequest,
   DesktopProvider,
   DesktopRoute,
+  ServerProxyRequest,
   ServerStatus,
   UpdateSettingRequest,
 } from "../types";
@@ -68,6 +69,10 @@ export const api = {
 
   getServerStatus(): Promise<ServerStatus> {
     return invoke("get_server_status");
+  },
+
+  serverRequest(request: ServerProxyRequest): Promise<unknown> {
+    return invoke("server_request", { args: request });
   },
 
   startServer(): Promise<ServerStatus> {

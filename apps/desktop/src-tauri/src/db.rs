@@ -81,6 +81,12 @@ impl DesktopDb {
         Ok(())
     }
 
+    pub fn delete_setting(&self, key: &str) -> Result<(), DbError> {
+        let conn = self.conn.lock().map_err(|_| DbError::MutexPoisoned)?;
+        conn.execute("delete from app_settings where key = ?1", params![key])?;
+        Ok(())
+    }
+
     pub fn settings(&self) -> Result<HashMap<String, String>, DbError> {
         let conn = self.conn.lock().map_err(|_| DbError::MutexPoisoned)?;
         let mut stmt = conn.prepare("select key, value from app_settings order by key asc")?;
@@ -261,7 +267,7 @@ impl DesktopDb {
                 host: settings
                     .get("server.host")
                     .cloned()
-                    .unwrap_or_else(|| "0.0.0.0".to_string()),
+                    .unwrap_or_else(|| "127.0.0.1".to_string()),
                 port: parse_u16_setting(&settings, "server.port", 1228)?,
                 api_key: settings.get("server.api_key").cloned(),
                 pass_through_headers: Default::default(),

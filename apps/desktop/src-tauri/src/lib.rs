@@ -2,6 +2,7 @@ pub mod commands;
 pub mod db;
 pub mod secrets;
 pub mod server_manager;
+pub mod server_proxy;
 pub mod state;
 
 use tauri::{LogicalSize, Manager};
@@ -35,6 +36,7 @@ pub fn run() {
             commands::get_usage_summary,
             commands::list_ledger_page,
             commands::get_server_status,
+            commands::server_request,
             commands::start_server,
             commands::stop_server,
             commands::restart_server,

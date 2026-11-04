@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, oneshot};
 use crate::db::{DbError, DesktopDb};
 use crate::secrets;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerRunState {
     Stopped,
@@ -62,7 +62,7 @@ impl ServerManager {
                 task: None,
                 status: ServerStatus {
                     state: ServerRunState::Stopped,
-                    host: "0.0.0.0".to_string(),
+                    host: "127.0.0.1".to_string(),
                     port: 1228,
                     last_error: None,
                 },
@@ -150,6 +150,20 @@ impl ServerManager {
             let _ = self.stop().await;
         }
         self.start(db, log_dir).await
+    }
+
+    /// Test-only constructor: a manager that already reports the given
+    /// running address without a real task behind it. Not part of the app's
+    /// API surface.
+    #[doc(hidden)]
+    pub fn fake_running(host: &str, port: u16) -> Self {
+        let manager = Self::new();
+        if let Ok(mut inner) = manager.inner.try_lock() {
+            inner.status.state = ServerRunState::Running;
+            inner.status.host = host.to_string();
+            inner.status.port = port;
+        }
+        manager
     }
 }
 

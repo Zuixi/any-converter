@@ -16,50 +16,14 @@ import { ErrorBanner } from "../components/layout/ErrorBanner";
 import { Field } from "../components/layout/Field";
 import { Header } from "../components/layout/Header";
 import { Table } from "../components/layout/Table";
-import { api } from "../lib/api";
-
-/** `GET /v1/accounts` entry (tokens are never part of the payload). */
-interface AccountEntry {
-  id: string;
-  kind: string;
-  provider: string;
-  account: string;
-}
-
-/** `SignInTask` snapshot (`POST/GET /v1/accounts/signin*`). */
-interface SignInTask {
-  id: string;
-  provider: string;
-  state: string;
-  url: string;
-  code: string;
-  instructions: string;
-  paste_callback: boolean;
-  paste_code: boolean;
-  user: string;
-  plan: string;
-  error: string;
-}
-
-/** One allowance window of `GET /v1/accounts/quotas`. */
-interface QuotaWindow {
-  name: string;
-  used: number;
-  resets?: string;
-}
-
-/** `GET /v1/accounts/plugins`. */
-interface PluginEntry {
-  spec: string;
-  providers: { id: string; name: string; methods: { type: string; label: string }[] }[];
-  error: string;
-}
-
-interface QuotaEntry {
-  provider: string;
-  account: string;
-  windows: QuotaWindow[];
-}
+import {
+  management,
+  useServerRequest,
+  type AccountEntry,
+  type PluginEntry,
+  type QuotaEntry,
+  type SignInTask,
+} from "../lib/management";
 
 const STRINGS = {
   en: {
@@ -101,7 +65,6 @@ const STRINGS = {
       "OpenAI registers this app as you sign in, so the address the browser ends on " +
       "carries the code and the client id. Paste the whole address.",
     pasteCode: "Paste the code Claude's page shows, or the whole address it ended on",
-    unreachable: "The server is not reachable (is it running?).",
     plugins: "Plugins",
     pluginsNone: "No plugins installed. `any-converter plugin install <spec>` adds one.",
     pluginFailed: "won't load",
@@ -161,7 +124,6 @@ const STRINGS = {
     siwcHint:
       "登录过程中 OpenAI 会现场注册本应用，所以浏览器最终落到的地址里同时带着 code 与 client id。请粘贴整条地址。",
     pasteCode: "粘贴 Claude 页面显示的 code，或浏览器最终落到的整条地址",
-    unreachable: "服务器不可达（是否已启动？）。",
     plugins: "插件",
     pluginsNone: "尚未安装插件。`any-converter plugin install <spec>` 可安装一个。",
     pluginFailed: "无法加载",
@@ -230,71 +192,25 @@ export function AccountsPage() {
   const [error, setError] = useState<string | undefined>();
   const [copied, setCopied] = useState(false);
 
-  // The server's address and client key come from the desktop settings.
-  const [server, setServer] = useState<{ base: string; apiKey?: string } | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getSettings()
-      .then((settings) => {
-        if (cancelled) return;
-        const host = settings["server.host"] || "127.0.0.1";
-        const port = settings["server.port"] || "1228";
-        // A wildcard bind cannot be dialed back; loopback always can.
-        const reachable = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-        const apiKey = settings["server.api_key"] || undefined;
-        setServer({ base: `http://${reachable}:${port}`, apiKey });
-      })
-      .catch(() => {
-        if (!cancelled) setError(s.unreachable);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [s]);
-
-  const request = useCallback(
-    async <T,>(path: string, init?: RequestInit): Promise<T> => {
-      if (!server) throw new Error(s.unreachable);
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (server.apiKey) headers.Authorization = `Bearer ${server.apiKey}`;
-      const response = await fetch(`${server.base}${path}`, { ...init, headers });
-      if (!response.ok) {
-        let message = `${response.status} ${response.statusText}`;
-        try {
-          const data = (await response.json()) as { error?: { message?: string } };
-          message = data.error?.message ?? message;
-        } catch {
-          // non-JSON error body: keep the status text
-        }
-        throw new Error(message);
-      }
-      return (await response.json()) as T;
-    },
-    [server, s],
-  );
+  // Management calls travel over Tauri IPC (see useServerRequest); the
+  // webview never fetches the embedded server cross-origin.
+  const { describeError } = useServerRequest();
 
   const refresh = useCallback(async () => {
     try {
-      const [data, quotaData, pluginData] = await Promise.all([
-        request<{ accounts: AccountEntry[] }>("/v1/accounts"),
-        request<{ accounts: QuotaEntry[] }>("/v1/accounts/quotas"),
-        request<{ plugins: PluginEntry[] }>("/v1/accounts/plugins").catch(
-          () => ({ plugins: [] as PluginEntry[] }),
-        ),
-      ]);
-      setPlugins(pluginData.plugins ?? []);
-      setAccounts(data.accounts ?? []);
+      const overview = await management.accountsOverview();
+      setPlugins(overview.plugins);
+      setAccounts(overview.accounts);
       const byAccount: Record<string, QuotaEntry> = {};
-      for (const entry of quotaData.accounts ?? []) {
+      for (const entry of overview.quotas) {
         byAccount[entry.account] = entry;
       }
       setQuotas(byAccount);
       setError(undefined);
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(cause));
     }
-  }, [request]);
+  }, [describeError]);
 
   useEffect(() => {
     void refresh();
@@ -304,7 +220,7 @@ export function AccountsPage() {
   useEffect(() => {
     if (!task || task.state !== "waiting") return;
     const timer = window.setInterval(() => {
-      request<SignInTask>(`/v1/accounts/signin/${task.id}`)
+      management.pollSignIn(task.id)
         .then((latest) => {
           setTask(latest);
           if (latest.state === "done") void refresh();
@@ -314,7 +230,7 @@ export function AccountsPage() {
         });
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [task, request, refresh]);
+  }, [task, refresh]);
 
   const start = async () => {
     setBusy(true);
@@ -328,13 +244,10 @@ export function AccountsPage() {
         payload.provider = `plugin:${id}`;
         payload.spec = spec;
       }
-      const started = await request<SignInTask>("/v1/accounts/signin", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+      const started = await management.startSignIn(payload as { provider: string });
       setTask(started);
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(cause));
     } finally {
       setBusy(false);
     }
@@ -345,14 +258,11 @@ export function AccountsPage() {
     setBusy(true);
     setError(undefined);
     try {
-      const finished = await request<SignInTask>(`/v1/accounts/signin/${task.id}/submit`, {
-        method: "POST",
-        body: JSON.stringify({ input: pastedUrl }),
-      });
+      const finished = await management.submitSignIn(task.id, pastedUrl);
       setTask(finished);
       if (finished.state === "done") void refresh();
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(cause));
     } finally {
       setBusy(false);
     }
@@ -361,13 +271,7 @@ export function AccountsPage() {
   const cancel = async () => {
     if (!task) return;
     try {
-      await fetch(`${server?.base}/v1/accounts/signin/${task.id}/cancel`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(server?.apiKey ? { Authorization: `Bearer ${server.apiKey}` } : {}),
-        },
-      });
+      await management.cancelSignIn(task.id);
     } catch {
       // best effort
     }
@@ -378,14 +282,11 @@ export function AccountsPage() {
   const saveOrder = async (provider: string, ids: string[]) => {
     setError(undefined);
     try {
-      await request(`/v1/accounts/order`, {
-        method: "POST",
-        body: JSON.stringify({ provider, accounts: ids }),
-      });
+      await management.saveAccountOrder(provider, ids);
       setOrder((prev) => ({ ...prev, [provider]: ids }));
       setNotice(s.orderSaved);
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(cause));
     }
   };
 
@@ -406,34 +307,31 @@ export function AccountsPage() {
   const adopt = async (id: string) => {
     setError(undefined);
     try {
-      await request(`/v1/accounts/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+      await management.adoptAccount(id);
       setNotice(s.adopted);
       void refresh();
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(cause));
     }
   };
 
   const release = async (id: string) => {
     setError(undefined);
     try {
-      await request(`/v1/accounts/${encodeURIComponent(id)}/release`, { method: "POST" });
+      await management.releaseAccount(id);
       setNotice(s.released);
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(cause));
     }
   };
 
   const remove = async (id: string) => {
     setError(undefined);
     try {
-      await request<{ outcome: string }>(`/v1/accounts/${encodeURIComponent(id)}/remove`, {
-        method: "POST",
-        body: "{}",
-      });
+      await management.removeAccount(id);
       await refresh();
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(cause));
     }
   };
 
@@ -582,7 +480,7 @@ export function AccountsPage() {
               {s.siwcHint}
             </p>
           )}
-          <Button className="w-fit" onClick={() => void start()} disabled={busy || !server}>
+          <Button className="w-fit" onClick={() => void start()} disabled={busy}>
             {s.start}
           </Button>
 

@@ -2,22 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "@any-converter/core";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@any-converter/ui";
 
-import { api } from "../lib/api";
-
-type AgentStatus = "connected" | "drifted" | "disconnected" | "absent";
-
-interface AgentSummary {
-  id: string;
-  status: AgentStatus;
-  model?: string;
-  key_id?: string;
-}
-
-interface ConnectReport {
-  agent: string;
-  status: string;
-  files_written?: string[];
-}
+import {
+  management,
+  useServerRequest,
+  type AgentStatus,
+  type AgentSummary,
+} from "../lib/management";
 
 const AGENT_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
@@ -46,70 +36,24 @@ export function AgentsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
-  const [server, setServer] = useState<{ base: string; apiKey?: string }>();
   const visible = useRef(true);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const settings = (await api.getSettings()) as Record<string, string> | void;
-      if (cancelled || !settings) return;
-      const host = settings["server.host"] || "127.0.0.1";
-      const port = settings["server.port"] || "1228";
-      const reachable = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-      setServer({
-        base: `http://${reachable}:${port}`,
-        apiKey: settings["server.api_key"] || undefined,
-      });
-    })().catch(() => setError("server unreachable"));
-    return () => {
-      cancelled = true;
-    };
-  }, [api]);
-
-  const request = useCallback(
-    async <T,>(path: string, init?: RequestInit): Promise<T> => {
-      if (!server) throw new Error("server unreachable");
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (server.apiKey) headers.Authorization = `Bearer ${server.apiKey}`;
-      const response = await fetch(`${server.base}${path}`, { ...init, headers });
-      if (!response.ok) {
-        let message = `${response.status} ${response.statusText}`;
-        try {
-          const data = (await response.json()) as { error?: { message?: string; hint?: string } };
-          message = [data.error?.message, data.error?.hint].filter(Boolean).join(" — ") || message;
-        } catch {
-          // keep status text
-        }
-        throw new Error(message);
-      }
-      return (await response.json()) as T;
-    },
-    [server],
-  );
+  // Management calls travel over Tauri IPC (see useServerRequest); the
+  // webview never fetches the embedded server cross-origin.
+  const { describeError } = useServerRequest();
 
   const refresh = useCallback(async () => {
-    if (!server || !visible.current) return;
+    if (!visible.current) return;
     try {
-      const [list, modelList] = await Promise.all([
-        request<{ agents: AgentSummary[] }>("/v1/agents"),
-        request<{ data?: { id?: string }[] } | { models?: { id?: string }[] }>("/v1/models").catch(
-          () => ({ data: [] as { id?: string }[] }),
-        ),
-      ]);
-      setAgents(list.agents ?? []);
-      const raw =
-        "data" in modelList
-          ? (modelList.data ?? [])
-          : ((modelList as { models?: { id?: string }[] }).models ?? []);
-      const ids = raw.map((entry) => entry.id ?? "").filter(Boolean);
+      const { agents: list, models: ids } = await management.agentsWithModels();
+      setAgents(list);
       setModels(ids);
       setModel((current) => (current && ids.includes(current) ? current : (ids[0] ?? "")));
       setError(undefined);
     } catch (cause) {
-      setError(String(cause));
+      setError(describeError(cause));
     }
-  }, [request, server]);
+  }, [describeError]);
 
   useEffect(() => {
     void refresh();
@@ -131,10 +75,7 @@ export function AgentsPage() {
       setBusy(`${id}:${action}`);
       setNotice(undefined);
       try {
-        const report = await request<ConnectReport>(`/v1/agents/${id}/${action}`, {
-          method: "POST",
-          body: JSON.stringify(body ?? {}),
-        });
+        const report = await management.agentAction(id, action, body);
         if (action === "connect" || action === "key/rotate") {
           const files = report.files_written?.length ?? 0;
           setNotice(`${id}: ${report.status}${files ? ` (${files} file(s) written)` : ""}`);
@@ -143,12 +84,12 @@ export function AgentsPage() {
         }
         await refresh();
       } catch (cause) {
-        setError(String(cause));
+        setError(describeError(cause));
       } finally {
         setBusy(null);
       }
     },
-    [refresh, request],
+    [refresh, describeError],
   );
 
   return (

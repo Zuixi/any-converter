@@ -14,18 +14,28 @@ fn desktop_tauri_dir() -> PathBuf {
 }
 
 #[test]
-fn defaults_and_migrates_server_host_to_all_interfaces() {
+fn defaults_to_loopback_and_cleans_up_the_retired_lan_marker() {
     let temp = tempfile::tempdir().unwrap();
     let db = DesktopDb::open(temp.path().join("desktop.sqlite3")).unwrap();
 
     seed_defaults(&db).unwrap();
     let config = db.build_server_config(temp.path().join("logs")).unwrap();
-    assert_eq!(config.server.host, "0.0.0.0");
+    assert_eq!(config.server.host, "127.0.0.1");
 
-    // Legacy localhost default is migrated once when the marker is absent.
+    // The retired LAN-default marker is removed so it stops showing in Settings.
+    assert!(
+        !db.settings()
+            .unwrap()
+            .contains_key("server.host.lan_default_applied")
+    );
+
+    // A fresh install that already saw the old LAN default keeps the host the
+    // user had (an explicit choice is never rewritten), but drops the marker.
     let temp2 = tempfile::tempdir().unwrap();
     let db2 = DesktopDb::open(temp2.path().join("desktop.sqlite3")).unwrap();
-    db2.upsert_setting("server.host", "127.0.0.1").unwrap();
+    db2.upsert_setting("server.host", "0.0.0.0").unwrap();
+    db2.upsert_setting("server.host.lan_default_applied", "1")
+        .unwrap();
     seed_defaults(&db2).unwrap();
     assert_eq!(
         db2.settings()
@@ -34,16 +44,10 @@ fn defaults_and_migrates_server_host_to_all_interfaces() {
             .map(String::as_str),
         Some("0.0.0.0")
     );
-
-    // An intentional localhost bind after migration is preserved.
-    db2.upsert_setting("server.host", "127.0.0.1").unwrap();
-    seed_defaults(&db2).unwrap();
-    assert_eq!(
-        db2.settings()
+    assert!(
+        !db2.settings()
             .unwrap()
-            .get("server.host")
-            .map(String::as_str),
-        Some("127.0.0.1")
+            .contains_key("server.host.lan_default_applied")
     );
 }
 
