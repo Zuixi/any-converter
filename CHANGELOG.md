@@ -1,5 +1,13 @@
 # Any Converter CHANGELOGS
 
+## v0.1.2 (2026-11-04)
+
+### Fixed
+
+- **Accounts/Agents pages no longer fail with `TypeError: Failed to fetch`** (root cause: the webview's cross-origin `fetch` into `http://127.0.0.1:<port>` triggers a CORS preflight the server never answers). Management calls now travel over Tauri IPC (`server_request` in `server_proxy.rs`): the Rust side — the same process that hosts the server — dials loopback directly. Typed failures render localized next-step hints (`not_running` says "start the server") instead of a raw TypeError.
+- **`server.host` defaults to `127.0.0.1`** (loopback only); the previous `0.0.0.0` default exposed the unauthenticated management API to the LAN.
+- **Plugin empty-state hint** now says the CLI is a separate release download (with the Windows asset name) instead of assuming it is already on PATH.
+
 ## v0.1.1 (2026-11-04)
 
 ### Fixed
