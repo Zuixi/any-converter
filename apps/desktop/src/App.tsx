@@ -10,6 +10,7 @@ import { LogsPage } from "./pages/LogsPage";
 import { PlaygroundPage } from "./pages/PlaygroundPage";
 import { ProvidersPage } from "./pages/ProvidersPage";
 import { RoutesPage } from "./pages/RoutesPage";
+import { AgentsPage } from "./pages/AgentsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
 
@@ -25,6 +26,7 @@ export function App() {
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="providers" element={<ProvidersPage />} />
             <Route path="accounts" element={<AccountsPage />} />
+            <Route path="agents" element={<AgentsPage />} />
             <Route path="routes" element={<RoutesPage />} />
             <Route path="playground" element={<PlaygroundPage />} />
             <Route path="logs" element={<LogsPage />} />

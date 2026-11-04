@@ -2,6 +2,7 @@ import type { ComponentType, SVGProps } from "react";
 import type { TranslationKey } from "@any-converter/core";
 
 import {
+  AgentsIcon,
   DashboardIcon,
   LogsIcon,
   PlaygroundIcon,
@@ -37,6 +38,7 @@ export const navItems: Array<{
     fallback: "Accounts",
     Icon: ProvidersIcon,
   },
+  { path: "/agents", label: "nav.agents", Icon: AgentsIcon },
   { path: "/playground", label: "nav.playground", Icon: PlaygroundIcon },
   { path: "/logs", label: "nav.logs", Icon: LogsIcon },
   { path: "/usage", label: "nav.usage", Icon: UsageIcon },

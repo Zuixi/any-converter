@@ -3,6 +3,7 @@ export type AppPath =
   | "/providers"
   | "/routes"
   | "/accounts"
+  | "/agents"
   | "/playground"
   | "/logs"
   | "/usage"
