@@ -106,7 +106,7 @@ fn sqlite_storage_initializes_schema_and_persists_logs() {
 }
 
 #[test]
-fn sqlite_storage_reads_request_logs_and_hourly_usage() {
+fn sqlite_storage_reads_request_logs_and_aggregates_them() {
     let temp = tempfile::tempdir().unwrap();
     let storage = SqliteStorage::open(temp.path().join("any-converter.sqlite3")).unwrap();
     storage
@@ -132,16 +132,25 @@ fn sqlite_storage_reads_request_logs_and_hourly_usage() {
     assert_eq!(readonly_records.len(), 2);
     assert_eq!(readonly_records[0].request_id, "req-2");
 
-    let usage = storage.hourly_usage_from_request_logs(50).unwrap();
-    assert_eq!(usage.len(), 1);
-    assert_eq!(usage[0].timestamp, "2026-07-16T12:00:00Z");
-    assert_eq!(usage[0].input_tokens, 1222);
-    assert_eq!(usage[0].output_tokens, 77);
-    assert_eq!(usage[0].total_tokens, 1299);
-    assert_eq!(usage[0].request_count, 2);
-    assert_eq!(usage[0].error_count, 1);
-    assert_eq!(usage[0].avg_latency_ms, 2117);
-    assert_eq!(usage[0].max_latency_ms, 3000);
+    // Aggregation reads the rollup, and both calls fall in one hour.
+    let query = UsageQuery {
+        from: "2026-07-16T00:00:00Z".to_string(),
+        to: "2026-07-17T00:00:00Z".to_string(),
+        granularity: Granularity::Hour,
+        provider: None,
+        model: None,
+        agent: None,
+        account: None,
+        split_by: None,
+    };
+    let summary = storage.usage_summary(&query).unwrap();
+    assert_eq!(summary.totals.calls, 2);
+    assert_eq!(summary.totals.errors, 1);
+    assert_eq!(summary.totals.input_tokens, 1222);
+    assert_eq!(summary.totals.output_tokens, 77);
+    assert_eq!(summary.totals.latency_max_ms, 3000);
+    assert_eq!(summary.series.len(), 1);
+    assert_eq!(summary.series[0].timestamp, "2026-07-16T12:00:00Z");
 }
 
 #[test]

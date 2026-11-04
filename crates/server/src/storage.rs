@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{OpenFlags, params};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::request_log::RequestLogRecord;
@@ -52,22 +51,6 @@ const TOTALS_DECODE_AGGREGATES: &str = "\
 /// Index of the first decode aggregate in a summary row: bucket, provider, model,
 /// agent, `calls`, then the 16 aggregates above.
 const DECODE_OFFSET: usize = 21;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HourlyUsage {
-    pub timestamp: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub total_tokens: u64,
-    pub request_count: u64,
-    pub status: u16,
-    pub latency_ms: u64,
-    pub avg_latency_ms: u64,
-    pub max_latency_ms: u64,
-    pub error_count: u64,
-    pub provider: String,
-    pub client_model: String,
-}
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -143,70 +126,6 @@ impl SqliteStorage {
         let mut records = Vec::new();
         for row in rows {
             records.push(serde_json::from_str(&row?)?);
-        }
-        Ok(records)
-    }
-
-    pub fn hourly_usage_from_request_logs(
-        &self,
-        limit: u64,
-    ) -> Result<Vec<HourlyUsage>, StorageError> {
-        let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            r#"
-            select
-                hour,
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                request_count,
-                status,
-                avg_latency_ms,
-                max_latency_ms,
-                error_count,
-                provider,
-                client_model
-            from (
-                select
-                    strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hour,
-                    sum(input_tokens) as input_tokens,
-                    sum(output_tokens) as output_tokens,
-                    sum(total_tokens) as total_tokens,
-                    count(*) as request_count,
-                    max(response_status) as status,
-                    cast(round(avg(latency_ms)) as integer) as avg_latency_ms,
-                    max(latency_ms) as max_latency_ms,
-                    sum(case when response_status >= 400 then 1 else 0 end) as error_count,
-                    min(provider) as provider,
-                    min(client_model) as client_model
-                from request_logs
-                group by hour
-                order by hour desc
-                limit ?1
-            )
-            order by hour asc
-            "#,
-        )?;
-        let rows = stmt.query_map([to_i64(limit)], |row| {
-            let avg_latency_ms = row.get::<_, u64>(6)?;
-            Ok(HourlyUsage {
-                timestamp: row.get(0)?,
-                input_tokens: row.get(1)?,
-                output_tokens: row.get(2)?,
-                total_tokens: row.get(3)?,
-                request_count: row.get(4)?,
-                status: row.get(5)?,
-                latency_ms: avg_latency_ms,
-                avg_latency_ms,
-                max_latency_ms: row.get(7)?,
-                error_count: row.get(8)?,
-                provider: row.get(9)?,
-                client_model: row.get(10)?,
-            })
-        })?;
-        let mut records = Vec::new();
-        for row in rows {
-            records.push(row?);
         }
         Ok(records)
     }
