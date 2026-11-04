@@ -273,3 +273,31 @@ three clients usable.
 - High cohesion / low coupling per §2 rules; violations are review blockers.
 - Every phase ends with monitor review: scope diff, LOC check, acceptance
   commands re-run by monitor, `cargo test -p` targeted suites green.
+
+## Errata (post-merge, 2026-11-04)
+
+**§4.4 "Desktop: zero new Tauri commands; tray/window entry opens the WebUI
+`/agents` page in the webview; Desktop reuses the WebUI page" was wrong.**
+
+Desktop (`apps/desktop`) is its own Vite SPA — its own sidebar, HashRouter,
+pages under `src/pages/`, and Tauri IPC through `src/lib/api.ts` — it does
+not load the Next.js WebUI at all. The assumption held nowhere in this
+codebase, and the agent-wiring PR shipped with a WebUI `/agents` page but
+no Desktop entry: installed desktop builds (including the first Windows
+release) showed no Agents tab. Caught by user testing, fixed in PR #5
+(`feat(desktop): Agents page`): a native `AgentsPage` speaking to the
+embedded server's `/v1/agents` over loopback with the settings-injected
+API key (AccountsPage conventions), plus sidebar/route/i18n entries.
+
+Two lessons recorded for future specs:
+
+1. When implementation discovers a design premise is false (here: within
+   days of writing §4.4), the premise must go back to the decision table
+   and be re-confirmed — not silently resolved as "no change needed".
+   The codebase fact (two independent frontends) was even noted during
+   research but never reconciled with the spec text.
+2. "Client X reuses client Y's UI" claims need a one-line verification
+   against how the client actually loads UI (webview URL? embedded SPA?
+   native windows?) before they enter a spec.
+
+`codexHome` API field remains reserved-but-unwired as stated in §4.1.
