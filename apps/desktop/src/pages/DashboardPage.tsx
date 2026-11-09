@@ -1,13 +1,5 @@
 import { useI18n } from "@any-converter/core";
-import {
-  Badge,
-  Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@any-converter/ui";
+import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@any-converter/ui";
 
 import { ErrorBanner } from "../components/layout/ErrorBanner";
 import { Header } from "../components/layout/Header";
@@ -19,7 +11,8 @@ const statusBadgeVariant: Record<ServerStatus["state"], "default" | "secondary" 
   running: "default",
   starting: "secondary",
   stopped: "outline",
-  error: "destructive",
+  stopping: "outline",
+  failed: "destructive",
 };
 
 export function DashboardPage() {
@@ -43,9 +36,7 @@ export function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">{t("desktop.dashboard.server")}</CardTitle>
-            <CardDescription>
-              {status ? `${status.host}:${status.port}` : "Loading…"}
-            </CardDescription>
+            <CardDescription>{status ? `${status.host}:${status.port}` : "Loading…"}</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
             <Badge variant={status ? statusBadgeVariant[status.state] : "secondary"} className="w-fit capitalize">
@@ -56,10 +47,18 @@ export function DashboardPage() {
             )}
             {status?.last_error && <p className="text-sm text-destructive">{status.last_error}</p>}
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => void run(api.startServer)}>{t("desktop.dashboard.start")}</Button>
-              <Button size="sm" variant="secondary" onClick={() => void run(api.stopServer)}>{t("desktop.dashboard.stop")}</Button>
-              <Button size="sm" variant="secondary" onClick={() => void run(api.restartServer)}>{t("desktop.dashboard.restart")}</Button>
-              <Button size="sm" variant="outline" onClick={() => void run(api.getServerStatus)}>{t("desktop.dashboard.refresh")}</Button>
+              <Button size="sm" onClick={() => void run(api.startServer)}>
+                {t("desktop.dashboard.start")}
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => void run(api.stopServer)}>
+                {t("desktop.dashboard.stop")}
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => void run(api.restartServer)}>
+                {t("desktop.dashboard.restart")}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => void run(api.getServerStatus)}>
+                {t("desktop.dashboard.refresh")}
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -68,9 +67,7 @@ export function DashboardPage() {
             <CardTitle className="text-lg">{t("desktop.dashboard.nextSteps")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground">
-              {t("desktop.dashboard.nextStepsBody")}
-            </p>
+            <p className="text-sm text-muted-foreground">{t("desktop.dashboard.nextStepsBody")}</p>
           </CardContent>
         </Card>
       </div>

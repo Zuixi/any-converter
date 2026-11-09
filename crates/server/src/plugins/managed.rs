@@ -196,6 +196,12 @@ impl ManagedHosts {
         }
     }
 
+    /// The auth ledger every plugin process writes through. Read-only
+    /// callers use it to list signed-in plugin accounts.
+    pub fn auth_store(&self) -> &PluginAuthStore {
+        &self.auth
+    }
+
     /// The plugin subprocess for `r`, spawned on first use.
     ///
     /// A cached host is reused while its process still answers; a dead

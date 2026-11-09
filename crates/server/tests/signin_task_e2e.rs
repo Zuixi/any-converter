@@ -19,18 +19,25 @@ use any_converter_server::config::{
     LoggingConfig, ModelRouteConfig, PassThroughHeadersConfig, ProviderConfig, RouteStrategy,
     ServerConfig, ServerSettings,
 };
+use any_converter_server::control_plane::ControlPlane;
 use any_converter_server::credentials::copilot::CopilotSessions;
 use any_converter_server::credentials::{
     AccountResolver, Credential, FileSecretStore, SecretStore,
 };
 use any_converter_server::handlers::AppState;
-use any_converter_server::router::create_router_with_state;
+use any_converter_server::home::Home;
+use any_converter_server::router::create_router_with_control_plane;
+use any_converter_server::secrets::{
+    ApiKeyStore, KEYCHAIN_SERVICE, KeychainBackend, MemoryKeychain,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use reqwest::Client;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+const MANAGEMENT_KEY: &str = "test-management-key";
 
 /// One OAuth credential with a distinctive token value (assertions check
 /// that the value never appears in an API response).
@@ -123,7 +130,23 @@ impl TestEnv {
                 )),
             )),
         });
-        let app = create_router_with_state(state);
+        let control_home = dir.path().join("control-home");
+        std::fs::create_dir_all(&control_home).unwrap();
+        std::fs::write(
+            control_home.join("config.toml"),
+            "[server]\nhost = \"127.0.0.1\"\nport = 8080\n[management]\napi_key = \"keychain:any-converter:server:management\"\n",
+        )
+        .unwrap();
+        let keychain = MemoryKeychain::new();
+        keychain
+            .set(KEYCHAIN_SERVICE, "server:management", MANAGEMENT_KEY)
+            .unwrap();
+        let prepared = ControlPlane::prepare(
+            Home::from_root(control_home),
+            ApiKeyStore::with_backend(KEYCHAIN_SERVICE, Arc::new(keychain)),
+        )
+        .unwrap();
+        let app = create_router_with_control_plane(state, prepared.control_plane);
         Self { _dir: dir, app }
     }
 
@@ -132,6 +155,7 @@ impl TestEnv {
             .uri(path)
             .method(method)
             .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {MANAGEMENT_KEY}"))
             .body(Body::from(body.map(|v| v.to_string()).unwrap_or_default()))
             .unwrap();
         let response = self.app.clone().oneshot(request).await.unwrap();

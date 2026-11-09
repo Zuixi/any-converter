@@ -255,11 +255,12 @@ cat stream-events.txt | cargo run -- stream --from openai-chat --to claude
 #### Option A: With Config File
 
 ```bash
-# Use config.toml
-cargo run -- serve --config config.toml
+# Import a temporary legacy config with literal keys
+cargo run -- serve --config legacy-bootstrap.toml --home /path/to/any-converter-home
+rm legacy-bootstrap.toml
 
-# Or use the example config
-cargo run -- serve --config config.example.toml
+# Later starts use the canonical home
+cargo run -- serve --home /path/to/any-converter-home
 ```
 
 #### Option B: Inline Arguments
@@ -270,27 +271,28 @@ cargo run -- serve \
   --port 8080 \
   --format openai-chat \
   --base-url https://api.openai.com \
-  --upstream-key sk-your-key
+  --home /path/to/any-converter-home
 ```
+
+Set `ANY_CONVERTER_UPSTREAM_KEY` in the launching shell instead of passing
+`--upstream-key`. Its value is imported into the OS keychain during this
+one-time bootstrap and is not needed on later starts.
 
 ### Using the Release Binary
 
 ```bash
 # After `cargo build --release`
 ./target/release/any-converter --help
-./target/release/any-converter serve --config config.toml
+./target/release/any-converter serve
 ```
 
 ## Configuration
 
-Copy the example config and customize:
-
-```bash
-cp config.example.toml config.toml
-# Edit config.toml with your provider settings
-```
-
-See [config.example.toml](../config.example.toml) for full documentation.
+`--config` is a one-time import, not an alternate authority. Provider and
+client keys move to the OS keychain, canonical TOML keeps only
+`keychain:any-converter:*` references, and later starts use `serve` alone.
+See [config.example.toml](../config.example.toml) for the canonical shape; it
+is not a bootstrap file because its keychain entries must already exist.
 
 ## Development Workflow
 
@@ -415,10 +417,10 @@ This produces `packages/bridge/index.{platform}.node`. If you skip this step, th
 From the repository root:
 
 ```bash
-./target/release/any-converter serve --config config.toml
+./target/release/any-converter serve
 ```
 
-By default the server listens on `http://127.0.0.1:8080`. If you changed `host`/`port` in `config.toml`, use that URL in the next step.
+By default the server listens on `http://127.0.0.1:1228`. If you changed `host`/`port`, use that URL in the next step.
 
 ### 3. Start the web app
 
@@ -428,13 +430,14 @@ In a second terminal, run:
 # Example: server on default port, logs written to ./logs at the repo root
 SERVER_URL=http://127.0.0.1:8080 \
 LOG_DIR=../../logs \
-CONFIG_PATH=../../config.toml \
+ANY_CONVERTER_URL=http://127.0.0.1:1228 \
+ANY_CONVERTER_MANAGEMENT_KEY='<management-key-value>' \
   pnpm --filter @any-converter/web dev
 ```
 
 Then open [http://localhost:3000](http://localhost:3000) (Next.js may use 3001 if 3000 is busy).
 
-> **Important about paths:** when you run `pnpm --filter @any-converter/web dev`, the working directory is `apps/web`. Make `LOG_DIR` and `CONFIG_PATH` absolute, or relative to `apps/web`. If the server writes logs to `./logs` from the repo root, use `LOG_DIR=../../logs`.
+> **Important about paths:** when you run `pnpm --filter @any-converter/web dev`, the working directory is `apps/web`. Make `LOG_DIR` absolute, or relative to `apps/web`. If the server writes logs to `./logs` from the repo root, use `LOG_DIR=../../logs`.
 
 #### Run the web app on a different port
 
@@ -444,7 +447,8 @@ Use the `PORT` environment variable, for example `9000`:
 PORT=9000 \
 SERVER_URL=http://127.0.0.1:8080 \
 LOG_DIR=../../logs \
-CONFIG_PATH=../../config.toml \
+ANY_CONVERTER_URL=http://127.0.0.1:1228 \
+ANY_CONVERTER_MANAGEMENT_KEY='<management-key-value>' \
   pnpm --filter @any-converter/web dev
 ```
 
@@ -456,13 +460,14 @@ pnpm --filter @any-converter/web dev -- -p 9000
 
 ### 4. Environment variables
 
-| Variable          | Default                 | Purpose                                                                                                                                                                                                                                                                            |
-| ----------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SERVER_URL`      | `http://127.0.0.1:8080` | URL of the running `any-converter-server`. Required for `/status` and live config reloading.                                                                                                                                                                                       |
-| `LOG_DIR`         | —                       | Directory containing `any-converter.sqlite3`, `requests.*.jsonl`, and `usage.*.jsonl`. Required for `/logs` and `/usage`; SQLite is read first, JSONL is the fallback. Request logs may include `trace` summaries for messages, tool calls, tool results, and token usage context. |
-| `CONFIG_PATH`     | `config.toml`           | Path to the TOML config file. Required for `/config`.                                                                                                                                                                                                                              |
-| `LOG_MAX_DISK_MB` | —                       | Disk quota for the log directory. If set, the status page shows usage percentage. This should match `logging.max_disk_mb` in `config.toml`.                                                                                                                                        |
-| `PORT`            | `3000`                  | Port for the Next.js dev server.                                                                                                                                                                                                                                                   |
+| Variable                       | Default                 | Purpose                                                                                                                                                                                                                                                                            |
+| ------------------------------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SERVER_URL`                   | `http://127.0.0.1:8080` | URL of the running `any-converter-server`. Required for `/status` and live config reloading.                                                                                                                                                                                       |
+| `LOG_DIR`                      | —                       | Directory containing `any-converter.sqlite3`, `requests.*.jsonl`, and `usage.*.jsonl`. Required for `/logs` and `/usage`; SQLite is read first, JSONL is the fallback. Request logs may include `trace` summaries for messages, tool calls, tool results, and token usage context. |
+| `ANY_CONVERTER_URL`            | `http://127.0.0.1:1228` | Gateway URL used by the config management proxy.                                                                                                                                                                                                                                   |
+| `ANY_CONVERTER_MANAGEMENT_KEY` | —                       | Server-side management credential supplied by the deployment secret; never exposed to the browser.                                                                                                                                                                                 |
+| `LOG_MAX_DISK_MB`              | —                       | Disk quota for the log directory. If set, the status page shows usage percentage. This should match `logging.max_disk_mb` in `config.toml`.                                                                                                                                        |
+| `PORT`                         | `3000`                  | Port for the Next.js dev server.                                                                                                                                                                                                                                                   |
 
 ### 5. Build for production
 
@@ -476,7 +481,8 @@ This runs Turborepo across the monorepo and outputs the Next.js production build
 PORT=9000 \
 SERVER_URL=http://127.0.0.1:8080 \
 LOG_DIR=../../logs \
-CONFIG_PATH=../../config.toml \
+ANY_CONVERTER_URL=http://127.0.0.1:1228 \
+ANY_CONVERTER_MANAGEMENT_KEY='<management-key-value>' \
   pnpm --filter @any-converter/web start
 ```
 

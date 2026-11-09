@@ -14,10 +14,11 @@
 //! contender.
 
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use fs4::fs_std::FileExt;
 use thiserror::Error;
 
 /// How old a lock file must be before it counts as abandoned.
@@ -56,6 +57,71 @@ enum TryAcquire {
 pub struct FileLock {
     path: PathBuf,
     stale_after: Duration,
+}
+
+/// A cross-process kernel lock that is never reclaimed while its holder runs.
+///
+/// Unlike [`FileLock`], this lock does not use an age heuristic. The kernel
+/// releases it when the process exits, so a slow startup can never be taken
+/// over by a second gateway process.
+#[derive(Clone, Debug)]
+pub struct InstanceLock {
+    path: PathBuf,
+}
+
+impl InstanceLock {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn acquire_timeout(&self, timeout: Duration) -> io::Result<InstanceLockGuard> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&self.path)?;
+            match file.try_lock_exclusive() {
+                Ok(true) => return Ok(InstanceLockGuard { file }),
+                Ok(false) => {
+                    if Instant::now() >= deadline {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "instance lock remained held",
+                        ));
+                    }
+                    std::thread::sleep(RETRY_INTERVAL);
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(error);
+                    }
+                    std::thread::sleep(RETRY_INTERVAL);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    pub async fn acquire(&self, timeout: Duration) -> io::Result<InstanceLockGuard> {
+        let lock = self.clone();
+        tokio::task::spawn_blocking(move || lock.acquire_timeout(timeout))
+            .await
+            .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?
+    }
+}
+
+#[derive(Debug)]
+pub struct InstanceLockGuard {
+    file: fs::File,
+}
+
+impl Drop for InstanceLockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 impl FileLock {
@@ -203,6 +269,25 @@ mod tests {
             std::process::id(),
             SEQ.fetch_add(1, Ordering::SeqCst)
         ))
+    }
+
+    #[test]
+    fn instance_lock_is_not_reclaimed_while_the_holder_is_alive() {
+        let path = temp_lock_path("instance-held");
+        let holder = InstanceLock::new(path.clone())
+            .acquire_timeout(Duration::from_secs(5))
+            .unwrap();
+
+        let error = InstanceLock::new(path.clone())
+            .acquire_timeout(Duration::from_millis(100))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+
+        drop(holder);
+        let _guard = InstanceLock::new(path.clone())
+            .acquire_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(path.exists());
     }
 
     #[test]

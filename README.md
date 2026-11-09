@@ -13,12 +13,12 @@ It is built for practical cross-vendor setups such as:
 
 ### Client and upstream API formats
 
-| Format | Endpoint |
-|--------|----------|
-| OpenAI Chat Completions | `/v1/chat/completions` |
-| OpenAI Responses | `/v1/responses` |
-| Claude Messages | `/v1/messages` |
-| Google Gemini | `/v1beta/models/{model}:generateContent` |
+| Format                  | Endpoint                                 |
+| ----------------------- | ---------------------------------------- |
+| OpenAI Chat Completions | `/v1/chat/completions`                   |
+| OpenAI Responses        | `/v1/responses`                          |
+| Claude Messages         | `/v1/messages`                           |
+| Google Gemini           | `/v1beta/models/{model}:generateContent` |
 
 ### Gateway capabilities
 
@@ -30,7 +30,7 @@ It is built for practical cross-vendor setups such as:
 - Request logging with redaction
 - Dual log storage: SQLite primary mirror plus JSONL fallback
 - Web UI for playground, logs, usage, status, and config editing
-- Desktop app for local provider, route, and embedded server management
+- Resident Desktop gateway for local provider, route, secret, and lifecycle management
 
 ## Quick start
 
@@ -40,27 +40,24 @@ It is built for practical cross-vendor setups such as:
 cargo install --path crates/cli
 ```
 
-### 2. Create a config
+### 2. Bootstrap the canonical home
 
-Start from the example:
-
-```bash
-cp config.example.toml config.toml
-```
-
-Minimum example:
+Canonical configuration contains secret references, never secret values:
+`config.example.toml` shows the resulting shape. Do not create it by hand on
+the first run: launch Desktop to create its keychain entries, or import a
+temporary legacy config containing literal keys once.
 
 ```toml
 [server]
 host = "127.0.0.1"
 port = 1228
-api_key = "hello-any"
+api_key = "keychain:any-converter:server:inference"
 
 [[providers]]
 name = "anthropic"
 format = "claude"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-xxx"
+api_key = "keychain:any-converter:provider:anthropic"
 
 [[model_routes]]
 pattern = "*"
@@ -70,10 +67,16 @@ provider = "anthropic"
 ### 3. Start the gateway
 
 ```bash
-any-converter serve --config config.toml
+any-converter serve
 ```
 
 Your local gateway is now available at `http://127.0.0.1:1228`.
+
+Desktop creates the canonical home and keychain entries on first launch. For a
+headless first run, set `ANY_CONVERTER_UPSTREAM_KEY`, run `serve --format ...
+--base-url ... --home ...`, and the key is imported once; later starts use
+`serve` alone. A temporary legacy config can also be imported once with
+`serve --config bootstrap.toml`, but an initialized home is never overwritten.
 
 ## Subscription accounts (OAuth)
 
@@ -81,14 +84,14 @@ Besides plain API keys, a provider can be served by a signed-in subscription
 account. The account signs its own requests, its tokens are refreshed
 automatically, and the wire it speaks is the vendor's own:
 
-| Account | Wire |
-|---|---|
-| `gemini:<email>` | Google Code Assist — `POST {base}/v1internal:generateContent`, body wrapped as `{"model":…,"request":<gemini body>}` |
-| `antigravity:<email>` | The same, on Antigravity's own OAuth app and daily Code Assist host |
-| `codex:<email>` | ChatGPT's Codex backend, `POST {base}/responses` |
-| `copilot:<login>` | `api.githubcopilot.com`, Chat or Responses per model |
-| `chatgpt-api:<email>` | OpenAI's own API, `POST https://api.openai.com/v1/responses` |
-| `claude:<email>` | Anthropic Messages, signed in through Claude Code |
+| Account               | Wire                                                                                                                 |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `gemini:<email>`      | Google Code Assist — `POST {base}/v1internal:generateContent`, body wrapped as `{"model":…,"request":<gemini body>}` |
+| `antigravity:<email>` | The same, on Antigravity's own OAuth app and daily Code Assist host                                                  |
+| `codex:<email>`       | ChatGPT's Codex backend, `POST {base}/responses`                                                                     |
+| `copilot:<login>`     | `api.githubcopilot.com`, Chat or Responses per model                                                                 |
+| `chatgpt-api:<email>` | OpenAI's own API, `POST https://api.openai.com/v1/responses`                                                         |
+| `claude:<email>`      | Anthropic Messages, signed in through Claude Code                                                                    |
 
 ```bash
 # 1. Sign in (runs the browser PKCE flow; paste the callback address if the
@@ -177,7 +180,7 @@ Point Claude-compatible traffic at the gateway:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:1228
-export ANTHROPIC_AUTH_TOKEN=hello-any
+export ANTHROPIC_AUTH_TOKEN=<inference-key>
 ```
 
 ### Codex CLI and other Responses clients
@@ -187,7 +190,7 @@ Use the OpenAI Responses wire API, not Chat Completions:
 ```toml
 base_url = "http://127.0.0.1:1228/v1"
 wire_api = "responses"
-api_key = "hello-any"
+api_key = "<inference-key>"
 ```
 
 Important:
@@ -200,7 +203,7 @@ Important:
 
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:1228/v1
-export OPENAI_API_KEY=hello-any
+export OPENAI_API_KEY=<inference-key>
 ```
 
 ## Routing models to providers
@@ -212,19 +215,19 @@ The recommended setup is `model_routes`, not legacy format-only routes.
 name = "openai"
 format = "openai_chat"
 base_url = "https://api.openai.com"
-api_key = "sk-proj-xxx"
+api_key = "keychain:any-converter:provider:openai"
 
 [[providers]]
 name = "deepseek"
 format = "openai_chat"
 base_url = "https://api.deepseek.com"
-api_key = "sk-xxx"
+api_key = "keychain:any-converter:provider:deepseek"
 
 [[providers]]
 name = "anthropic"
 format = "claude"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-xxx"
+api_key = "keychain:any-converter:provider:anthropic"
 
 [[model_routes]]
 pattern = "gpt-*"
@@ -256,7 +259,7 @@ Each provider can rewrite incoming model names before the upstream request is se
 name = "openai"
 format = "openai_chat"
 base_url = "https://api.openai.com"
-api_key = "sk-proj-xxx"
+api_key = "keychain:any-converter:provider:openai"
 
 [providers.model_map]
 "claude-sonnet-4" = "gpt-4.1"

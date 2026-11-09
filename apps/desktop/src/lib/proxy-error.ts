@@ -4,6 +4,6 @@
  * page can show the likely next step instead of an opaque transport error.
  */
 export interface ProxyErrorShape {
-  kind: "not_running" | "unreachable" | "bad_request" | "http";
+  kind: "not_running" | "unreachable" | "bad_request" | "key_unavailable" | "http";
   message?: string;
 }

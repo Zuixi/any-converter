@@ -1,7 +1,7 @@
 //! Model routes, the routing strategy, and the metadata a model carries.
 
 use any_converter_core::convert::Format;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelRouteConfig {
@@ -16,7 +16,7 @@ pub struct ModelRouteConfig {
     pub strategy: RouteStrategy,
 }
 
-#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteStrategy {
     #[default]

@@ -1,12 +1,17 @@
 # any-converter example configuration
 #
-# Run with: any-converter serve --config config.example.toml
+# Canonical shape: secret values live in the OS keychain, not in this file.
+# Create the first home through Desktop or a one-time inline/legacy-config
+# import; afterwards start the canonical gateway with `any-converter serve`.
+
+[management]
+api_key = "keychain:any-converter:server:management"
 
 [server]
 host = "127.0.0.1"
-port = 8080
-# Optional client API key — clients must send `Authorization: Bearer <api_key>`
-# api_key = "sk-client-key"
+port = 1228
+# Optional inference key — clients must send `Authorization: Bearer <api_key>`
+# api_key = "keychain:any-converter:server:inference"
 
 # Control which client headers are forwarded to upstream providers.
 # mode = "allow" forwards all non-sensitive headers except the deny list (default).
@@ -23,13 +28,13 @@ port = 8080
 name = "openai"
 format = "openai_chat"
 base_url = "https://api.openai.com"
-api_key = "sk-proj-your-openai-key"
+api_key = "keychain:any-converter:provider:openai"
 
 [[providers]]
 name = "anthropic"
 format = "claude"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-your-anthropic-key"
+api_key = "keychain:any-converter:provider:anthropic"
 # Model map supports wildcard patterns; longest match wins
 # model_map = { "claude-opus-*" = "claude-opus-4-20250514", "claude-*" = "claude-sonnet-4-20250514" }
 
@@ -37,7 +42,7 @@ api_key = "sk-ant-your-anthropic-key"
 name = "deepseek"
 format = "openai_chat"
 base_url = "https://api.deepseek.com"
-api_key = "sk-your-deepseek-key"
+api_key = "keychain:any-converter:provider:deepseek"
 
 # Optional provider transport overrides for OpenAI-compatible providers
 # whose paths or auth headers differ from the default format conventions.
@@ -53,7 +58,7 @@ api_key = "sk-your-deepseek-key"
 name = "gemini"
 format = "gemini"
 base_url = "https://generativelanguage.googleapis.com"
-api_key = "AIza-your-gemini-key"
+api_key = "keychain:any-converter:provider:gemini"
 
 # ── Model Routes (recommended) ──────────────────────────────────────
 # Route requests to providers based on model name (glob patterns).

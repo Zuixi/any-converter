@@ -640,8 +640,8 @@ impl AccountResolver {
         account_id: &str,
         base: &str,
     ) -> Result<Vec<(String, String)>, AccountError> {
-        match self.project_and_flags(account_id, base, None).await {
-            Ok((_, flags)) => Ok(gemini_models::offered(flags, false)),
+        match self.discover_models(account_id, base).await {
+            Ok(models) => Ok(models),
             Err(err) => {
                 log::warn!(
                     "code assist model discovery failed for account {account_id}: {err}; \
@@ -653,6 +653,21 @@ impl AccountResolver {
                     .collect())
             }
         }
+    }
+
+    /// The models Code Assist offers the account, without the static
+    /// fallback [`Self::list_models`] keeps for the global model catalog.
+    ///
+    /// Callers that name one account must be able to say discovery failed;
+    /// presenting the full Gemini table as that account's list is wrong and
+    /// hides the sign-in/project problem behind plausible-looking models.
+    pub async fn discover_models(
+        &self,
+        account_id: &str,
+        base: &str,
+    ) -> Result<Vec<(String, String)>, AccountError> {
+        let (_, flags) = self.project_and_flags(account_id, base, None).await?;
+        Ok(gemini_models::offered(flags, false))
     }
 
     /// [`Self::project`] plus the experiment flags from the same reply;
@@ -974,7 +989,7 @@ impl AccountResolver {
                 access_token,
                 refresh_token,
                 expires_at_unix,
-                siwc: None,
+                ..
             } => Ok(StoredOAuth {
                 provider,
                 account,

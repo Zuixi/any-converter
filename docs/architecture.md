@@ -23,7 +23,7 @@
 
 ## 1. Bird's-Eye View
 
-**Any Converter** is a Rust workspace that translates between major LLM provider API formats. It operates in three modes:
+**Any Converter** is a Rust workspace that translates between major LLM provider API formats. Its product shape is a long-lived local gateway with thin CLI, Web, and Desktop clients:
 
 | Mode           | Entry Point                  | Use Case                            |
 | -------------- | ---------------------------- | ----------------------------------- |
@@ -31,7 +31,21 @@
 | **CLI**        | `any-converter` binary       | Offline JSON/SSE conversion         |
 | **HTTP Proxy** | `any-converter-server` crate | Transparent API gateway             |
 
-### 1.1 Core Design Pattern: Pairwise Converters
+### 1.1 Resident Gateway Contract
+
+The server owns the authoritative canonical home:
+
+- Windows: `%APPDATA%\any-converter`
+- Unix: `$XDG_CONFIG_HOME/any-converter`, or `$HOME/.config/any-converter`
+- `ANY_CONVERTER_HOME` overrides the root; `ANY_CONVERTER_SECRETS` overrides only OAuth `secrets.json`
+
+`config.toml`, secret references, management authentication, listener readiness, and instance ownership belong to the server. Desktop SQLite is only a one-time migration source and a read-only log adapter. Provider, inference, and management credentials live in OS keychain entries and are represented in TOML by references such as `keychain:any-converter:provider:openai`. Non-default homes use a deterministic keychain service namespace so installations cannot read or overwrite one another's credentials.
+
+The supervised lifecycle is `Stopped → Starting → Running → Stopping → Stopped`, with `Failed` reached from bind failure or unexpected task exit. Kernel-backed instance and configuration locks have no age-based takeover, and `Running` is published only after `TcpListener::bind` succeeds with the observed bound address. Management mutations report `restart_required`; v1 applies them through a controlled restart rather than partial hot reload.
+
+See [`design/desktop-resident-gateway.md`](./design/desktop-resident-gateway.md) for the accepted ownership, authentication, migration, and failure model.
+
+### 1.2 Core Design Pattern: Pairwise Converters
 
 Each (source, target) format pair has a **dedicated converter** that translates requests, responses, and streaming events directly:
 
@@ -174,26 +188,30 @@ The HTTP Proxy accepts requests in any supported format, converts them to the up
 
 ### 4.1 Configuration
 
-Loaded from a TOML file at startup:
+Loaded from the canonical `config.toml` through `ConfigStore` at startup. Secret values are resolved from the OS keychain:
 
 ```toml
+[management]
+api_key = "keychain:any-converter:server:management"
+
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 1228
+api_key = "keychain:any-converter:server:inference"
 
 [[providers]]
 name = "openai"
 format = "openai_chat"
 base_url = "https://api.openai.com"
-api_key = "sk-proj-xxx"
+api_key = "keychain:any-converter:provider:openai"
 
 [providers.model_map]
 "claude-sonnet-4" = "gpt-4.1"
 "*" = "gpt-4.1-mini"          # wildcard fallback
 
-[[routes]]
-client_format = "claude"
-provider = "openai"
+[[model_routes]]
+pattern = "*"
+providers = ["openai"]
 ```
 
 **Model resolution priority:** exact match → wildcard `*` → passthrough (original name).
@@ -308,11 +326,11 @@ An optional audit logger captures the full lifecycle of every request.
 **SQLite is the single query source.** The schema is versioned with `pragma user_version`
 (`crates/server/src/storage/schema.rs`) so existing databases are migrated in place.
 
-| Table | Holds | Read by |
-|---|---|---|
-| `request_logs` | narrow metadata + token columns (one row per request) | aggregation, ledger |
-| `request_bodies` | the wide `record_json` blob (bodies, trace) | ledger drill-down only |
-| `rollup_hourly` | pre-aggregate by `(hour, provider, model, agent)` | every summary query |
+| Table            | Holds                                                 | Read by                |
+| ---------------- | ----------------------------------------------------- | ---------------------- |
+| `request_logs`   | narrow metadata + token columns (one row per request) | aggregation, ledger    |
+| `request_bodies` | the wide `record_json` blob (bodies, trace)           | ledger drill-down only |
+| `rollup_hourly`  | pre-aggregate by `(hour, provider, model, agent)`     | every summary query    |
 
 The split exists because a wide row makes aggregation scan megabytes per call. Measured
 on 1M rows: a provider×model ranking took 91.8 s with the bodies inline, 1.40 s split

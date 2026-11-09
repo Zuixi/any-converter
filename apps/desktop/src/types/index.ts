@@ -1,32 +1,8 @@
 export type AppPath =
-  | "/dashboard"
-  | "/providers"
-  | "/routes"
-  | "/accounts"
-  | "/agents"
-  | "/playground"
-  | "/logs"
-  | "/usage"
-  | "/settings";
-
-export interface DesktopProvider {
-  id: number;
-  name: string;
-  format: string;
-  base_url: string;
-  keychain_ref: string;
-}
-
-export interface DesktopRoute {
-  id: number;
-  pattern: string;
-  providers: string[];
-  upstream_model?: string;
-  strategy: string;
-}
+  "/dashboard" | "/providers" | "/routes" | "/accounts" | "/agents" | "/playground" | "/logs" | "/usage" | "/settings";
 
 export interface ServerStatus {
-  state: "stopped" | "starting" | "running" | "error";
+  state: "stopped" | "starting" | "running" | "stopping" | "failed";
   host: string;
   port: number;
   last_error?: string;
@@ -34,9 +10,10 @@ export interface ServerStatus {
 
 /** One management call forwarded to the embedded server over IPC. */
 export interface ServerProxyRequest {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   path: string;
   body?: string;
+  ifMatch?: string;
 }
 
 export interface CreateProviderRequest {

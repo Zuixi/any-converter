@@ -470,8 +470,29 @@ async fn request_logger_writes_jsonl_and_sqlite() {
     .unwrap();
 
     logger.log(test_request_record("req-logger"));
-    // The sqlite mirror is flushed on a 200 ms batch window, so wait past it.
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // Dropping the sender asks the writer to commit its partial batch. Poll
+    // until the async task finishes instead of tying the test to wall-clock
+    // timing while other integration suites compete for CPU.
+    drop(logger);
+    let database_path = log_dir.join("any-converter.sqlite3");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let count = loop {
+        let count = rusqlite::Connection::open(&database_path)
+            .ok()
+            .and_then(|conn| {
+                conn.query_row(
+                    "select count(*) from request_logs where request_id = 'req-logger'",
+                    [],
+                    |row| row.get::<_, u64>(0),
+                )
+                .ok()
+            })
+            .unwrap_or(0);
+        if count == 1 || std::time::Instant::now() >= deadline {
+            break count;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
 
     let jsonl_files: Vec<_> = std::fs::read_dir(&log_dir)
         .unwrap()
@@ -486,14 +507,6 @@ async fn request_logger_writes_jsonl_and_sqlite() {
     let jsonl = std::fs::read_to_string(&jsonl_files[0]).unwrap();
     assert!(jsonl.contains("\"request_id\":\"req-logger\""));
 
-    let conn = rusqlite::Connection::open(log_dir.join("any-converter.sqlite3")).unwrap();
-    let count: u64 = conn
-        .query_row(
-            "select count(*) from request_logs where request_id = 'req-logger'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
     assert_eq!(count, 1);
 }
 

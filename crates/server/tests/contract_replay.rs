@@ -177,7 +177,8 @@ fn assert_json_eq(fixture: &str, what: &str, actual: &Value, expected: &Value) {
 
 /// `(event, data)` pairs of an SSE body, in order.
 fn sse_events(body: &str) -> Vec<(Option<String>, Value)> {
-    body.split("\n\n")
+    body.replace("\r\n", "\n")
+        .split("\n\n")
         .filter(|block| !block.trim().is_empty())
         .filter_map(|block| {
             let mut event = None;

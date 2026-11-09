@@ -1,4 +1,5 @@
 use any_converter_core::convert::Format;
+use subtle::ConstantTimeEq;
 
 use crate::config::{AuthScheme, ProviderConfig};
 
@@ -29,10 +30,8 @@ pub fn validate_client_key(
     match client_api_key {
         None => Ok(()),
         Some(expected) => {
-            let provided = auth_header
-                .and_then(|h| h.strip_prefix("Bearer "))
-                .ok_or(AuthError::Missing)?;
-            if provided == expected {
+            let provided = bearer_token(auth_header).ok_or(AuthError::Missing)?;
+            if provided.as_bytes().ct_eq(expected.as_bytes()).into() {
                 Ok(())
             } else {
                 Err(AuthError::Invalid)
@@ -54,10 +53,13 @@ pub fn validate_client_keys<'a>(
     match client_api_key {
         None => Ok(()),
         Some(expected) => {
-            let provided = auth_header
-                .and_then(|h| h.strip_prefix("Bearer "))
-                .ok_or(AuthError::Missing)?;
-            if provided == expected || agent_keys.into_iter().any(|key| key == provided) {
+            let provided = bearer_token(auth_header).ok_or(AuthError::Missing)?;
+            let global_match = provided.as_bytes().ct_eq(expected.as_bytes()).into();
+            let agent_match = agent_keys.into_iter().any(|key| {
+                let matched: bool = provided.as_bytes().ct_eq(key.as_bytes()).into();
+                matched
+            });
+            if global_match || agent_match {
                 Ok(())
             } else {
                 Err(AuthError::Invalid)
@@ -75,7 +77,16 @@ pub fn require_management_key(
     client_api_key: Option<&str>,
     auth_header: Option<&str>,
 ) -> Result<(), AuthError> {
-    validate_client_key(client_api_key, auth_header)
+    match client_api_key {
+        Some(expected) => validate_client_key(Some(expected), auth_header),
+        None => Err(AuthError::Missing),
+    }
+}
+
+fn bearer_token(auth_header: Option<&str>) -> Option<&str> {
+    auth_header
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
 }
 
 /// Build upstream authentication headers for the given provider format.
@@ -174,13 +185,17 @@ mod tests {
     }
 
     #[test]
-    fn test_require_management_key_rejects_agent_keys() {
+    fn test_require_management_key_fails_closed_without_key() {
         assert!(require_management_key(Some("global"), Some("Bearer global")).is_ok());
         assert_eq!(
             require_management_key(Some("global"), Some("Bearer acw_claude-code_abc")),
             Err(AuthError::Invalid)
         );
-        assert!(require_management_key(None, None).is_ok());
+        assert_eq!(require_management_key(None, None), Err(AuthError::Missing));
+        assert_eq!(
+            require_management_key(None, Some("Bearer anything")),
+            Err(AuthError::Missing)
+        );
     }
 
     #[test]

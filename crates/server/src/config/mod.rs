@@ -403,22 +403,24 @@ impl Default for ServerSettings {
 }
 
 /// `$ANY_CONVERTER_SECRETS` overrides the store location; otherwise it is
-/// `<config_dir>/secrets.json` where `config_dir` is
-/// `$HOME/.config/any-converter` (or `$APPDATA/any-converter` on Windows).
+/// `<home>/secrets.json`, where the home is resolved by
+/// [`crate::home::Home`]. `ANY_CONVERTER_HOME` may override the home.
 ///
 /// Shared by the server runtime and the CLI so both agree on the account
 /// store location.
 pub fn secrets_path() -> std::path::PathBuf {
-    if let Ok(path) = std::env::var("ANY_CONVERTER_SECRETS") {
-        return std::path::PathBuf::from(path);
+    if let Some(path) = std::env::var_os(crate::home::SECRETS_ENV)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+    {
+        return path;
     }
-    config_dir().join("secrets.json")
+    crate::home::Home::discover()
+        .map(|home| home.secrets_path().to_path_buf())
+        .unwrap_or_else(|_| config_dir().join("secrets.json"))
 }
 
 fn config_dir() -> std::path::PathBuf {
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        return std::path::PathBuf::from(appdata).join("any-converter");
-    }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     std::path::PathBuf::from(home)
         .join(".config")

@@ -2,6 +2,7 @@ import type { ApiClient } from "@any-converter/core";
 import type { StatusData } from "@any-converter/shared";
 
 import { api } from "./api";
+import { management, type AdminConfigView } from "./management";
 
 export function createDesktopApiClient(): ApiClient {
   return {
@@ -25,22 +26,27 @@ export function createDesktopApiClient(): ApiClient {
       throw new Error("Ledger CSV export is not available in the desktop app");
     },
     async getConfig() {
-      const settings = await api.getSettings();
+      const config = await management.getConfig();
       return {
         config: {
           server: {
-            host: settings["server.host"],
-            port: Number(settings["server.port"] ?? 1228),
+            host: config.server.host,
+            port: config.server.port,
           },
         },
-        raw: JSON.stringify(settings, null, 2),
+        raw: JSON.stringify(config, null, 2),
       };
     },
     async saveConfig(raw: string) {
-      const settings = JSON.parse(raw) as Record<string, string>;
-      for (const [key, value] of Object.entries(settings)) {
-        await api.updateSetting({ key, value: String(value) });
-      }
+      const view = JSON.parse(raw) as AdminConfigView;
+      await management.patchConfig(view.revision, {
+        server: { host: view.server.host, port: view.server.port },
+        logging: {
+          dir: view.logging.dir ?? null,
+          max_disk_mb: view.logging.max_disk_mb,
+          request_log_enabled: view.logging.request_log_enabled,
+        },
+      });
     },
     async getStatus() {
       const status = await api.getServerStatus();

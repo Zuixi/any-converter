@@ -14,6 +14,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use any_converter_server::home::Home;
+use any_converter_server::secrets::ApiKeyStore;
+
 use crate::AgentsCommand;
 
 /// Default server port (`crates/server/src/config.rs::default_port`).
@@ -45,18 +48,15 @@ pub(crate) async fn run(command: AgentsCommand) -> i32 {
 
 async fn execute(command: AgentsCommand) -> Result<(), AgentCliError> {
     let base = server_base();
-    let key = api_key();
+    let key = management_key()?;
+    let key = Some(key.as_str());
     match command {
-        AgentsCommand::List { json } => list(&base, key.as_deref(), json).await,
-        AgentsCommand::Status => status(&base, key.as_deref()).await,
-        AgentsCommand::Connect { id, model, home } => {
-            connect(&base, key.as_deref(), &id, model, home).await
-        }
-        AgentsCommand::Disconnect { id, home } => {
-            disconnect(&base, key.as_deref(), &id, home).await
-        }
-        AgentsCommand::Sync { id } => sync(&base, key.as_deref(), id).await,
-        AgentsCommand::RotateKey { id, home } => rotate_key(&base, key.as_deref(), &id, home).await,
+        AgentsCommand::List { json } => list(&base, key, json).await,
+        AgentsCommand::Status => status(&base, key).await,
+        AgentsCommand::Connect { id, model, home } => connect(&base, key, &id, model, home).await,
+        AgentsCommand::Disconnect { id, home } => disconnect(&base, key, &id, home).await,
+        AgentsCommand::Sync { id } => sync(&base, key, id).await,
+        AgentsCommand::RotateKey { id, home } => rotate_key(&base, key, &id, home).await,
     }
 }
 
@@ -76,13 +76,19 @@ fn server_base() -> String {
     }
 }
 
-/// The global server key, when the caller exported one. Config files are
-/// never read here: secrets stay in the environment.
-fn api_key() -> Option<String> {
-    std::env::var("ANY_CONVERTER_API_KEY")
-        .ok()
-        .map(|key| key.trim().to_owned())
-        .filter(|key| !key.is_empty())
+/// The management key for `/v1/agents`. Remote installations set
+/// `ANY_CONVERTER_MANAGEMENT_KEY`; the local installation reads its keychain.
+fn management_key() -> Result<String, AgentCliError> {
+    if let Ok(key) = std::env::var("ANY_CONVERTER_MANAGEMENT_KEY") {
+        let key = key.trim();
+        if !key.is_empty() {
+            return Ok(key.to_owned());
+        }
+    }
+    let home = Home::discover().map_err(|error| AgentCliError::Plain(error.to_string()))?;
+    ApiKeyStore::for_home(&home)
+        .get_management()
+        .map_err(|error| AgentCliError::Plain(error.to_string()))
 }
 
 // ── commands ─────────────────────────────────────────────────────────

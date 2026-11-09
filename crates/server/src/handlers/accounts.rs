@@ -1,21 +1,24 @@
 //! Accounts: what is stored, its allowance, signing in, and removing.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use log::warn;
 use serde_json::Value;
 
-use crate::auth;
 use crate::credentials::allowance::copilot_allowance;
+use crate::credentials::copilot::{COPILOT_DEFAULT_API_BASE, copilot_api_headers};
 use crate::credentials::signout::{self, RevokeOutcome};
+use crate::credentials::siwc_signin::{ReqwestSiwc, SiwcEndpoints, SiwcSignIn};
 use crate::credentials::{Allowance, Credential, Limit};
+use crate::plugins::PluginAuth;
 use crate::signin_task::SignInTasks;
 
-use super::{AppState, api_error_response, auth_error_response};
+use super::{AppState, api_error_response};
 
 pub async fn handle_health() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
@@ -67,40 +70,459 @@ fn quota_window_json(window: &Limit) -> serde_json::Value {
     })
 }
 
-/// `GET /v1/accounts` (P10): the locally stored account secrets, one entry
-/// per id with `{id, kind, provider, account}` — **never** the tokens.
+/// One account as the management API lists it. Plugin auth entries live in
+/// a separate ledger, but they are accounts the user signed in just the
+/// same; `source` lets the window tell which store owns one without ever
+/// exposing its credential.
+#[derive(Debug, Clone)]
+struct ListedAccount {
+    id: String,
+    kind: &'static str,
+    provider: String,
+    account: String,
+    source: &'static str,
+}
+
+impl ListedAccount {
+    fn json(&self) -> Value {
+        serde_json::json!({
+            "id": self.id,
+            "kind": self.kind,
+            "provider": self.provider,
+            "account": self.account,
+            "source": self.source,
+        })
+    }
+}
+
+/// One model row in the account-model response. Dynamic discovery and
+/// configured aliases can both contribute, so the source travels with the
+/// row instead of being flattened to one answer-wide label.
+#[derive(Debug, Clone)]
+struct AccountModel {
+    id: String,
+    name: String,
+    source: String,
+}
+
+/// Every account the server can act on: the built-in secret store first,
+/// then plugin OAuth/API-key entries. Internal plugin ledger rows (the
+/// fixture uses `__gw_seen`) are not accounts. A duplicate id always
+/// resolves to the built-in credential, matching request routing.
+fn listed_accounts(state: &AppState) -> Result<Vec<ListedAccount>, String> {
+    let credentials = state
+        .accounts
+        .list_credentials()
+        .map_err(|err| format!("reading the account store failed: {err}"))?;
+
+    let mut seen = HashSet::new();
+    let mut accounts = Vec::with_capacity(credentials.len());
+    for (id, credential) in credentials {
+        let (kind, provider, account) = match &credential {
+            Credential::OAuth {
+                provider, account, ..
+            } => ("oauth", provider.clone(), account.clone()),
+            Credential::ApiKey { .. } => (
+                "api_key",
+                id.split(':').next().unwrap_or("").to_string(),
+                String::new(),
+            ),
+        };
+        seen.insert(id.clone());
+        accounts.push(ListedAccount {
+            id,
+            kind,
+            provider,
+            account,
+            source: "builtin",
+        });
+    }
+
+    let plugin_auth = match state.hosts.auth_store().load() {
+        Ok(auth) => auth,
+        Err(err) => {
+            warn!("reading the plugin auth store failed: {err}");
+            return Ok(accounts);
+        }
+    };
+    for (id, auth) in plugin_auth {
+        if id.starts_with("__") || seen.contains(&id) {
+            continue;
+        }
+        let Some((provider, account)) = id.split_once(':') else {
+            continue;
+        };
+        if provider.is_empty() || account.is_empty() {
+            continue;
+        }
+        let kind = match auth {
+            PluginAuth::OAuth { .. } => "oauth",
+            PluginAuth::ApiKey { .. } => "api_key",
+        };
+        seen.insert(id.clone());
+        let provider = provider.to_string();
+        let account = account.to_string();
+        accounts.push(ListedAccount {
+            id,
+            kind,
+            provider,
+            account,
+            source: "plugin",
+        });
+    }
+    Ok(accounts)
+}
+
+/// `GET /v1/accounts` (P10): the locally stored accounts, one entry per id
+/// with `{id, kind, provider, account, source}` — **never** the tokens.
 ///
 /// Kept public like [`handle_account_quotas`]: the entries carry no
 /// secret material.
 pub async fn handle_accounts(State(state): State<Arc<AppState>>) -> Response {
-    let credentials = match state.accounts.list_credentials() {
-        Ok(credentials) => credentials,
+    let accounts = match listed_accounts(&state) {
+        Ok(accounts) => accounts,
         Err(err) => {
-            return api_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "store_error",
-                format!("reading the account store failed: {err}"),
-            );
+            return api_error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error", err);
         }
     };
 
-    let accounts: Vec<serde_json::Value> = credentials
+    let accounts: Vec<Value> = accounts.iter().map(ListedAccount::json).collect();
+    Json(serde_json::json!({ "accounts": accounts })).into_response()
+}
+
+/// The provider that actually names this account. This is the only signal
+/// that requests for the account can be routed through a configured
+/// provider; a provider merely called `chatgpt-api` does not bind it.
+fn bound_provider<'a>(
+    state: &'a AppState,
+    account: &ListedAccount,
+) -> Option<&'a crate::config::ProviderConfig> {
+    state
+        .config
+        .providers
+        .iter()
+        .find(|provider| provider.account_ids().contains(&account.id.as_str()))
+}
+
+/// A provider whose `base_url` can inform discovery. Exact account binding
+/// wins; the name fallback exists for unbound sign-ins (and test/fake
+/// endpoints), but must never be reported as a binding.
+fn provider_hint<'a>(
+    state: &'a AppState,
+    account: &ListedAccount,
+) -> Option<&'a crate::config::ProviderConfig> {
+    bound_provider(state, account).or_else(|| {
+        state
+            .config
+            .providers
+            .iter()
+            .find(|provider| provider.name == account.provider || provider.name == account.id)
+    })
+}
+
+/// Literal configured model names for one provider: `model_map` keys and
+/// `model_routes` patterns. A glob describes a family, not a selectable
+/// model id, so it is not shown as one.
+fn configured_models(
+    state: &AppState,
+    provider: &crate::config::ProviderConfig,
+) -> Vec<(String, String)> {
+    let mut seen = HashSet::new();
+    let mut models = Vec::new();
+    for id in provider.model_map.keys() {
+        if !id.contains('*') && !id.contains('?') && seen.insert(id.clone()) {
+            models.push((id.clone(), id.clone()));
+        }
+    }
+    for route in &state.config.model_routes {
+        let named = route
+            .provider_names()
+            .iter()
+            .any(|name| name == &provider.name);
+        if named
+            && !route.pattern.contains('*')
+            && !route.pattern.contains('?')
+            && seen.insert(route.pattern.clone())
+        {
+            models.push((route.pattern.clone(), route.pattern.clone()));
+        }
+    }
+    models.sort_by(|left, right| left.0.cmp(&right.0));
+    models
+}
+
+/// Ask OpenAI's own model list for a Sign in with ChatGPT account. The
+/// provider, when present, only supplies a fake/alternate base URL; the
+/// account itself need not be bound to a provider for discovery to work.
+async fn discover_chatgpt_models(
+    state: &AppState,
+    account: &ListedAccount,
+    provider: Option<&crate::config::ProviderConfig>,
+) -> Result<Vec<(String, String)>, String> {
+    let resolved = state
+        .accounts
+        .resolve(&account.id)
+        .await
+        .map_err(|err| err.to_string())?;
+    let base = provider
+        .map(crate::config::ProviderConfig::chatgpt_api_base)
+        .unwrap_or_else(|| "https://api.openai.com".to_string());
+    let endpoints = SiwcEndpoints {
+        api: format!("{}/v1", base.trim_end_matches('/')),
+        ..SiwcEndpoints::default()
+    };
+    let sign_in =
+        SiwcSignIn::with_http(endpoints, Arc::new(ReqwestSiwc::new(state.client.clone())));
+    let models = sign_in
+        .models(&account.id, &resolved.access_token)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(models.into_iter().map(|id| (id.clone(), id)).collect())
+}
+
+/// Ask Copilot's own API for the models this session can use. The session
+/// response carries the effective API base; the public default is used only
+/// when GitHub omits it.
+async fn discover_copilot_models(
+    state: &AppState,
+    account: &ListedAccount,
+) -> Result<Vec<(String, String)>, String> {
+    let github = state
+        .accounts
+        .resolve(&account.id)
+        .await
+        .map_err(|err| err.to_string())?;
+    let session = state
+        .copilot
+        .session(&github.access_token)
+        .await
+        .map_err(|err| err.to_string())?;
+    let base = if session.api_base.is_empty() {
+        COPILOT_DEFAULT_API_BASE
+    } else {
+        session.api_base.as_str()
+    };
+    let url = format!("{}/models", base.trim_end_matches('/'));
+    let mut request = state.client.get(url);
+    for (name, value) in copilot_api_headers(&session.token) {
+        request = request.header(name, value);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("copilot models request failed: {err}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("copilot models returned {status}"));
+    }
+    let value: Value = response
+        .json()
+        .await
+        .map_err(|err| format!("copilot models returned malformed payload: {err}"))?;
+    Ok(value
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("id").and_then(Value::as_str))
+                .filter(|id| !id.is_empty())
+                .map(|id| (id.to_string(), id.to_string()))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Append discovered rows first, then configured aliases, keeping the first
+/// occurrence of each model id. This lets a `"*"` route stay a wildcard while
+/// the actual model list still comes from the account.
+fn merge_models(
+    models: &mut Vec<AccountModel>,
+    seen: &mut HashSet<String>,
+    found: Vec<(String, String)>,
+    source: &str,
+) {
+    for (id, name) in found {
+        if id.is_empty() || !seen.insert(id.clone()) {
+            continue;
+        }
+        models.push(AccountModel {
+            id,
+            name,
+            source: source.to_string(),
+        });
+    }
+}
+
+/// The plugin that serves an account: the configured provider that names
+/// exactly this account first, else an installed package advertising the
+/// account's provider id.
+async fn plugin_for_account(
+    state: &AppState,
+    account: &ListedAccount,
+) -> Option<crate::config::PluginRef> {
+    if let Some(provider) = state.config.providers.iter().find(|provider| {
+        provider.plugin.is_some() && provider.account_ids().contains(&account.id.as_str())
+    }) {
+        return provider.plugin.clone();
+    }
+
+    let dir = crate::plugins::managed::plugins_dir();
+    let installed = state.hosts.installed(&dir).await;
+    installed
         .into_iter()
-        .map(|(id, credential)| {
-            let (kind, provider, account) = match &credential {
-                Credential::OAuth {
-                    provider, account, ..
-                } => ("oauth", provider.clone(), account.clone()),
-                Credential::ApiKey { .. } => (
-                    "api_key",
-                    id.split(':').next().unwrap_or("").to_string(),
-                    String::new(),
-                ),
-            };
-            serde_json::json!({ "id": id, "kind": kind, "provider": provider, "account": account })
+        .find(|plugin| {
+            plugin.error.is_empty()
+                && plugin
+                    .providers
+                    .iter()
+                    .any(|provider| provider.id == account.provider)
+        })
+        .map(|plugin| crate::config::PluginRef {
+            spec: plugin.spec,
+            target: dir.to_string_lossy().into_owned(),
+        })
+}
+
+/// `GET /v1/accounts/{id}/models`: the models one account can actually
+/// offer. Discovery failures are a successful answer carrying `error` while
+/// retaining any literal configured models: the account still exists, and
+/// the window needs the reason rather than a generic 500. An unknown account
+/// is a 404.
+pub async fn handle_account_models(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let accounts = match listed_accounts(&state) {
+        Ok(accounts) => accounts,
+        Err(err) => {
+            return api_error_response(StatusCode::INTERNAL_SERVER_ERROR, "store_error", err);
+        }
+    };
+    let Some(account) = accounts.into_iter().find(|account| account.id == id) else {
+        return api_error_response(
+            StatusCode::NOT_FOUND,
+            "account_not_found",
+            format!("account {id} not found"),
+        );
+    };
+
+    let bound = bound_provider(&state, &account);
+    let hint = provider_hint(&state, &account);
+    let mut source = "unsupported".to_string();
+    let mut models = Vec::new();
+    let mut seen = HashSet::new();
+    let mut error = None;
+
+    if account.source == "plugin" {
+        source = "plugin".to_string();
+        match plugin_for_account(&state, &account).await {
+            Some(plugin_ref) => match state.hosts.models_for(&plugin_ref, &account.account).await {
+                Ok(found) => {
+                    let found: Vec<(String, String)> = found
+                        .into_iter()
+                        .filter(|model| !model.id.is_empty())
+                        .map(|model| {
+                            let name = if model.name.is_empty() {
+                                model.id.clone()
+                            } else {
+                                model.name
+                            };
+                            (model.id, name)
+                        })
+                        .collect();
+                    merge_models(&mut models, &mut seen, found, &source);
+                }
+                Err(err) => {
+                    warn!(
+                        "plugin model discovery failed account={} error={err}",
+                        account.id
+                    );
+                    error = Some(err.to_string());
+                }
+            },
+            None => {
+                error = Some(format!(
+                    "no installed plugin serves provider `{}`",
+                    account.provider
+                ));
+            }
+        }
+    } else if matches!(account.provider.as_str(), "gemini" | "antigravity") {
+        source = if account.provider == "antigravity" {
+            "antigravity"
+        } else {
+            "gemini"
+        }
+        .to_string();
+        let base = hint
+            .map(crate::config::ProviderConfig::code_assist_load_base)
+            .unwrap_or_else(|| crate::config::GEMINI_CODE_ASSIST_BASE.to_string());
+        match state.accounts.discover_models(&account.id, &base).await {
+            Ok(found) => merge_models(&mut models, &mut seen, found, &source),
+            Err(err) => {
+                warn!(
+                    "code assist model discovery failed account={} error={err}",
+                    account.id
+                );
+                error = Some(err.to_string());
+            }
+        }
+    } else if account.provider == "chatgpt-api" {
+        source = "chatgpt-api".to_string();
+        match discover_chatgpt_models(&state, &account, hint).await {
+            Ok(found) => merge_models(&mut models, &mut seen, found, &source),
+            Err(err) => {
+                warn!(
+                    "ChatGPT API model discovery failed account={} error={err}",
+                    account.id
+                );
+                error = Some(err);
+            }
+        }
+    } else if account.provider == "copilot" {
+        source = "copilot".to_string();
+        match discover_copilot_models(&state, &account).await {
+            Ok(found) => merge_models(&mut models, &mut seen, found, &source),
+            Err(err) => {
+                warn!(
+                    "Copilot model discovery failed account={} error={err}",
+                    account.id
+                );
+                error = Some(err);
+            }
+        }
+    }
+
+    // A configured provider is also a useful fallback when discovery is not
+    // available (Codex/Claude today) or failed. It is merged, not substituted:
+    // an empty discovered list must not erase literal configured aliases.
+    if let Some(provider) = bound {
+        let configured = configured_models(&state, provider);
+        if source == "unsupported" && !configured.is_empty() {
+            source = "configured".to_string();
+        }
+        merge_models(&mut models, &mut seen, configured, "configured");
+    }
+
+    let models: Vec<Value> = models
+        .into_iter()
+        .map(|model| {
+            serde_json::json!({
+                "id": model.id,
+                "name": model.name,
+                "source": model.source,
+            })
         })
         .collect();
-    Json(serde_json::json!({ "accounts": accounts })).into_response()
+    Json(serde_json::json!({
+        "account": account.id,
+        "provider": account.provider,
+        "models": models,
+        "source": source,
+        "bound": bound.is_some(),
+        "error": error,
+    }))
+    .into_response()
 }
 
 /// The egress proxy for one provider's account traffic: the provider's own
@@ -123,17 +545,8 @@ pub(super) fn account_proxy(state: &AppState, provider: &str) -> Option<String> 
 pub async fn handle_account_signin(
     State(state): State<Arc<AppState>>,
     Extension(sign_ins): Extension<Arc<SignInTasks>>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
-
     let provider = body.get("provider").and_then(|v| v.as_str()).unwrap_or("");
     if provider.is_empty() {
         return api_error_response(
@@ -164,19 +577,9 @@ pub async fn handle_account_signin(
 
 /// `GET /v1/accounts/signin/{id}` (P10): poll one sign-in task.
 pub async fn handle_account_signin_status(
-    State(state): State<Arc<AppState>>,
     Extension(sign_ins): Extension<Arc<SignInTasks>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
-
     match sign_ins.status(&id) {
         Some(task) => Json(task).into_response(),
         None => api_error_response(
@@ -190,20 +593,10 @@ pub async fn handle_account_signin_status(
 /// `POST /v1/accounts/signin/{id}/submit` (P10): finish a flow with a
 /// pasted callback URL (gemini).
 pub async fn handle_account_signin_submit(
-    State(state): State<Arc<AppState>>,
     Extension(sign_ins): Extension<Arc<SignInTasks>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
-
     let input = body.get("input").and_then(|v| v.as_str()).unwrap_or("");
     match sign_ins.submit(&id, input).await {
         Ok(task) => Json(task).into_response(),
@@ -214,19 +607,9 @@ pub async fn handle_account_signin_submit(
 /// `POST /v1/accounts/signin/{id}/cancel` (P10): cancel one sign-in task
 /// (closing its listener / poller); 204 when it existed.
 pub async fn handle_account_signin_cancel(
-    State(state): State<Arc<AppState>>,
     Extension(sign_ins): Extension<Arc<SignInTasks>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
-
     if sign_ins.cancel(&id).await {
         StatusCode::NO_CONTENT.into_response()
     } else {
@@ -244,17 +627,8 @@ pub async fn handle_account_signin_cancel(
 /// | `Failed`); a failed revocation never blocks the removal.
 pub async fn handle_account_remove(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
-
     let provider = id.split(':').next().unwrap_or("");
     let proxy = account_proxy(&state, provider);
     match signout::remove(&state.accounts, &id, proxy.as_deref()).await {
@@ -388,18 +762,7 @@ pub async fn handle_account_plugins(State(state): State<Arc<AppState>>) -> Respo
 /// routing tries an account provider's seats in. Fully-qualified account
 /// ids, saved to `<config>/account-order.json` beside the secrets file —
 /// the provider config stays the user's to edit.
-pub async fn handle_account_order(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
+pub async fn handle_account_order(Json(body): Json<Value>) -> Response {
     let Some(provider) = body.get("provider").and_then(|v| v.as_str()) else {
         return api_error_response(
             StatusCode::BAD_REQUEST,
@@ -426,22 +789,12 @@ pub async fn handle_account_order(
 
 /// `POST /v1/accounts/{id}/adopt` (P17): write this Codex account's rotated
 /// tokens back to the `auth.json` it came from. `POST .../release` stops.
-pub async fn handle_account_adopt(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
+pub async fn handle_account_adopt(Path(id): Path<String>) -> Response {
     let secrets = crate::config::secrets_path();
     // Every Codex home this machine has, and the account each one holds:
     // an adopted account is written back where Codex itself reads it.
-    let Ok(home) = std::env::var("HOME") else {
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"));
+    let Ok(home) = home else {
         return api_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "invalid_request_error",
@@ -475,18 +828,7 @@ pub async fn handle_account_adopt(
 }
 
 /// Stop writing tokens back for an adopted account.
-pub async fn handle_account_release(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-    if let Err(err) = auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header)
-    {
-        return auth_error_response(err);
-    }
+pub async fn handle_account_release(Path(id): Path<String>) -> Response {
     match crate::credentials::release_adopted(&crate::config::secrets_path(), &id) {
         Ok(released) => Json(serde_json::json!({ "released": released })).into_response(),
         Err(err) => api_error_response(StatusCode::BAD_REQUEST, "invalid_request_error", err),

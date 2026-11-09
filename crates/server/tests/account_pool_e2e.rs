@@ -16,11 +16,14 @@ use any_converter_server::config::{
     ModelRouteConfig, PassThroughHeadersConfig, ProviderConfig, RouteStrategy, ServerConfig,
     ServerSettings,
 };
+use any_converter_server::control_plane::ControlPlane;
 use any_converter_server::credentials::{
     AccountResolver, Credential, FileSecretStore, SecretStore,
 };
 use any_converter_server::handlers::AppState;
-use any_converter_server::router::create_router_with_state;
+use any_converter_server::home::Home;
+use any_converter_server::router::create_router_with_control_plane;
+use any_converter_server::secrets::{ApiKeyStore, KEYCHAIN_SERVICE, MemoryKeychain};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request as AxumRequest, State as AxumState};
@@ -239,7 +242,17 @@ fn openai_provider(name: &str, base: &str) -> ProviderConfig {
     }
 }
 
-fn make_app(providers: Vec<ProviderConfig>, store: FileSecretStore) -> Router {
+fn make_app(
+    providers: Vec<ProviderConfig>,
+    store: FileSecretStore,
+    dir: &std::path::Path,
+) -> (Router, String) {
+    let home_root = dir.join("control-home");
+    std::fs::create_dir_all(&home_root).unwrap();
+    let keys =
+        ApiKeyStore::with_backend(KEYCHAIN_SERVICE, std::sync::Arc::new(MemoryKeychain::new()));
+    let prepared = ControlPlane::prepare(Home::from_root(home_root), keys).unwrap();
+    let management_key = prepared.control_plane.management_key();
     let names: Vec<String> = providers.iter().map(|p| p.name.clone()).collect();
     let client = Client::builder().no_proxy().build().unwrap();
     let accounts = Arc::new(AccountResolver::new(store, client.clone()));
@@ -282,15 +295,19 @@ fn make_app(providers: Vec<ProviderConfig>, store: FileSecretStore) -> Router {
             )),
         )),
     });
-    create_router_with_state(state)
+    (
+        create_router_with_control_plane(state, prepared.control_plane),
+        management_key,
+    )
 }
 
 /// `GET /v1/accounts/quotas`: the explicit read that primes the routing
 /// cache (routing itself never waits on a quota read).
-fn quotas_request() -> Request<Body> {
+fn quotas_request(management_key: &str) -> Request<Body> {
     Request::builder()
         .uri("/v1/accounts/quotas")
         .method("GET")
+        .header("Authorization", format!("Bearer {management_key}"))
         .body(Body::empty())
         .unwrap()
 }
@@ -330,13 +347,14 @@ async fn second_account_serves_when_the_first_is_revoked() {
     )
     .unwrap();
 
-    let app = make_app(
+    let (app, _) = make_app(
         vec![gemini_provider(
             "gemini",
             &base,
             vec![ACCOUNT_A.into(), ACCOUNT_B.into()],
         )],
         store,
+        dir.path(),
     );
 
     let (status, body) = send(&app, chat_request()).await;
@@ -359,7 +377,7 @@ async fn all_accounts_fail_then_next_provider() {
 
     let dir = tempfile::tempdir().unwrap();
     let store = seeded_store(&dir);
-    let app = make_app(
+    let (app, _) = make_app(
         vec![
             gemini_provider(
                 "gemini",
@@ -369,6 +387,7 @@ async fn all_accounts_fail_then_next_provider() {
             openai_provider("openai", &openai_base),
         ],
         store,
+        dir.path(),
     );
 
     let (status, body) = send(&app, chat_request()).await;
@@ -394,19 +413,20 @@ async fn exhausted_account_goes_last() {
 
     let dir = tempfile::tempdir().unwrap();
     let store = seeded_store(&dir);
-    let app = make_app(
+    let (app, management_key) = make_app(
         vec![gemini_provider(
             "gemini",
             &base,
             vec![ACCOUNT_A.into(), ACCOUNT_B.into()],
         )],
         store,
+        dir.path(),
     );
 
     // Routing never waits on a quota read (magpie reads allowances in the
     // background), so the windows must already be known. The quotas
     // endpoint is the explicit read that primes them — the UI's path.
-    let (status, _) = send(&app, quotas_request()).await;
+    let (status, _) = send(&app, quotas_request(&management_key)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         upstream.quota_auths(),
@@ -427,13 +447,14 @@ async fn routing_never_reads_quota_on_the_request_path() {
     let (base, upstream) = spawn_upstream().await;
     let dir = tempfile::tempdir().unwrap();
     let store = seeded_store(&dir);
-    let app = make_app(
+    let (app, _) = make_app(
         vec![gemini_provider(
             "gemini",
             &base,
             vec![ACCOUNT_A.into(), ACCOUNT_B.into()],
         )],
         store,
+        dir.path(),
     );
 
     // Nothing has primed the cache, and the quota endpoint is slow: a
@@ -460,13 +481,14 @@ async fn unknown_allowance_keeps_order() {
 
     let dir = tempfile::tempdir().unwrap();
     let store = seeded_store(&dir);
-    let app = make_app(
+    let (app, _) = make_app(
         vec![gemini_provider(
             "gemini",
             &base,
             vec![ACCOUNT_A.into(), ACCOUNT_B.into()],
         )],
         store,
+        dir.path(),
     );
 
     let (status, body) = send(&app, chat_request()).await;
@@ -485,13 +507,14 @@ async fn quotas_endpoint_reports_windows() {
 
     let dir = tempfile::tempdir().unwrap();
     let store = seeded_store(&dir);
-    let app = make_app(
+    let (app, management_key) = make_app(
         vec![gemini_provider(
             "gemini",
             &base,
             vec![ACCOUNT_A.into(), ACCOUNT_B.into()],
         )],
         store,
+        dir.path(),
     );
 
     let response = app
@@ -500,6 +523,7 @@ async fn quotas_endpoint_reports_windows() {
             Request::builder()
                 .uri("/v1/accounts/quotas")
                 .method("GET")
+                .header("Authorization", format!("Bearer {management_key}"))
                 .body(Body::empty())
                 .unwrap(),
         )

@@ -9,12 +9,11 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use log::error;
 
 use super::{AppState, api_error_response};
-use crate::auth;
 use crate::period;
 use crate::storage::{
     Granularity, SplitDim, SqliteStorage, StorageError, Totals, UsageQuery, UsageSummary,
@@ -26,25 +25,12 @@ use crate::storage::{
 /// `hour|day|week|month`), and optional `provider`, `model`, `agent`,
 /// `account`, `split_by` (one of `provider|agent|model|account`).
 ///
-/// Requires the client key when `server.api_key` is configured, exactly as the
-/// inference routes do: this exposes spend, not just liveness.
+/// Requires the management key at the router boundary: this exposes spend,
+/// not just liveness.
 pub async fn handle_usage_api(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let auth_header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-
-    if auth::validate_client_key(state.config.server.api_key.as_deref(), auth_header).is_err() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    }
-
     let preset = params.get("preset").map(String::as_str).unwrap_or("7d");
     let range = match period::resolve(preset, chrono::Utc::now()) {
         Ok(range) => range,

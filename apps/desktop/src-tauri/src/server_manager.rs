@@ -1,13 +1,13 @@
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use any_converter_server::config::ServerConfig;
+use any_converter_server::config_store::ConfigStore;
+use any_converter_server::home::Home;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{Mutex, oneshot};
 
-use crate::db::{DbError, DesktopDb};
-use crate::secrets;
+const STOP_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -15,7 +15,8 @@ pub enum ServerRunState {
     Stopped,
     Starting,
     Running,
-    Error,
+    Stopping,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,16 +29,16 @@ pub struct ServerStatus {
 
 #[derive(Debug, Error)]
 pub enum ServerManagerError {
-    #[error(transparent)]
-    Db(#[from] DbError),
-    #[error("server already running")]
+    #[error("server start failed: {0}")]
+    StartFailed(String),
+    #[error("server is already starting or running")]
     AlreadyRunning,
     #[error("server is not running")]
     NotRunning,
-    #[error(
-        "provider \"{0}\" has no readable key in the system keychain (keychain entry missing or unreadable; see log); open the app and re-enter its API key"
-    )]
-    UnresolvedProviderKey(String),
+    #[error("server failed to stop within {0}s")]
+    StopTimeout(u64),
+    #[error("server stop failed: {0}")]
+    StopFailed(String),
 }
 
 struct ServerTask {
@@ -48,11 +49,16 @@ struct ServerTask {
 #[derive(Clone)]
 pub struct ServerManager {
     inner: Arc<Mutex<ServerManagerInner>>,
+    operations: Arc<Mutex<()>>,
 }
 
 struct ServerManagerInner {
     task: Option<ServerTask>,
     status: ServerStatus,
+    busy: bool,
+    stopping: bool,
+    stop_timed_out: bool,
+    generation: u64,
 }
 
 impl ServerManager {
@@ -66,7 +72,12 @@ impl ServerManager {
                     port: 1228,
                     last_error: None,
                 },
+                busy: false,
+                stopping: false,
+                stop_timed_out: false,
+                generation: 0,
             })),
+            operations: Arc::new(Mutex::new(())),
         }
     }
 
@@ -74,87 +85,207 @@ impl ServerManager {
         self.inner.lock().await.status.clone()
     }
 
-    pub async fn start(
-        &self,
-        db: DesktopDb,
-        log_dir: PathBuf,
-    ) -> Result<ServerStatus, ServerManagerError> {
-        let mut config = db.build_server_config(log_dir)?;
-        let unresolved = resolve_provider_keys(&mut config);
-        if let Some(provider) = unresolved.first() {
-            return Err(ServerManagerError::UnresolvedProviderKey(provider.clone()));
+    pub async fn start(&self, home: Home) -> Result<ServerStatus, ServerManagerError> {
+        let _operation = self.operations.lock().await;
+        self.start_inner(home).await
+    }
+
+    async fn start_inner(&self, home: Home) -> Result<ServerStatus, ServerManagerError> {
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.busy {
+                return Err(ServerManagerError::AlreadyRunning);
+            }
+            inner.busy = true;
+            inner.stopping = false;
+            inner.stop_timed_out = false;
+            inner.generation += 1;
+            inner.status = ServerStatus {
+                state: ServerRunState::Starting,
+                host: "127.0.0.1".to_string(),
+                port: 1228,
+                last_error: None,
+            };
         }
 
-        let mut inner = self.inner.lock().await;
-        if inner.task.is_some() {
-            return Err(ServerManagerError::AlreadyRunning);
-        }
-        inner.status = ServerStatus {
-            state: ServerRunState::Starting,
-            host: config.server.host.clone(),
-            port: config.server.port,
-            last_error: None,
+        let config = match ConfigStore::from_home(&home).load() {
+            Ok(document) => document.config().clone(),
+            Err(error) => {
+                let message = error.to_string();
+                self.finish_prepare_failure(&message).await;
+                return Err(ServerManagerError::StartFailed(message));
+            }
         };
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let status_handle = self.inner.clone();
+        let (ready_tx, mut ready_rx) = oneshot::channel();
+        let (done_tx, mut done_rx) = oneshot::channel();
+        let status_handle = Arc::clone(&self.inner);
+        {
+            let mut inner = self.inner.lock().await;
+            inner.status.host = config.server.host.clone();
+            inner.status.port = config.server.port;
+        }
+        let generation = {
+            let inner = self.inner.lock().await;
+            inner.generation
+        };
+
         let join_handle = tokio::spawn(async move {
-            let server_error = any_converter_server::run_with_shutdown(config, async move {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .err()
-            .map(|error| error.to_string());
+            let server_result = any_converter_server::run_from_home_with_shutdown_and_ready(
+                home,
+                async move {
+                    let _ = shutdown_rx.await;
+                },
+                Some(ready_tx),
+            )
+            .await;
+            let error = server_result.err().map(|error| error.to_string());
 
             let mut inner = status_handle.lock().await;
-            inner.task = None;
-            match server_error {
-                None => {
-                    inner.status.state = ServerRunState::Stopped;
-                    inner.status.last_error = None;
-                }
-                Some(error) => {
-                    inner.status.state = ServerRunState::Error;
-                    inner.status.last_error = Some(error);
-                }
+            if generation != inner.generation {
+                return;
             }
+            inner.busy = false;
+            inner.task = None;
+            let stopping = inner.stopping;
+            let stop_timed_out = inner.stop_timed_out;
+            if stop_timed_out {
+                inner.status.state = ServerRunState::Failed;
+                inner.status.last_error = Some(format!(
+                    "server did not stop within {} seconds",
+                    STOP_DRAIN_TIMEOUT.as_secs()
+                ));
+            } else if stopping && error.is_none() {
+                inner.status.state = ServerRunState::Stopped;
+                inner.status.last_error = None;
+            } else {
+                inner.status.state = ServerRunState::Failed;
+                inner.status.last_error =
+                    Some(error.unwrap_or_else(|| "server task exited unexpectedly".to_string()));
+            }
+            let _ = done_tx.send(());
         });
-        inner.task = Some(ServerTask {
-            shutdown_tx,
-            join_handle,
-        });
-        inner.status.state = ServerRunState::Running;
-        Ok(inner.status.clone())
+
+        {
+            let mut inner = self.inner.lock().await;
+            inner.task = Some(ServerTask {
+                shutdown_tx,
+                join_handle,
+            });
+        }
+
+        let startup = tokio::select! {
+            ready = &mut ready_rx => ready.map_err(|_| "server exited before readiness".to_string()),
+            done = &mut done_rx => done
+                .map_err(|_| "server task crashed".to_string())
+                .and_then(|_| Err("server exited before readiness".to_string())),
+        };
+        match startup {
+            Ok(address) => {
+                let mut inner = self.inner.lock().await;
+                if generation != inner.generation || inner.task.is_none() {
+                    let status = inner.status.clone();
+                    return Err(ServerManagerError::StartFailed(
+                        status
+                            .last_error
+                            .unwrap_or_else(|| "server exited early".to_string()),
+                    ));
+                }
+                inner.status.state = ServerRunState::Running;
+                inner.status.host = address.ip().to_string();
+                inner.status.port = address.port();
+                inner.status.last_error = None;
+                Ok(inner.status.clone())
+            }
+            Err(message) => {
+                let status = self.status().await;
+                Err(ServerManagerError::StartFailed(
+                    status.last_error.unwrap_or(message),
+                ))
+            }
+        }
     }
 
     pub async fn stop(&self) -> Result<ServerStatus, ServerManagerError> {
+        let _operation = self.operations.lock().await;
+        self.stop_inner().await
+    }
+
+    async fn stop_inner(&self) -> Result<ServerStatus, ServerManagerError> {
         let task = {
             let mut inner = self.inner.lock().await;
             let Some(task) = inner.task.take() else {
+                if inner.busy {
+                    return Err(ServerManagerError::AlreadyRunning);
+                }
                 return Err(ServerManagerError::NotRunning);
             };
-            inner.status.state = ServerRunState::Stopped;
+            inner.stopping = true;
+            inner.stop_timed_out = false;
+            inner.status.state = ServerRunState::Stopping;
             task
         };
-        let _ = task.shutdown_tx.send(());
-        let _ = task.join_handle.await;
-        Ok(self.status().await)
-    }
 
-    pub async fn restart(
-        &self,
-        db: DesktopDb,
-        log_dir: PathBuf,
-    ) -> Result<ServerStatus, ServerManagerError> {
-        if self.inner.lock().await.task.is_some() {
-            let _ = self.stop().await;
+        let ServerTask {
+            shutdown_tx,
+            join_handle,
+        } = task;
+        let _ = shutdown_tx.send(());
+        let abort_handle = join_handle.abort_handle();
+        let join_result = tokio::time::timeout(STOP_DRAIN_TIMEOUT, join_handle).await;
+        match join_result {
+            Ok(result) => {
+                if result.is_err() {
+                    let message = "server task panicked during shutdown".to_string();
+                    self.force_failed_state(&message).await;
+                    return Err(ServerManagerError::StopFailed(message));
+                }
+                let status = self.status().await;
+                if status.state == ServerRunState::Failed {
+                    return Err(ServerManagerError::StopFailed(
+                        status
+                            .last_error
+                            .unwrap_or_else(|| "server failed".to_string()),
+                    ));
+                }
+                Ok(status)
+            }
+            Err(_) => {
+                {
+                    let mut inner = self.inner.lock().await;
+                    inner.stop_timed_out = true;
+                }
+                abort_handle.abort();
+                self.force_failed_state(&format!(
+                    "server did not stop within {} seconds",
+                    STOP_DRAIN_TIMEOUT.as_secs()
+                ))
+                .await;
+                Err(ServerManagerError::StopTimeout(
+                    STOP_DRAIN_TIMEOUT.as_secs(),
+                ))
+            }
         }
-        self.start(db, log_dir).await
     }
 
-    /// Test-only constructor: a manager that already reports the given
-    /// running address without a real task behind it. Not part of the app's
-    /// API surface.
+    pub async fn restart(&self, home: Home) -> Result<ServerStatus, ServerManagerError> {
+        let _operation = self.operations.lock().await;
+        if self.inner.lock().await.busy {
+            let _ = self.stop_inner().await;
+        }
+        self.start_inner(home).await
+    }
+
+    pub fn mark_initial_failure(&self, message: &str) {
+        if let Ok(mut inner) = self.inner.try_lock() {
+            if !inner.busy {
+                inner.status.state = ServerRunState::Failed;
+                inner.status.last_error = Some(message.to_string());
+            }
+        }
+    }
+
     #[doc(hidden)]
     pub fn fake_running(host: &str, port: u16) -> Self {
         let manager = Self::new();
@@ -165,6 +296,20 @@ impl ServerManager {
         }
         manager
     }
+
+    async fn finish_prepare_failure(&self, message: &str) {
+        let mut inner = self.inner.lock().await;
+        inner.busy = false;
+        inner.status.state = ServerRunState::Failed;
+        inner.status.last_error = Some(message.to_string());
+    }
+
+    async fn force_failed_state(&self, message: &str) {
+        let mut inner = self.inner.lock().await;
+        inner.busy = false;
+        inner.status.state = ServerRunState::Failed;
+        inner.status.last_error = Some(message.to_string());
+    }
 }
 
 impl Default for ServerManager {
@@ -173,93 +318,27 @@ impl Default for ServerManager {
     }
 }
 
-fn resolve_provider_keys(config: &mut ServerConfig) -> Vec<String> {
-    resolve_keys_with(config, secrets::get_provider_key)
-}
-
-/// Replace `keychain:any-converter:<account>` references with the secret from
-/// the system keychain, returning the names of providers that failed to
-/// resolve.
-///
-/// On failure the `api_key` is cleared rather than left as the reference
-/// string: a reference is not a credential, and forwarding it upstream would
-/// both leak the reference and produce a confusing auth failure.
-fn resolve_keys_with<F, E>(config: &mut ServerConfig, get: F) -> Vec<String>
-where
-    F: Fn(&str) -> Result<String, E>,
-    E: std::fmt::Display,
-{
-    let mut unresolved = Vec::new();
-    for provider in &mut config.providers {
-        if let Some(account) = provider.api_key.strip_prefix("keychain:any-converter:") {
-            match get(account) {
-                Ok(secret) => provider.api_key = secret,
-                Err(err) => {
-                    log::error!(
-                        "failed to resolve provider \"{}\" secret from keychain: {err}",
-                        provider.name
-                    );
-                    provider.api_key = String::new();
-                    unresolved.push(provider.name.clone());
-                }
-            }
-        }
-    }
-    unresolved
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
 
-    fn config_with_providers(providers: &[(&str, &str)]) -> ServerConfig {
-        let mut toml = String::from("[server]\nhost = \"127.0.0.1\"\nport = 8080\n");
-        for (name, api_key) in providers {
-            toml.push_str(&format!(
-                r#"
-[[providers]]
-name = "{name}"
-format = "openai_chat"
-base_url = "https://example.com"
-api_key = "{api_key}"
-"#
-            ));
-        }
-        ServerConfig::from_toml(&toml).unwrap()
+    #[test]
+    fn initial_failure_is_reported_once() {
+        let manager = ServerManager::new();
+        manager.mark_initial_failure("keychain locked");
+
+        let status = manager.inner.try_lock().unwrap().status.clone();
+        assert_eq!(status.state, ServerRunState::Failed);
+        assert_eq!(status.last_error.as_deref(), Some("keychain locked"));
     }
 
     #[test]
-    fn resolves_keychain_reference_to_secret() {
-        let mut config = config_with_providers(&[("openai", "keychain:any-converter:acct-1")]);
-
-        let unresolved = resolve_keys_with(&mut config, |_| Ok::<_, String>("sk-real".into()));
-
-        assert!(unresolved.is_empty());
-        assert_eq!(config.providers[0].api_key, "sk-real");
-    }
-
-    #[test]
-    fn failed_resolution_clears_key_and_reports_provider() {
-        let mut config = config_with_providers(&[
-            ("openai", "keychain:any-converter:acct-1"),
-            ("gemini", "keychain:any-converter:missing"),
-            ("literal", "sk-literal"),
-        ]);
-
-        let unresolved = resolve_keys_with(&mut config, |account| {
-            if account == "acct-1" {
-                Ok("sk-real".to_string())
-            } else {
-                Err("no such keychain entry".to_string())
-            }
-        });
-
-        assert_eq!(unresolved, vec!["gemini".to_string()]);
-        assert_eq!(config.providers[0].api_key, "sk-real");
-        assert_eq!(config.providers[1].api_key, "");
-        // Literal keys are not touched by resolution.
-        assert_eq!(config.providers[2].api_key, "sk-literal");
+    fn fake_running_reports_the_supervised_address() {
+        let manager = ServerManager::fake_running("127.0.0.1", 18080);
+        let status = manager.inner.try_lock().unwrap().status.clone();
+        assert_eq!(status.state, ServerRunState::Running);
+        assert_eq!(status.port, 18080);
     }
 }

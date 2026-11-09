@@ -28,7 +28,10 @@ use any_converter_server::credentials::claude_signin::{
 
 /// The fake `claude` CLI fixture (also plays the browser shim).
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude-cli.sh")
+    let extension = if cfg!(windows) { "cmd" } else { "sh" };
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(format!("fake-claude-cli.{extension}"))
 }
 
 /// A sign-in running the fake CLI in `root` with the given mode.

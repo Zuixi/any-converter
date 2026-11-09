@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,9 +10,10 @@ use any_converter_core::convert::{
 use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
-    LoggingConfig, ModelRouteConfig, PluginRef, ProviderConfig, RouteStrategy, ServerConfig,
-    ServerSettings, secrets_path, warn_if_world_readable,
+    LoggingConfig, PluginRef, ProviderConfig, ServerConfig, secrets_path, warn_if_world_readable,
 };
+use any_converter_server::config_store::ConfigStore;
+use any_converter_server::control_plane::ControlPlane;
 use any_converter_server::credentials::account::clear_revoked_default_store;
 use any_converter_server::credentials::claude_signin::{
     CLAUDE_INSTALL_HINT, CLAUDE_OPENED_URL_ENV, ClaudeSignIn, find_claude_cli,
@@ -24,11 +25,13 @@ use any_converter_server::credentials::{
     gemini::DEFAULT_SIGN_IN_TIMEOUT, import_path, mark_adopted, release_adopted, to_credential,
     write_tokens,
 };
+use any_converter_server::home::Home;
 use any_converter_server::plugins::{
     AuthMethodKind, Authorization, AuthorizeParams, CallbackParams, ManagedHosts, PluginAuthStore,
     PluginProviderInfo, ProviderPlugin,
 };
-use any_converter_server::{logging::init_logging, run};
+use any_converter_server::secrets::ApiKeyStore;
+use any_converter_server::{logging::init_logging, run_from_home};
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod agents_cmd;
@@ -112,6 +115,9 @@ enum Commands {
         /// Path to TOML configuration file
         #[arg(long, conflicts_with_all = ["port", "provider", "format", "base_url", "upstream_key"])]
         config: Option<PathBuf>,
+        /// Canonical gateway home (defaults to the platform config directory)
+        #[arg(long)]
+        home: Option<PathBuf>,
         #[arg(long, default_value_t = 1228)]
         port: u16,
         #[arg(long, default_value = "default", conflicts_with = "config")]
@@ -120,6 +126,7 @@ enum Commands {
         format: Option<CliFormat>,
         #[arg(long, conflicts_with = "config")]
         base_url: Option<String>,
+        /// Provider API key (prefer ANY_CONVERTER_UPSTREAM_KEY for bootstrap)
         #[arg(long, conflicts_with = "config")]
         upstream_key: Option<String>,
         #[arg(long, default_value = "127.0.0.1")]
@@ -234,7 +241,7 @@ enum PluginCommand {
 /// `agents` talks to a *running* server: use `--config`-free
 /// `any-converter serve` (or the Desktop app), then point the CLI at it
 /// with `ANY_CONVERTER_URL` (or the older `ANY_CONVERTER_ADDR`) and
-/// `ANY_CONVERTER_API_KEY`.
+/// `ANY_CONVERTER_MANAGEMENT_KEY`.
 #[derive(Subcommand)]
 enum AgentsCommand {
     /// Show every supported agent, its wiring status, model, and key
@@ -311,6 +318,63 @@ fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
     options.open(path)?.write_all(data.as_bytes())
 }
 
+fn toml_string(value: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if value
+        .chars()
+        .any(|character| character.is_control() || character == '\u{7f}')
+    {
+        return Err("TOML string values cannot contain control characters".into());
+    }
+    Ok(format!(
+        "\"{}\"",
+        value.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
+}
+
+fn inline_config_toml(
+    host: &str,
+    port: u16,
+    api_key: Option<&str>,
+    provider: &str,
+    format: Format,
+    base_url: &str,
+    upstream_key: &str,
+    log_dir: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut source = format!("[server]\nhost = {}\nport = {port}\n", toml_string(host)?);
+    if let Some(api_key) = api_key {
+        source.push_str(&format!("api_key = {}\n", toml_string(api_key)?));
+    }
+    source.push_str(&format!(
+        "\n[logging]\ndir = {}\nmax_disk_mb = 500\n",
+        toml_string(&log_dir.to_string_lossy())?
+    ));
+    source.push_str(&format!(
+        "\n[[providers]]\nname = {}\nformat = \"{}\"\nbase_url = {}\napi_key = {}\n",
+        toml_string(provider)?,
+        format,
+        toml_string(base_url)?,
+        toml_string(upstream_key)?
+    ));
+    source.push_str(&format!(
+        "\n[[model_routes]]\npattern = \"*\"\nprovider = {}\nproviders = [{}]\nstrategy = \"priority\"\n",
+        toml_string(provider)?,
+        toml_string(provider)?
+    ));
+    Ok(source)
+}
+
+fn resolve_upstream_key(flag: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(key) = flag {
+        return Ok(key.to_string());
+    }
+    match std::env::var("ANY_CONVERTER_UPSTREAM_KEY") {
+        Ok(key) if !key.is_empty() => Ok(key),
+        Ok(_) => Err("ANY_CONVERTER_UPSTREAM_KEY must not be empty".into()),
+        Err(_) => Err("--upstream-key is required when not using --config".into()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Claude Code's `claude auth login` invokes this executable as its
@@ -373,6 +437,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Serve {
             config,
+            home,
             port,
             provider,
             format,
@@ -381,91 +446,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             host,
             api_key,
         } => {
-            // clap only sees the conflict when `--config` follows `serve`; the
-            // other flags would be silently ignored, so reject them here too.
-            if config.is_some()
-                && (port != 8080
-                    || provider != "default"
+            let home = match home {
+                Some(root) => Home::from_root(root),
+                None => Home::discover()?,
+            };
+
+            if home.config_path().exists() {
+                let inline_requested = config.is_some()
                     || format.is_some()
                     || base_url.is_some()
-                    || upstream_key.is_some())
-            {
-                return Err(
-                    "--config cannot be combined with --port/--provider/--format/--base-url/--upstream-key"
-                        .into(),
-                );
+                    || upstream_key.is_some()
+                    || api_key.is_some()
+                    || host != "127.0.0.1"
+                    || port != 1228
+                    || provider != "default";
+                if inline_requested {
+                    return Err(format!(
+                        "canonical config already exists at {}; start it without inline flags and update it through the management API",
+                        home.config_path().display()
+                    )
+                    .into());
+                }
+                let logging = ConfigStore::from_home(&home)
+                    .load()?
+                    .config()
+                    .logging
+                    .clone();
+                init_logging(&logging)?;
+                run_from_home(home)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return Ok(());
             }
-            let server_config = if let Some(path) = config {
+
+            let source = if let Some(path) = config {
                 let content = std::fs::read_to_string(&path)?;
                 let config = ServerConfig::from_toml(&content)?;
                 warn_if_world_readable(&path);
-                config
+                if !config.routes.is_empty() {
+                    eprintln!(
+                        "warning: legacy [[routes]] entries are ignored; migrate them to [[model_routes]]"
+                    );
+                }
+                content
             } else {
                 let fmt = format.ok_or("--format is required when not using --config")?;
                 let base = base_url.ok_or("--base-url is required when not using --config")?;
-                let key =
-                    upstream_key.ok_or("--upstream-key is required when not using --config")?;
+                let key = resolve_upstream_key(upstream_key.as_deref())?;
                 let provider_format = fmt.to_format();
 
-                ServerConfig {
-                    server: ServerSettings {
-                        host,
-                        port,
-                        api_key,
-                        pass_through_headers: Default::default(),
-                        proxy: None,
-                    },
-                    providers: vec![ProviderConfig {
-                        name: provider.clone(),
-                        format: provider_format,
-                        base_url: base,
-                        api_key: key,
-                        account: None,
-                        accounts: Vec::new(),
-                        api: None,
-                        wire: None,
-                        model_map: HashMap::new(),
-                        endpoints: Default::default(),
-                        auth: Default::default(),
-                        plugin: None,
-                        proxy: None,
-                    }],
-                    model_routes: vec![ModelRouteConfig {
-                        pattern: "*".into(),
-                        provider: Some(provider),
-                        providers: vec![],
-                        upstream_model: None,
-                        strategy: RouteStrategy::Priority,
-                    }],
-                    routes: vec![],
-                    model_metadata: HashMap::new(),
-                    logging: LoggingConfig::default(),
-                    pricing: Default::default(),
-                }
+                inline_config_toml(
+                    &host,
+                    port,
+                    api_key.as_deref(),
+                    &provider,
+                    provider_format,
+                    &base,
+                    &key,
+                    &home.logs_dir(),
+                )?
             };
 
-            let validation_errors = server_config.validate();
-            if !validation_errors.is_empty() {
-                #[allow(clippy::print_stderr)]
-                for err in &validation_errors {
-                    eprintln!("config error: {err}");
-                }
-                return Err(
-                    format!("{} config validation error(s)", validation_errors.len()).into(),
-                );
-            }
+            let prepared = ControlPlane::initialize_from_config(
+                home.clone(),
+                ApiKeyStore::for_home(&home),
+                &source,
+            )?;
+            let logging = prepared.config.logging.clone();
+            init_logging(&logging)?;
+            drop(prepared);
 
-            #[allow(clippy::print_stderr)]
-            if !server_config.routes.is_empty() {
-                eprintln!(
-                    "warning: legacy [[routes]] entries are ignored; migrate them to [[model_routes]]"
-                );
-            }
-
-            let log_dir = init_logging(&server_config.logging)?;
-            let _log_dir = log_dir;
-
-            run(server_config).await?;
+            run_from_home(home)
+                .await
+                .map_err(|error| error.to_string())?;
         }
         Commands::Stats(args) => stats::run(args)?,
         Commands::Accounts { command } => accounts(command).await?,
@@ -1570,11 +1623,15 @@ fn accounts_order(
 #[allow(clippy::print_stdout)]
 async fn accounts_quotas() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("ANY_CONVERTER_ADDR").unwrap_or_else(|_| "127.0.0.1:1228".to_string());
+    let management_key = match std::env::var("ANY_CONVERTER_MANAGEMENT_KEY") {
+        Ok(key) if !key.trim().is_empty() => key.trim().to_owned(),
+        _ => ApiKeyStore::for_home(&Home::discover()?).get_management()?,
+    };
     let mut stream = tokio::net::TcpStream::connect(&addr)
         .await
         .map_err(|err| format!("cannot reach the server at {addr}: {err} (is it running?)"))?;
     let request = format!(
-        "GET /v1/accounts/quotas HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
+        "GET /v1/accounts/quotas HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nAccept: application/json\r\nAuthorization: Bearer {management_key}\r\n\r\n"
     );
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     stream.write_all(request.as_bytes()).await?;

@@ -10,18 +10,20 @@
 use std::{
     collections::BTreeMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
+use atomicwrites::{AllowOverwrite, AtomicFile};
 use thiserror::Error;
+
+use crate::lockfile::{DEFAULT_ACQUIRE_TIMEOUT, FileLock, LockError};
 
 use super::Credential;
 
 /// Atomically write `bytes` to `path`: same-directory `0600` temp file →
 /// rename over the target, creating `0700` parent directories as needed.
-/// (Atomic on POSIX via same-directory rename; on Windows `rename` fails
-/// when the destination exists, so remove first.)
+/// Replacement uses `MoveFileEx(REPLACE_EXISTING)` semantics on Windows.
 ///
 /// Shared by the secret store and the revoked-account marker so the
 /// permission logic lives in exactly one place.
@@ -41,26 +43,35 @@ pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), 
         }
     }
 
-    let tmp = tmp_path_for(path);
-    fs::write(&tmp, bytes)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+        options.mode(0o600);
     }
 
-    #[cfg(windows)]
-    let _ = fs::remove_file(path);
-    fs::rename(&tmp, path)?;
+    AtomicFile::new(path, AllowOverwrite)
+        .write_with_options(
+            |file| {
+                use std::io::Write;
+                file.write_all(bytes)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+                }
+                Ok::<_, std::io::Error>(())
+            },
+            options,
+        )
+        .map_err(|error| match error {
+            atomicwrites::Error::Internal(error) | atomicwrites::Error::User(error) => {
+                SecretStoreError::Io(error)
+            }
+        })?;
     Ok(())
-}
-
-/// Temp-file path used by [`write_private`] (pid-suffixed so two processes
-/// writing the same target never collide).
-fn tmp_path_for(path: &std::path::Path) -> PathBuf {
-    let mut p = path.as_os_str().to_owned();
-    p.push(format!(".tmp-{}", std::process::id()));
-    PathBuf::from(p)
 }
 
 /// Errors surfaced by [`SecretStore`] implementations.
@@ -78,6 +89,9 @@ pub enum SecretStoreError {
     /// Neither the primary file nor the backup could be read.
     #[error("credential store corrupted and no usable backup at {0}")]
     NotFound(PathBuf),
+    /// Cross-process lock acquisition failed.
+    #[error("credential store lock error: {0}")]
+    Lock(#[from] LockError),
 }
 
 /// Storage backend for provider credentials, keyed by account id.
@@ -101,6 +115,8 @@ pub struct FileSecretStore {
     /// Serializes the read-modify-write cycle; there are no await points,
     /// so a `std` mutex suffices.
     lock: Arc<Mutex<()>>,
+    /// Serializes read-modify-write cycles with other processes.
+    process_lock: FileLock,
 }
 
 impl FileSecretStore {
@@ -108,8 +124,10 @@ impl FileSecretStore {
     /// Does not touch the filesystem; the parent directory and file are
     /// created lazily on the first write.
     pub fn new(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
         Self {
-            path: path.into(),
+            process_lock: FileLock::new(append_suffix(&path, ".lock")),
+            path,
             lock: Arc::new(Mutex::new(())),
         }
     }
@@ -165,9 +183,16 @@ impl FileSecretStore {
     }
 }
 
+fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
 impl SecretStore for FileSecretStore {
     fn put(&self, account_id: &str, cred: &Credential) -> Result<(), SecretStoreError> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.process_lock.acquire_timeout(DEFAULT_ACQUIRE_TIMEOUT)?;
         let mut map = self.load()?;
         map.insert(account_id.to_string(), cred.clone());
         self.save(&map)
@@ -175,11 +200,13 @@ impl SecretStore for FileSecretStore {
 
     fn get(&self, account_id: &str) -> Result<Option<Credential>, SecretStoreError> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.process_lock.acquire_timeout(DEFAULT_ACQUIRE_TIMEOUT)?;
         Ok(self.load()?.get(account_id).cloned())
     }
 
     fn delete(&self, account_id: &str) -> Result<(), SecretStoreError> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.process_lock.acquire_timeout(DEFAULT_ACQUIRE_TIMEOUT)?;
         let mut map = self.load()?;
         if map.remove(account_id).is_some() {
             self.save(&map)?;
@@ -189,6 +216,7 @@ impl SecretStore for FileSecretStore {
 
     fn list(&self) -> Result<Vec<String>, SecretStoreError> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _process_guard = self.process_lock.acquire_timeout(DEFAULT_ACQUIRE_TIMEOUT)?;
         Ok(self.load()?.into_keys().collect())
     }
 }
@@ -341,7 +369,7 @@ mod tests {
             .into_iter()
             .filter(|p| {
                 let name = p.file_name().map(|s| s.to_string_lossy().to_string());
-                matches!(name.as_deref(), Some(n) if n.contains(".tmp-"))
+                matches!(name.as_deref(), Some(n) if n.contains(".tmp-") || n.contains(".atomicwrite"))
             })
             .collect();
         assert!(
@@ -364,10 +392,47 @@ mod tests {
             .into_iter()
             .filter(|p| {
                 let name = p.file_name().map(|s| s.to_string_lossy().to_string());
-                matches!(name.as_deref(), Some(n) if n.contains(".tmp-"))
+                matches!(name.as_deref(), Some(n) if n.contains(".tmp-") || n.contains(".atomicwrite"))
             })
             .collect();
         assert!(residue.is_empty(), "tmp residue: {residue:?}");
+    }
+
+    #[test]
+    fn concurrent_instances_do_not_lose_updates() {
+        let dir = TempDir::new();
+        let path = dir.path("secrets.json");
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut handles = Vec::new();
+
+        for instance in 0..2 {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let store = FileSecretStore::new(path);
+                barrier.wait();
+                for value in 0..5 {
+                    store
+                        .put(
+                            &format!("{instance}:{value}"),
+                            &Credential::ApiKey {
+                                key: format!("sk-{instance}-{value}"),
+                            },
+                        )
+                        .unwrap();
+                }
+            }));
+        }
+        barrier.wait();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(
+            FileSecretStore::new(path).list().unwrap().len(),
+            10,
+            "two independent stores must not overwrite each other's entries"
+        );
     }
 
     #[test]

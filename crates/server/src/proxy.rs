@@ -684,6 +684,9 @@ fn content_window(first_ms: Option<u64>, last_ms: Option<u64>) -> u64 {
 }
 
 fn take_complete_sse_blocks(buffer: &mut String) -> Vec<String> {
+    if buffer.contains('\r') {
+        *buffer = buffer.replace("\r\n", "\n").replace('\r', "\n");
+    }
     let mut blocks = Vec::new();
     while let Some(pos) = buffer.find("\n\n") {
         let block = buffer[..pos].trim().to_string();
@@ -749,6 +752,14 @@ mod tests {
     use super::*;
 
     const BASE: &str = "https://api.example.com";
+
+    #[test]
+    fn complete_sse_blocks_accept_crlf_framing() {
+        let mut buffer = "data: one\r\n\r\ndata: two\r\n\r\ndata: partial".to_string();
+        let blocks = take_complete_sse_blocks(&mut buffer);
+        assert_eq!(blocks, vec!["data: one", "data: two"]);
+        assert_eq!(buffer, "data: partial");
+    }
 
     #[test]
     fn only_blocks_with_content_move_the_content_clock() {
