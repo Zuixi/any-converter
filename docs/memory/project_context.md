@@ -8,6 +8,8 @@ SUMMARIZE global project status/system environment/user preferences/etc BY USING
 - Core architecture: typed Canonical IR (CanonicalRequest/Response) with FormatAdapter + StreamAdapter traits per format
 - 4 formats supported: OpenAI Chat, Claude Messages, OpenAI Responses, Gemini — each under crates/core/src/formats/
 - Server uses axum 0.8, path-based format detection, config.toml with provider/route/model_map system
+- Resident gateway architecture: server owns canonical Home/config.toml/keychain references/management API/readiness; Desktop SQLite is only legacy migration and read-only logs
+- Management auth is separate from inference auth; provider/inference/management keychains use canonical `keychain:any-converter:*` namespaces and fail closed when missing
 - Provider transport can override default format-derived endpoint paths via `[providers.endpoints] path` / `stream_path` and auth via `[providers.auth] scheme` / `headers`
 - Server route strategy supports priority failover and round_robin starting-provider rotation via `route_strategy::order_provider_names`
 - Server request pipeline helpers are split into `model.rs` (model/private fields), `namespace.rs` (Responses namespace patches), and `route_strategy.rs` (provider pool ordering)

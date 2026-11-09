@@ -1,5 +1,10 @@
 # any-converter Desktop Client 设计方案
 
+> **Status: superseded for configuration authority and process lifecycle.**
+> Use [`desktop-resident-gateway.md`](./desktop-resident-gateway.md). This
+> document remains useful only for older UI/module history; Desktop SQLite is
+> no longer the server configuration authority.
+
 ## 一、定位与目标
 
 **any-converter Desktop** = 可视化配置管理中心 + Server 控制台 + 请求调试器 + 日志监控面板
@@ -26,26 +31,27 @@
 
 ### 1. Dashboard — 状态总览
 
-| 功能 | 说明 |
-|------|------|
-| Server 状态卡片 | 运行中/已停止，一键 启动/停止/重启 |
-| 监听信息 | 显示当前 host:port，点击复制 |
-| 今日统计 | 请求总数、成功数、错误数、平均延迟 |
-| Provider 健康 | 各 Provider 在线状态（带最后心跳时间） |
-| 最近请求 | 最近 10 条请求的简略信息 |
+| 功能            | 说明                                   |
+| --------------- | -------------------------------------- |
+| Server 状态卡片 | 运行中/已停止，一键 启动/停止/重启     |
+| 监听信息        | 显示当前 host:port，点击复制           |
+| 今日统计        | 请求总数、成功数、错误数、平均延迟     |
+| Provider 健康   | 各 Provider 在线状态（带最后心跳时间） |
+| 最近请求        | 最近 10 条请求的简略信息               |
 
 ### 2. Providers — 上游服务商管理
 
-| 功能 | 说明 |
-|------|------|
-| Provider 列表 | 卡片/表格展示，支持搜索、排序 |
+| 功能          | 说明                                                      |
+| ------------- | --------------------------------------------------------- |
+| Provider 列表 | 卡片/表格展示，支持搜索、排序                             |
 | 新增 Provider | Form：名称、格式(dropdown)、Base URL、API Key、模型映射表 |
-| 编辑 Provider | 弹窗编辑，API Key 密文显示（可切换可见） |
-| 模型映射 | 内嵌表格：客户端模型名 → 上游模型名，支持 `*` 通配符 |
-| 测试连接 | 发送一个简单请求验证 Provider 是否可用 |
-| 删除 Provider | 二次确认，检查是否被 Route 引用 |
+| 编辑 Provider | 弹窗编辑，API Key 密文显示（可切换可见）                  |
+| 模型映射      | 内嵌表格：客户端模型名 → 上游模型名，支持 `*` 通配符      |
+| 测试连接      | 发送一个简单请求验证 Provider 是否可用                    |
+| 删除 Provider | 二次确认，检查是否被 Route 引用                           |
 
 **表单字段**：
+
 - 名称（唯一标识）
 - 格式：`openai_chat` / `claude` / `openai_responses` / `gemini`
 - Base URL：`https://api.moonshot.cn`
@@ -54,44 +60,44 @@
 
 ### 3. Routes — 路由规则管理
 
-| 功能 | 说明 |
-|------|------|
-| Route 列表 | 展示所有路由规则 |
-| 新增 Route | 客户端格式(dropdown) → Provider(dropdown) |
+| 功能       | 说明                                                     |
+| ---------- | -------------------------------------------------------- |
+| Route 列表 | 展示所有路由规则                                         |
+| 新增 Route | 客户端格式(dropdown) → Provider(dropdown)                |
 | 路由可视化 | 简单的流向图：Client Format → Provider → Upstream Format |
-| 删除 Route | 二次确认 |
+| 删除 Route | 二次确认                                                 |
 
 ### 4. Playground — 请求调试器
 
 > 技术人员最常用的功能，类似 Postman + 格式转换预览。
 
-| 功能 | 说明 |
-|------|------|
-| 输入面板 | JSON 编辑器（选择源格式） |
-| 转换预览 | 显示转换后的中间结果 |
-| 目标输出 | 显示转换为目标格式的请求体 |
+| 功能     | 说明                                      |
+| -------- | ----------------------------------------- |
+| 输入面板 | JSON 编辑器（选择源格式）                 |
+| 转换预览 | 显示转换后的中间结果                      |
+| 目标输出 | 显示转换为目标格式的请求体                |
 | 实时发送 | 选择 Provider，直接发送并展示完整响应链路 |
-| 格式选择 | Source Format ↔ Target Format 双向切换 |
-| 历史记录 | 保存最近调试的请求 |
+| 格式选择 | Source Format ↔ Target Format 双向切换    |
+| 历史记录 | 保存最近调试的请求                        |
 
 ### 5. Logs — 请求日志监控
 
-| 功能 | 说明 |
-|------|------|
+| 功能     | 说明                                           |
+| -------- | ---------------------------------------------- |
 | 日志列表 | 时间、客户端格式、Provider、模型、状态码、耗时 |
-| 筛选 | 按 Provider、格式、状态码、时间范围筛选 |
+| 筛选     | 按 Provider、格式、状态码、时间范围筛选        |
 | 详情面板 | 点击行展开：完整请求体、响应体、转换前后的对比 |
-| 导出 | 导出为 JSON/CSV |
-| 清空 | 清空日志（二次确认） |
+| 导出     | 导出为 JSON/CSV                                |
+| 清空     | 清空日志（二次确认）                           |
 
 ### 6. Settings — 应用设置
 
-| 功能 | 说明 |
-|------|------|
+| 功能            | 说明                            |
+| --------------- | ------------------------------- |
 | Server 默认配置 | 默认 host、port、客户端 API Key |
-| 外观 | Light / Dark / System 主题切换 |
-| 数据管理 | 数据目录位置、备份、恢复 |
-| 关于 | 版本号、开源协议、检查更新 |
+| 外观            | Light / Dark / System 主题切换  |
+| 数据管理        | 数据目录位置、备份、恢复        |
+| 关于            | 版本号、开源协议、检查更新      |
 
 ---
 
@@ -124,23 +130,23 @@
 
 ### 技术栈明细
 
-| 层级 | 技术 | 说明 |
-|------|------|------|
-| 包管理 | pnpm | |
-| 构建工具 | Vite | Tauri 官方推荐 |
-| 前端框架 | React 19 + TypeScript | |
-| UI 组件 | shadcn/ui | 基于 Radix UI + Tailwind |
-| 样式 | Tailwind CSS 3.4 | |
-| 状态管理 | Zustand | 轻量，无 Provider 嵌套 |
-| 数据获取 | TanStack Query v5 | 缓存、轮询、乐观更新 |
-| 表单 | react-hook-form + zod | 类型安全表单验证 |
-| 路由 | React Router (`HashRouter`) | Tauri 本地资源路径更稳妥；URL 形如 `#/providers` |
-| JSON 编辑 | Monaco Editor | VS Code 同款 |
-| 图标 | Lucide React | shadcn/ui 默认 |
-| Toast | Sonner | shadcn/ui 推荐 |
-| 后端框架 | Tauri v2 | |
-| 数据库 | SQLite + rusqlite | 内嵌，零配置 |
-| ORM/迁移 | rusqlite + 手写迁移 | 简单项目够用 |
+| 层级      | 技术                        | 说明                                             |
+| --------- | --------------------------- | ------------------------------------------------ |
+| 包管理    | pnpm                        |                                                  |
+| 构建工具  | Vite                        | Tauri 官方推荐                                   |
+| 前端框架  | React 19 + TypeScript       |                                                  |
+| UI 组件   | shadcn/ui                   | 基于 Radix UI + Tailwind                         |
+| 样式      | Tailwind CSS 3.4            |                                                  |
+| 状态管理  | Zustand                     | 轻量，无 Provider 嵌套                           |
+| 数据获取  | TanStack Query v5           | 缓存、轮询、乐观更新                             |
+| 表单      | react-hook-form + zod       | 类型安全表单验证                                 |
+| 路由      | React Router (`HashRouter`) | Tauri 本地资源路径更稳妥；URL 形如 `#/providers` |
+| JSON 编辑 | Monaco Editor               | VS Code 同款                                     |
+| 图标      | Lucide React                | shadcn/ui 默认                                   |
+| Toast     | Sonner                      | shadcn/ui 推荐                                   |
+| 后端框架  | Tauri v2                    |                                                  |
+| 数据库    | SQLite + rusqlite           | 内嵌，零配置                                     |
+| ORM/迁移  | rusqlite + 手写迁移         | 简单项目够用                                     |
 
 ---
 
@@ -217,7 +223,6 @@ any-converter/
 ├── apps/desktop/tailwind.config.ts
 └── apps/desktop/tsconfig.json
 ```
-
 
 ---
 
@@ -346,6 +351,7 @@ async fn update_settings(state: State<'_, AppState>, settings: AppSettings) -> R
 ### 1. Server 生命周期管理
 
 Tauri 后端需要管理一个 `tokio::task::JoinHandle`，实现：
+
 - `start_server()`：从 DB 读取配置 → 构造 `ServerConfig` → `tokio::spawn(any_converter_server::run(config))`
 - `stop_server()`：`handle.abort()` + 等待优雅关闭
 - 通过 Tauri Event 向前端推送状态变更
@@ -390,15 +396,15 @@ Playground 的格式转换直接调用 `any_converter_core::convert::convert_req
 
 ## 九、开发时序建议
 
-| 阶段 | 内容 | 预计工作量 |
-|------|------|-----------|
-| **Phase 1: 脚手架** | 初始化 Tauri + React + shadcn/ui + pnpm，搭好目录结构 | 1-2h |
-| **Phase 2: DB + 后端 API** | SQLite schema、迁移、Tauri Commands 骨架 | 3-4h |
-| **Phase 3: Providers 页面** | CRUD 完整功能（列表、表单、模型映射） | 4-6h |
-| **Phase 4: Routes 页面** | 路由规则管理 | 2-3h |
-| **Phase 5: Server 控制** | 启动/停止 + Dashboard 状态展示 | 3-4h |
-| **Phase 6: Playground** | JSON 编辑器 + 转换调试 | 3-4h |
-| **Phase 7: Logs + Settings** | 日志查看、应用设置、主题切换 | 2-3h |
-| **Phase 8: 打磨** | 错误处理、空状态、加载态、快捷键 | 2-3h |
+| 阶段                         | 内容                                                  | 预计工作量 |
+| ---------------------------- | ----------------------------------------------------- | ---------- |
+| **Phase 1: 脚手架**          | 初始化 Tauri + React + shadcn/ui + pnpm，搭好目录结构 | 1-2h       |
+| **Phase 2: DB + 后端 API**   | SQLite schema、迁移、Tauri Commands 骨架              | 3-4h       |
+| **Phase 3: Providers 页面**  | CRUD 完整功能（列表、表单、模型映射）                 | 4-6h       |
+| **Phase 4: Routes 页面**     | 路由规则管理                                          | 2-3h       |
+| **Phase 5: Server 控制**     | 启动/停止 + Dashboard 状态展示                        | 3-4h       |
+| **Phase 6: Playground**      | JSON 编辑器 + 转换调试                                | 3-4h       |
+| **Phase 7: Logs + Settings** | 日志查看、应用设置、主题切换                          | 2-3h       |
+| **Phase 8: 打磨**            | 错误处理、空状态、加载态、快捷键                      | 2-3h       |
 
 **总计：约 20-30 小时开发量**

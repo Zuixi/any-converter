@@ -128,6 +128,8 @@ enum TaskDriver {
         host: Arc<crate::plugins::HostedPlugin>,
         session: String,
         provider: String,
+        hosts: Arc<crate::plugins::ManagedHosts>,
+        plugin_ref: crate::config::PluginRef,
     },
     /// The Claude driver lives in the background task (the `claude auth
     /// login` it waits on); `submit` feeds the CLI's stdin / callback.
@@ -309,6 +311,8 @@ impl SignInTasks {
                 host: Arc<crate::plugins::HostedPlugin>,
                 session: String,
                 provider: String,
+                hosts: Arc<crate::plugins::ManagedHosts>,
+                plugin_ref: crate::config::PluginRef,
             },
             /// A paste that finishes the flow here (gemini/antigravity/codex).
             Finish {
@@ -343,10 +347,14 @@ impl SignInTasks {
                         host,
                         session,
                         provider,
+                        hosts,
+                        plugin_ref,
                     } => Action::IntoPlugin {
                         host: Arc::clone(host),
                         session: session.clone(),
                         provider: provider.clone(),
+                        hosts: Arc::clone(hosts),
+                        plugin_ref: plugin_ref.clone(),
                     },
                     TaskDriver::Gemini { .. }
                     | TaskDriver::Codex { .. }
@@ -377,6 +385,8 @@ impl SignInTasks {
                 host,
                 session,
                 provider,
+                hosts,
+                plugin_ref,
             } => {
                 let saved = crate::plugins::ProviderPlugin::callback(
                     &*host,
@@ -390,11 +400,17 @@ impl SignInTasks {
                 // through its own auth store, and what comes back is the
                 // provider and account it was kept under.
                 let (state, user, error) = match saved {
-                    Ok(saved) => (
-                        STATE_DONE.to_string(),
-                        format!("{}:{}", saved.provider, saved.account),
-                        String::new(),
-                    ),
+                    Ok(saved) => {
+                        // The account did not exist when its previous model
+                        // list was cached. A stale empty list must not hide
+                        // the models the new credential just unlocked.
+                        hosts.invalidate(&plugin_ref, "").await;
+                        (
+                            STATE_DONE.to_string(),
+                            format!("{}:{}", saved.provider, saved.account),
+                            String::new(),
+                        )
+                    }
                     Err(err) => (STATE_FAILED.to_string(), String::new(), err.to_string()),
                 };
                 update_task(&self.inner, id, |task| {
@@ -709,12 +725,16 @@ impl SignInTasks {
                     host: Arc::clone(&host),
                     session: authorization.session.clone(),
                     provider: provider_id.to_string(),
+                    hosts: Arc::clone(&hosts),
+                    plugin_ref: reference.clone(),
                 },
             )
         } else {
             let inner = self.inner.clone();
             let task_id = id.clone();
             let host = Arc::clone(&host);
+            let hosts = Arc::clone(&hosts);
+            let reference = reference.clone();
             (
                 Some(tokio::spawn(async move {
                     let deadline = std::time::Instant::now() + DEFAULT_SIGN_IN_TIMEOUT;
@@ -733,6 +753,7 @@ impl SignInTasks {
                         .await;
                         match attempt {
                             Ok(saved) => {
+                                hosts.invalidate(&reference, "").await;
                                 update_task(&inner, &task_id, |task| {
                                     task.state = STATE_DONE.to_string();
                                     task.user = format!("{}:{}", saved.provider, saved.account);

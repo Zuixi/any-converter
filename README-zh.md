@@ -13,12 +13,12 @@
 
 ### 客户端与上游格式
 
-| 格式 | 接口路径 |
-|------|----------|
-| OpenAI Chat Completions | `/v1/chat/completions` |
-| OpenAI Responses | `/v1/responses` |
-| Claude Messages | `/v1/messages` |
-| Google Gemini | `/v1beta/models/{model}:generateContent` |
+| 格式                    | 接口路径                                 |
+| ----------------------- | ---------------------------------------- |
+| OpenAI Chat Completions | `/v1/chat/completions`                   |
+| OpenAI Responses        | `/v1/responses`                          |
+| Claude Messages         | `/v1/messages`                           |
+| Google Gemini           | `/v1beta/models/{model}:generateContent` |
 
 ### 网关能力
 
@@ -30,7 +30,7 @@
 - 支持带脱敏的请求日志
 - 支持 SQLite 主存储 + JSONL fallback 的双写日志
 - 提供 Web UI：playground、logs、usage、status、config
-- 提供 Desktop 应用：本地管理 provider、route 和内嵌 server
+- 提供常驻 Desktop 网关：本地管理 provider、route、secret 和生命周期
 
 ## 快速开始
 
@@ -40,27 +40,24 @@
 cargo install --path crates/cli
 ```
 
-### 2. 准备配置
+### 2. 初始化规范 home
 
-从示例配置开始：
-
-```bash
-cp config.example.toml config.toml
-```
-
-最小可用示例：
+规范配置只保存 secret 引用，不保存 secret 本身。完整结构见
+`config.example.toml`；首次运行不要手工创建它。请先启动 Desktop 创建
+钥匙串条目，或一次性导入一个包含明文 key 的临时 legacy 配置。导入后的
+最小结果如下：
 
 ```toml
 [server]
 host = "127.0.0.1"
 port = 1228
-api_key = "hello-any"
+api_key = "keychain:any-converter:server:inference"
 
 [[providers]]
 name = "anthropic"
 format = "claude"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-xxx"
+api_key = "keychain:any-converter:provider:anthropic"
 
 [[model_routes]]
 pattern = "*"
@@ -70,10 +67,16 @@ provider = "anthropic"
 ### 3. 启动网关
 
 ```bash
-any-converter serve --config config.toml
+any-converter serve
 ```
 
 启动后，本地网关地址就是 `http://127.0.0.1:1228`。
+
+Desktop 首次启动会创建规范 home 和系统钥匙串条目。无桌面环境时设置
+`ANY_CONVERTER_UPSTREAM_KEY` 并运行 `serve --format ... --base-url ...
+--home ...`，key 会一次性导入；后续只需 `serve`。也可以用
+`any-converter serve --config bootstrap.toml` 从临时 legacy 配置一次性导入，
+但不会覆盖已初始化的 home。
 
 ## 一键接入编码 Agent
 
@@ -116,7 +119,7 @@ User-Agent，密钥可独立轮换；Agent 密钥只能调推理接口，不能�
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:1228
-export ANTHROPIC_AUTH_TOKEN=hello-any
+export ANTHROPIC_AUTH_TOKEN=<inference-key>
 ```
 
 ### Codex CLI 与其他 Responses 客户端
@@ -126,7 +129,7 @@ export ANTHROPIC_AUTH_TOKEN=hello-any
 ```toml
 base_url = "http://127.0.0.1:1228/v1"
 wire_api = "responses"
-api_key = "hello-any"
+api_key = "<inference-key>"
 ```
 
 注意：
@@ -139,7 +142,7 @@ api_key = "hello-any"
 
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:1228/v1
-export OPENAI_API_KEY=hello-any
+export OPENAI_API_KEY=<inference-key>
 ```
 
 ## 模型到 provider 的路由
@@ -151,19 +154,19 @@ export OPENAI_API_KEY=hello-any
 name = "openai"
 format = "openai_chat"
 base_url = "https://api.openai.com"
-api_key = "sk-proj-xxx"
+api_key = "keychain:any-converter:provider:openai"
 
 [[providers]]
 name = "deepseek"
 format = "openai_chat"
 base_url = "https://api.deepseek.com"
-api_key = "sk-xxx"
+api_key = "keychain:any-converter:provider:deepseek"
 
 [[providers]]
 name = "anthropic"
 format = "claude"
 base_url = "https://api.anthropic.com"
-api_key = "sk-ant-xxx"
+api_key = "keychain:any-converter:provider:anthropic"
 
 [[model_routes]]
 pattern = "gpt-*"
@@ -195,7 +198,7 @@ upstream_model = "gpt-4.1-mini"
 name = "openai"
 format = "openai_chat"
 base_url = "https://api.openai.com"
-api_key = "sk-proj-xxx"
+api_key = "keychain:any-converter:provider:openai"
 
 [providers.model_map]
 "claude-sonnet-4" = "gpt-4.1"

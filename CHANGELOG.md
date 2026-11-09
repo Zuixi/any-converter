@@ -1,5 +1,35 @@
 # Any Converter CHANGELOGS
 
+## Unreleased — Resident gateway
+
+### Changed
+
+- **The server is now the configuration and lifecycle authority.** The canonical home is `%APPDATA%\any-converter` on Windows and `$XDG_CONFIG_HOME/any-converter` (or `$HOME/.config/any-converter`) elsewhere; `ANY_CONVERTER_HOME` overrides it. `config.toml` is loaded and written through a kernel-locked, atomic, revision-checked `ConfigStore`, not reconstructed from Desktop SQLite.
+- **Provider, inference/client, and management credentials use separate OS keychain namespaces.** TOML stores `keychain:any-converter:*` references. Missing or unreadable secrets fail closed; management and inference credentials are no longer interchangeable.
+- **Desktop is a resident supervisor and management console.** It migrates legacy SQLite configuration once, starts the managed gateway under the server instance lock, reports `starting/running/stopping/failed` from observed readiness and task completion, and updates providers, routes, settings, and secrets only through typed management APIs.
+- **CLI `serve` uses the canonical home.** A one-time `--config` import moves legacy provider/client keys to the keychain and then starts the managed gateway; later starts use the canonical config. `--home` selects an explicit installation root.
+- Inline CLI bootstrap accepts `ANY_CONVERTER_UPSTREAM_KEY`, keeping the provider key out of shell history and process arguments during the one-time import.
+- **Web config editing proxies the management API.** It no longer reads or writes `config.toml` directly.
+- **Desktop hardening:** non-IPC management proxying is gone, requests are limited to an allowlist and the management key, Tauri has a restrictive CSP/single-instance/tray close-to-hide behavior, and the unused shell capability was removed.
+
+### Added
+
+- Accepted architecture: [`docs/design/desktop-resident-gateway.md`](docs/design/desktop-resident-gateway.md).
+- Management endpoints for typed config patches (`ETag`/`If-Match`), provider and inference secrets, management-key rotation, and server status.
+
+### Fixed
+
+- One-time CLI imports and management secret mutations now hold the same cross-process config lock while writing the keychain and config, restore previous keychain values if an import fails, and serialize management-key rotation. This prevents orphaned keys, stale successful-looking writes, and concurrent import races.
+- Initialization and legacy migration no longer overwrite an existing canonical secret with a different value. Equal values retry idempotently after a crash; conflicts fail closed, preserving the prior credential.
+- Non-default `ANY_CONVERTER_HOME` installations use isolated keychain service namespaces. The default installation remains compatible with the existing `any-converter` service.
+- The resident gateway instance lock now uses a kernel-backed cross-process lock without age-based takeover. The credential locks keep stale-crash recovery, but a long-running or slow-starting gateway can no longer be incorrectly taken over after 30 seconds.
+- CLI management commands (`agents` and `accounts quotas`) now authenticate with the dedicated management key from `ANY_CONVERTER_MANAGEMENT_KEY` or the local OS keychain. Inference/agent keys can no longer be silently presented as management credentials.
+- A completed Desktop migration marker is terminal: restarting the app no longer re-imports legacy SQLite settings over canonical management-API edits, and logging setup no longer falls back to SQLite configuration. An interrupted `in_progress` marker remains resumable; unsupported or inconsistent markers fail closed.
+- Desktop lifecycle operations are serialized, so restart requested during `starting` waits for the observed transition instead of failing with `already running`. The management proxy also ignores all environment-proxy variables and decodes dynamic path segments exactly once before applying its allowlist.
+- Desktop reports the actual listener address after bind, uses a kernel-backed config lock without age-based takeover, and blocks automatic gateway startup when legacy migration fails.
+- The Desktop Agents page derives its default-model picker from the management config view instead of trying to proxy the inference-only `/v1/models` endpoint. The picker now works without widening the management allowlist.
+- Streaming proxies preserve separately framed SSE events when an upstream uses CRLF line endings. The previous incremental splitter treated the whole response as one event, collapsing Claude streams into a malformed terminal event.
+
 ## v0.1.2 (2026-11-04)
 
 ### Fixed
@@ -66,6 +96,7 @@
 - **Hourly usage attributed a whole hour to one arbitrary provider.** The old aggregate used `min(provider)` and `min(client_model)` as placeholders, so every provider's tokens in an hour were summed onto one of them. Provider and model are now real grouping keys.
 - **The write-only `usage_logs` table is gone.** It duplicated a strict subset of `request_logs` on every request and was never read.
 - **Desktop no longer declares its own `request_logs` schema.** Two owners of one table could pin an old shape on a shared database file.
+
 ## Unreleased — Agent Wiring
 
 ### Added
@@ -95,6 +126,20 @@
   sign-in is a task: `POST /v1/accounts/signin` returns at once, the window
   polls, pastes a callback address or a code, or cancels — and a cancelled
   flow releases its listener and temp state.
+- **Per-account model discovery and a model column on the Accounts page**:
+  `GET /v1/accounts/{id}/models` lists what a signed-in account can use —
+  Code Assist for Gemini/Antigravity, `/v1/models` for ChatGPT API, a
+  Copilot session plus `/models`, a plugin's `models` hook, and literal
+  `model_map`/`model_routes` entries from an exactly bound provider. The
+  sign-in completion card and every account row now show loading, discovered,
+  configured, empty, unsupported and retryable-error states instead of
+  stopping at “signed in”. Discovery results and configured aliases are
+  deduplicated by model id; wildcard patterns are not presented as models.
+- **Plugin accounts appear in the account list**: `GET /v1/accounts` now
+  merges the built-in secret store with `plugin-auth.json`, marks each row
+  `source: "builtin" | "plugin"`, and never exposes key or token material.
+  The window labels plugin-managed rows and leaves their removal/order to the
+  plugin.
 - **Providers served by an OpenCode plugin**: a `plugin` entry in a provider
   makes the plugin own the transport — its loader supplies the base URL and
   signs the request, its model list picks the wire API per model (a Claude
@@ -128,6 +173,19 @@
   than an implication of the client format.
 - `config.rs` and `handlers.rs` are split by concern; `handlers/chat/` keeps
   the request path in `plan` / `forward` / `plugin` / `failover` stages.
+
+### Fixed
+
+- **A successful sign-in could still look like no models exist.** The plugin
+  model cache is invalidated after an OAuth callback or background sign-in,
+  so an empty list fetched before the credential existed cannot hide the
+  models it just unlocked. Discovery failures retain literal configured
+  models, and a provider-name hint no longer claims an account is bound —
+  `"bound": false` tells the window that routing still needs an exact
+  `account`/`accounts` entry.
+- **ChatGPT API accounts with `siwc` metadata could not be resolved.** The
+  credential reader accepted only `siwc: None`; it now accepts both `None`
+  and `Some(...)`, so those accounts can refresh and discover models.
 
 ## Unreleased — Web UI
 

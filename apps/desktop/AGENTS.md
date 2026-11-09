@@ -50,3 +50,6 @@ apps/desktop/
 8. Embedded server defaults to `server.host=127.0.0.1` (loopback only). A LAN bind is an explicit operator choice; the retired `server.host.lan_default_applied` marker is cleaned up by `seed_defaults`.
 9. Window minimum size is `1024×700` (`tauri.conf.json` + `lib.rs` `set_min_size`). Keep both in sync.
 10. Logs/Usage IPC must open `{app_data}/logs/any-converter.sqlite3` **read-only** while the embedded server may be writing; do not call `SqliteStorage::open_in_log_dir` from those read paths.
+11. Desktop is not a second configuration authority. Canonical `config.toml` and API-key state belong to the server; Desktop SQLite is only the one-time legacy migration source and read-only log adapter.
+12. `server_proxy.rs` is an allowlisted management client, not a generic HTTP proxy. It must use the management key from the server keychain and must never fall back to an arbitrary external server when the managed instance is stopped.
+13. Provider/route/settings pages call the typed methods in `src/lib/management.ts`; do not reintroduce SQLite-backed configuration IPC commands.

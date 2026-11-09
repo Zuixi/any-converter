@@ -29,6 +29,24 @@ const ROUTES: &[(&str, &str, &str)] = &[
     ("GET", "/v1/models", ""),
     ("GET", "/models", ""),
     ("GET", "/v1/usage", ""),
+    ("GET", "/v1/admin/config", ""),
+    ("PATCH", "/v1/admin/config", "{}"),
+    ("GET", "/v1/admin/server/status", ""),
+    (
+        "PUT",
+        "/v1/admin/secrets/provider/guard-provider",
+        r#"{"api_key":"sk-test"}"#,
+    ),
+    ("DELETE", "/v1/admin/secrets/provider/guard-provider", ""),
+    (
+        "PUT",
+        "/v1/admin/secrets/inference",
+        r#"{"api_key":"sk-test"}"#,
+    ),
+    ("DELETE", "/v1/admin/secrets/inference", ""),
+    ("POST", "/v1/admin/secrets/management/rotate", ""),
+    ("GET", "/v1/accounts", ""),
+    ("GET", "/v1/accounts/guard/models", ""),
     ("GET", "/v1/models/guard-model", ""),
     ("GET", "/models/guard-model", ""),
     ("GET", "/v1/accounts/quotas", ""),
@@ -38,10 +56,17 @@ const ROUTES: &[(&str, &str, &str)] = &[
         "/v1/accounts/order",
         r#"{"provider":"x","accounts":[]}"#,
     ),
+    ("POST", "/v1/accounts/signin", r#"{"provider":"gemini"}"#),
+    ("GET", "/v1/accounts/signin/guard", ""),
+    (
+        "POST",
+        "/v1/accounts/signin/guard/submit",
+        r#"{"input":"code"}"#,
+    ),
+    ("POST", "/v1/accounts/signin/guard/cancel", ""),
+    ("POST", "/v1/accounts/guard/adopt", ""),
+    ("POST", "/v1/accounts/guard/release", ""),
     ("POST", "/v1/accounts/guard/remove", ""),
-    // adopt/release are absent on purpose: with no Codex sign-in on the test
-    // machine they answer 404 themselves, which is a handler verdict, not a
-    // missing route. They are covered by accounts_extra_e2e instead.
     ("GET", "/v1/agents", ""),
     ("GET", "/v1/agents/claude-code/keys", ""),
     // Invalid body: reaches the handler (400) without touching a real home.
@@ -198,14 +223,38 @@ async fn send_response(
         .unwrap()
 }
 
-async fn send_json(app: Router, path: &str) -> (StatusCode, serde_json::Value) {
-    let response = send_response(app, "GET", path, "", None).await;
+async fn send_json_with_auth(
+    app: Router,
+    path: &str,
+    auth: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let response = send_response(app, "GET", path, "", auth).await;
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
     (status, json)
+}
+
+#[tokio::test]
+async fn admin_mutations_fail_closed_before_control_plane_load() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let app = make_app(&base, None);
+
+    for (method, path, body) in ROUTES {
+        if !matches!(*method, "POST" | "PUT" | "DELETE" | "PATCH") || !path.starts_with("/v1/admin")
+        {
+            continue;
+        }
+        let status = send(app.clone(), method, path, body, None).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path} must fail closed before the handler"
+        );
+    }
 }
 
 #[tokio::test]
@@ -258,9 +307,9 @@ async fn post_routes_require_auth_and_never_reach_upstream() {
 async fn usage_api_is_503_without_a_log_directory() {
     let hits = Arc::new(AtomicUsize::new(0));
     let base = spawn_upstream(hits).await;
-    let app = make_app(&base, None);
+    let app = make_app(&base, Some("sk-secret"));
 
-    let response = send_response(app, "GET", "/v1/usage", "", None).await;
+    let response = send_response(app, "GET", "/v1/usage", "", Some("Bearer sk-secret")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -281,9 +330,9 @@ async fn usage_api_answers_an_empty_summary_for_a_fresh_log_directory() {
     let hits = Arc::new(AtomicUsize::new(0));
     let base = spawn_upstream(hits).await;
     let dir = tempfile::tempdir().unwrap();
-    let app = make_app_with_log_dir(&base, None, Some(dir.path().to_str().unwrap()));
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
 
-    let (status, json) = send_json(app, "/v1/usage").await;
+    let (status, json) = send_json_with_auth(app, "/v1/usage", Some("Bearer sk-secret")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["totals"]["calls"], 0);
     assert_eq!(json["totals"]["input_tokens"], 0);
@@ -311,9 +360,16 @@ async fn usage_api_rejects_an_unknown_preset() {
     let hits = Arc::new(AtomicUsize::new(0));
     let base = spawn_upstream(hits).await;
     let dir = tempfile::tempdir().unwrap();
-    let app = make_app_with_log_dir(&base, None, Some(dir.path().to_str().unwrap()));
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
 
-    let status = send(app, "GET", "/v1/usage?preset=nonsense", "", None).await;
+    let status = send(
+        app,
+        "GET",
+        "/v1/usage?preset=nonsense",
+        "",
+        Some("Bearer sk-secret"),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -322,9 +378,14 @@ async fn usage_api_accepts_granularity_and_split_by() {
     let hits = Arc::new(AtomicUsize::new(0));
     let base = spawn_upstream(hits).await;
     let dir = tempfile::tempdir().unwrap();
-    let app = make_app_with_log_dir(&base, None, Some(dir.path().to_str().unwrap()));
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
 
-    let (status, json) = send_json(app, "/v1/usage?granularity=week&split_by=provider").await;
+    let (status, json) = send_json_with_auth(
+        app,
+        "/v1/usage?granularity=week&split_by=provider",
+        Some("Bearer sk-secret"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["granularity"], "week");
 }

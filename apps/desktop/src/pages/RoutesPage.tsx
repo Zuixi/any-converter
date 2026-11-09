@@ -18,43 +18,54 @@ import { Field } from "../components/layout/Field";
 import { Header } from "../components/layout/Header";
 import { Table } from "../components/layout/Table";
 import { useAsyncState } from "../hooks/useAsyncState";
-import { api } from "../lib/api";
-import type { DesktopProvider, DesktopRoute } from "../types";
+import { management, useServerRequest, type AdminConfigView } from "../lib/management";
 
 export function RoutesPage() {
   const { t } = useI18n();
-  const [routes, setRoutes, error, setError] = useAsyncState<DesktopRoute[]>(api.listModelRoutes, []);
-  const [providers] = useAsyncState<DesktopProvider[]>(api.listProviders, []);
+  const { describeError } = useServerRequest();
+  const [config, setConfig, loadError] = useAsyncState<AdminConfigView>(() =>
+    management.getConfig().catch((cause) => {
+      throw new Error(describeError(cause));
+    }),
+  );
   const [form, setForm] = useState({ pattern: "*", upstream_model: "", strategy: "priority" });
-  const [selectedProviderIds, setSelectedProviderIds] = useState<number[]>([]);
+  const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
+  const [actionError, setActionError] = useState<string>();
 
-  const toggleProvider = (id: number) => {
-    setSelectedProviderIds((current) =>
-      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+  const toggleProvider = (name: string) => {
+    setSelectedProviders((current) =>
+      current.includes(name) ? current.filter((value) => value !== name) : [...current, name],
     );
   };
 
   const create = async () => {
     try {
-      const next = await api.createModelRoute({
-        pattern: form.pattern,
-        provider_ids: selectedProviderIds,
-        upstream_model: form.upstream_model || null,
-        strategy: form.strategy,
+      const next = await management.patchConfig(config?.revision ?? "", {
+        upsert_model_routes: [
+          {
+            pattern: form.pattern,
+            providers: selectedProviders,
+            upstream_model: form.upstream_model || null,
+            strategy: form.strategy === "round_robin" ? "round_robin" : "priority",
+          },
+        ],
       });
-      setRoutes(next);
+      setConfig(next);
       setForm({ pattern: "*", upstream_model: "", strategy: "priority" });
-      setSelectedProviderIds([]);
-      setError(undefined);
+      setSelectedProviders([]);
+      setActionError(undefined);
     } catch (cause) {
-      setError(String(cause));
+      setActionError(describeError(cause));
     }
   };
 
   return (
     <section className="grid gap-6">
       <Header title={t("nav.routes")} subtitle={t("desktop.routes.subtitle")} />
-      {error && <ErrorBanner message={error} />}
+      {(loadError || actionError) && <ErrorBanner message={loadError ?? actionError ?? ""} />}
+      {config?.restart_required && (
+        <p className="text-sm text-muted-foreground">{t("desktop.config.restartRequired")}</p>
+      )}
       <Card>
         <CardContent className="grid gap-4 pt-6">
           <div className="grid gap-4 md:grid-cols-3">
@@ -62,11 +73,16 @@ export function RoutesPage() {
               <Input value={form.pattern} onChange={(event) => setForm({ ...form, pattern: event.target.value })} />
             </Field>
             <Field label={t("desktop.routes.upstream")} help={t("desktop.routes.upstreamHelp")}>
-              <Input value={form.upstream_model} onChange={(event) => setForm({ ...form, upstream_model: event.target.value })} />
+              <Input
+                value={form.upstream_model}
+                onChange={(event) => setForm({ ...form, upstream_model: event.target.value })}
+              />
             </Field>
             <Field
               label={t("desktop.routes.strategy")}
-              help={form.strategy === "priority" ? t("desktop.routes.priorityHelp") : t("desktop.routes.roundRobinHelp")}
+              help={
+                form.strategy === "priority" ? t("desktop.routes.priorityHelp") : t("desktop.routes.roundRobinHelp")
+              }
             >
               <Select value={form.strategy} onValueChange={(strategy) => setForm({ ...form, strategy })}>
                 <SelectTrigger>
@@ -81,17 +97,17 @@ export function RoutesPage() {
           </div>
           <div className="grid gap-2">
             <Label>{t("desktop.routes.providerPool")}</Label>
-            {(providers ?? []).length === 0 ? (
+            {(config?.providers ?? []).length === 0 ? (
               <p className="text-sm text-muted-foreground">{t("desktop.routes.noProviders")}</p>
             ) : (
               <div className="flex flex-wrap gap-4">
-                {(providers ?? []).map((provider) => (
-                  <label key={provider.id} className="flex items-center gap-2 text-sm">
+                {(config?.providers ?? []).map((provider) => (
+                  <label key={provider.name} className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
                       className="h-4 w-4 accent-primary"
-                      checked={selectedProviderIds.includes(provider.id)}
-                      onChange={() => toggleProvider(provider.id)}
+                      checked={selectedProviders.includes(provider.name)}
+                      onChange={() => toggleProvider(provider.name)}
                     />
                     {provider.name} ({provider.format})
                   </label>
@@ -99,15 +115,29 @@ export function RoutesPage() {
               </div>
             )}
           </div>
-          <Button className="w-fit" onClick={() => void create()} disabled={selectedProviderIds.length === 0 || !form.pattern}>
+          <Button
+            className="w-fit"
+            onClick={() => void create()}
+            disabled={selectedProviders.length === 0 || !form.pattern}
+          >
             {t("desktop.routes.add")}
           </Button>
         </CardContent>
       </Card>
       <Table
         emptyText={t("desktop.routes.empty")}
-        headers={[t("desktop.routes.pattern"), t("desktop.routes.providers"), t("desktop.routes.upstreamColumn"), t("desktop.routes.strategy")]}
-        rows={(routes ?? []).map((route) => [route.pattern, route.providers.join(", "), route.upstream_model ?? "", route.strategy])}
+        headers={[
+          t("desktop.routes.pattern"),
+          t("desktop.routes.providers"),
+          t("desktop.routes.upstreamColumn"),
+          t("desktop.routes.strategy"),
+        ]}
+        rows={(config?.model_routes ?? []).map((route) => [
+          route.pattern,
+          route.providers.join(", "),
+          route.upstream_model ?? "",
+          route.strategy,
+        ])}
       />
     </section>
   );

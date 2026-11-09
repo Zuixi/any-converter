@@ -24,6 +24,24 @@ export interface AccountEntry {
   kind: string;
   provider: string;
   account: string;
+  source?: "builtin" | "plugin";
+}
+
+/** One model `GET /v1/accounts/{id}/models` discovered for an account. */
+export interface AccountModel {
+  id: string;
+  name: string;
+  source: string;
+}
+
+/** `GET /v1/accounts/{id}/models`; discovery failures use `error`, not HTTP 500. */
+export interface AccountModels {
+  account: string;
+  provider: string;
+  models: AccountModel[];
+  source: string;
+  bound?: boolean;
+  error: string | null;
 }
 
 /** `SignInTask` snapshot (`POST/GET /v1/accounts/signin*`). */
@@ -76,13 +94,125 @@ export interface ConnectReport {
   files_written?: string[];
 }
 
+export type ConfigFormat = "openai_chat" | "openai_responses" | "claude" | "gemini";
+
+export interface AdminConfigView {
+  revision: string;
+  restart_required: boolean;
+  server: {
+    host: string;
+    port: number;
+    proxy_configured: boolean;
+    inference_key_configured: boolean;
+    management_key_configured: boolean;
+  };
+  providers: Array<{
+    name: string;
+    format: ConfigFormat;
+    base_url: string;
+    api_key_configured: boolean;
+    account?: string | null;
+    accounts: string[];
+    model_map: Record<string, string>;
+    proxy_configured: boolean;
+    plugin: boolean;
+  }>;
+  model_routes: Array<{
+    pattern: string;
+    providers: string[];
+    upstream_model?: string | null;
+    strategy: "priority" | "round_robin";
+  }>;
+  logging: {
+    dir?: string | null;
+    max_disk_mb: number;
+    request_log_enabled: boolean;
+  };
+}
+
+export interface ConfigPatch {
+  server?: { host?: string; port?: number; proxy?: string | null };
+  logging?: {
+    dir?: string | null;
+    max_disk_mb?: number;
+    request_log_enabled?: boolean;
+  };
+  upsert_providers?: Array<{
+    name: string;
+    format?: ConfigFormat;
+    base_url?: string;
+    api_key_ref?: string;
+    model_map?: Record<string, string>;
+    account?: string | null;
+    accounts?: string[];
+    proxy?: string | null;
+  }>;
+  remove_providers?: string[];
+  upsert_model_routes?: Array<{
+    pattern: string;
+    providers: string[];
+    upstream_model?: string | null;
+    strategy?: "priority" | "round_robin";
+  }>;
+  remove_model_routes?: string[];
+}
+
+export interface SecretMutationResult {
+  revision: string;
+  reference: string;
+  restart_required: boolean;
+}
+
+export interface ServerControlStatus {
+  run_state: string;
+  config_revision: string;
+  restart_required: boolean;
+  management_key_configured: boolean;
+  ready_address?: string | null;
+  started_at_unix?: number | null;
+}
+
 /** One management call over the `server_request` Tauri command. */
-async function call<T>(path: string, method: "GET" | "POST" = "GET", body?: string): Promise<T> {
-  const value = await api.serverRequest({ method, path, body });
+async function call<T>(
+  path: string,
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE" = "GET",
+  body?: string,
+  ifMatch?: string,
+): Promise<T> {
+  const value = await api.serverRequest({ method, path, body, ifMatch });
   return value as T;
 }
 
 export const management = {
+  getConfig(): Promise<AdminConfigView> {
+    return call("/v1/admin/config");
+  },
+
+  patchConfig(ifMatch: string, patch: ConfigPatch): Promise<AdminConfigView> {
+    return call("/v1/admin/config", "PATCH", JSON.stringify(patch), ifMatch);
+  },
+
+  getServerStatus(): Promise<ServerControlStatus> {
+    return call("/v1/admin/server/status");
+  },
+
+  putProviderSecret(ifMatch: string, provider: string, apiKey: string): Promise<SecretMutationResult> {
+    return call(
+      `/v1/admin/secrets/provider/${encodeURIComponent(provider)}`,
+      "PUT",
+      JSON.stringify({ api_key: apiKey }),
+      ifMatch,
+    );
+  },
+
+  deleteProviderSecret(ifMatch: string, provider: string): Promise<SecretMutationResult> {
+    return call(`/v1/admin/secrets/provider/${encodeURIComponent(provider)}`, "DELETE", undefined, ifMatch);
+  },
+
+  putInferenceSecret(ifMatch: string, apiKey: string): Promise<SecretMutationResult> {
+    return call("/v1/admin/secrets/inference", "PUT", JSON.stringify({ api_key: apiKey }), ifMatch);
+  },
+
   /** Accounts, quota windows and plugins in one refresh. */
   async accountsOverview(): Promise<{
     accounts: AccountEntry[];
@@ -92,9 +222,7 @@ export const management = {
     const [accounts, quotas, plugins] = await Promise.all([
       call<{ accounts: AccountEntry[] }>("/v1/accounts"),
       call<{ accounts: QuotaEntry[] }>("/v1/accounts/quotas"),
-      call<{ plugins: PluginEntry[] }>("/v1/accounts/plugins").catch(
-        () => ({ plugins: [] as PluginEntry[] }),
-      ),
+      call<{ plugins: PluginEntry[] }>("/v1/accounts/plugins").catch(() => ({ plugins: [] as PluginEntry[] })),
     ]);
     return {
       accounts: accounts.accounts ?? [],
@@ -108,15 +236,19 @@ export const management = {
   },
 
   pollSignIn(id: string): Promise<SignInTask> {
-    return call(`/v1/accounts/signin/${id}`);
+    return call(`/v1/accounts/signin/${encodeURIComponent(id)}`);
   },
 
   submitSignIn(id: string, input: string): Promise<SignInTask> {
-    return call(`/v1/accounts/signin/${id}/submit`, "POST", JSON.stringify({ input }));
+    return call(`/v1/accounts/signin/${encodeURIComponent(id)}/submit`, "POST", JSON.stringify({ input }));
   },
 
   cancelSignIn(id: string): Promise<void> {
-    return call(`/v1/accounts/signin/${id}/cancel`, "POST");
+    return call(`/v1/accounts/signin/${encodeURIComponent(id)}/cancel`, "POST");
+  },
+
+  accountModels(id: string): Promise<AccountModels> {
+    return call(`/v1/accounts/${encodeURIComponent(id)}/models`);
   },
 
   saveAccountOrder(provider: string, accountIds: string[]): Promise<void> {
@@ -135,21 +267,24 @@ export const management = {
     return call(`/v1/accounts/${encodeURIComponent(id)}/remove`, "POST", "{}");
   },
 
-  /** Agents plus the model catalog (best-effort) for the default-model picker. */
+  /** Agents plus the configured model catalog for the default-model picker. */
   async agentsWithModels(): Promise<{ agents: AgentSummary[]; models: string[] }> {
-    const [list, modelList] = await Promise.all([
+    const [list, config] = await Promise.all([
       call<{ agents: AgentSummary[] }>("/v1/agents"),
-      call<{ data?: { id?: string }[] } | { models?: { id?: string }[] }>("/v1/models").catch(
-        () => ({ data: [] as { id?: string }[] }),
-      ),
+      call<AdminConfigView>("/v1/admin/config"),
     ]);
-    const raw =
-      "data" in modelList
-        ? (modelList.data ?? [])
-        : ((modelList as { models?: { id?: string }[] }).models ?? []);
+    const providerModels = config.providers.flatMap((provider) =>
+      Object.keys(provider.model_map)
+        .filter((model) => !model.includes("*") && !model.includes("?"))
+        .map((model) => `${provider.name}/${model}`),
+    );
+    const routeModels = config.model_routes
+      .filter((route) => !route.pattern.includes("*") && !route.pattern.includes("?"))
+      .map((route) => `${route.providers[0]}/${route.pattern}`);
+    const models = [...new Set([...providerModels, ...routeModels])];
     return {
       agents: list.agents ?? [],
-      models: raw.map((entry) => entry.id ?? "").filter(Boolean),
+      models,
     };
   },
 
@@ -158,7 +293,7 @@ export const management = {
     action: "connect" | "disconnect" | "sync" | "key/rotate",
     body?: object,
   ): Promise<ConnectReport> {
-    return call(`/v1/agents/${id}/${action}`, "POST", JSON.stringify(body ?? {}));
+    return call(`/v1/agents/${encodeURIComponent(id)}/${action}`, "POST", JSON.stringify(body ?? {}));
   },
 };
 
@@ -172,7 +307,7 @@ export function useServerRequest() {
   const { t } = useI18n();
 
   const request = useCallback(
-    async <T,>(path: string, init?: { method?: "GET" | "POST"; body?: string }): Promise<T> =>
+    async <T>(path: string, init?: { method?: "GET" | "POST"; body?: string }): Promise<T> =>
       call<T>(path, init?.method ?? "GET", init?.body),
     [],
   );
@@ -187,6 +322,8 @@ export function useServerRequest() {
       switch (shape.kind) {
         case "not_running":
           return t("server_proxy.not_running");
+        case "key_unavailable":
+          return shape.message ?? "Management key is unavailable";
         case "http":
           return shape.message ?? "HTTP error";
         case "bad_request":

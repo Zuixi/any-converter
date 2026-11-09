@@ -5,11 +5,16 @@ use std::sync::Arc;
 
 use any_converter_server::agents::AgentRegistry;
 use any_converter_server::config::ServerConfig;
+use any_converter_server::control_plane::ControlPlane;
 use any_converter_server::credentials::copilot::CopilotSessions;
 use any_converter_server::credentials::{AccountResolver, CopilotAllowances, FileSecretStore};
 use any_converter_server::handlers::AppState;
+use any_converter_server::home::Home;
 use any_converter_server::plugins::{ManagedHosts, PluginAuthStore};
-use any_converter_server::router::create_router_with_state;
+use any_converter_server::router::create_router_with_control_plane;
+use any_converter_server::secrets::{
+    ApiKeyStore, KEYCHAIN_SERVICE, KeychainBackend, MemoryKeychain,
+};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use reqwest::Client;
@@ -18,6 +23,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 const GATEWAY: &str = "http://127.0.0.1:8080";
+const MANAGEMENT_KEY: &str = "test-management-key";
 
 struct Fixture {
     _temp: TempDir,
@@ -35,7 +41,7 @@ impl Fixture {
         let config = config(api_key, provider, model);
         let registry = build_registry(&data_dir, api_key);
         registry.set_home(home.clone());
-        let app = app_with(config, registry);
+        let app = app_with(config, registry, &data_dir);
         Self {
             _temp: temp,
             home,
@@ -47,7 +53,7 @@ impl Fixture {
     fn with_config(&self, api_key: Option<&str>, provider: &str, model: &str) -> axum::Router {
         let registry = build_registry(&self.data_dir, api_key);
         registry.set_home(self.home.clone());
-        app_with(config(api_key, provider, model), registry)
+        app_with(config(api_key, provider, model), registry, &self.data_dir)
     }
 
     fn path(&self, relative: &str) -> PathBuf {
@@ -70,7 +76,26 @@ fn build_registry(data_dir: &Path, api_key: Option<&str>) -> Arc<AgentRegistry> 
     ))
 }
 
-fn app_with(config: ServerConfig, registry: Arc<AgentRegistry>) -> axum::Router {
+fn app_with(config: ServerConfig, registry: Arc<AgentRegistry>, data_dir: &Path) -> axum::Router {
+    let control_home = data_dir.join("control-home");
+    std::fs::create_dir_all(&control_home).unwrap();
+    std::fs::write(
+        control_home.join("config.toml"),
+        concat!(
+            "[server]\nhost = \"127.0.0.1\"\nport = 1228\n",
+            "[management]\napi_key = \"keychain:any-converter:server:management\"\n"
+        ),
+    )
+    .unwrap();
+    let keychain = MemoryKeychain::new();
+    keychain
+        .set(KEYCHAIN_SERVICE, "server:management", MANAGEMENT_KEY)
+        .unwrap();
+    let prepared = ControlPlane::prepare(
+        Home::from_root(control_home),
+        ApiKeyStore::with_backend(KEYCHAIN_SERVICE, Arc::new(keychain)),
+    )
+    .unwrap();
     let state = Arc::new(AppState {
         config,
         client: Client::builder().no_proxy().build().unwrap(),
@@ -87,7 +112,7 @@ fn app_with(config: ServerConfig, registry: Arc<AgentRegistry>) -> axum::Router 
         )))),
         agents: registry,
     });
-    create_router_with_state(state)
+    create_router_with_control_plane(state, prepared.control_plane)
 }
 
 fn uuid_like() -> String {
@@ -155,6 +180,8 @@ async fn send(
         .header("content-type", "application/json");
     if let Some(auth) = auth {
         builder = builder.header("Authorization", auth);
+    } else if path.starts_with("/v1/agents") {
+        builder = builder.header("Authorization", format!("Bearer {MANAGEMENT_KEY}"));
     }
     let body = body.unwrap_or_default().to_owned();
     let response = app
@@ -171,6 +198,26 @@ async fn send(
 
 fn json(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap()
+}
+
+async fn send_without_auth(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.unwrap_or_default().to_owned()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, bytes.to_vec())
 }
 
 fn agent_status<'a>(body: &'a Value, id: &str) -> &'a str {
@@ -290,7 +337,7 @@ async fn auth_matrix_global_and_agent_keys() {
         "POST",
         "/v1/agents/claude-code/connect",
         Some("{}"),
-        Some("Bearer client-secret"),
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -329,7 +376,11 @@ async fn auth_matrix_global_and_agent_keys() {
         Some("Bearer client-secret"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "global key must manage agents");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "inference key must not manage agents"
+    );
 
     let (status, _) = send(
         &fixture.app,
@@ -345,14 +396,8 @@ async fn auth_matrix_global_and_agent_keys() {
         "agent key must not manage agents"
     );
 
-    let (status, _) = send(
-        &fixture.app,
-        "POST",
-        "/v1/agents/claude-code/sync",
-        None,
-        None,
-    )
-    .await;
+    let (status, _) =
+        send_without_auth(&fixture.app, "POST", "/v1/agents/claude-code/sync", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 

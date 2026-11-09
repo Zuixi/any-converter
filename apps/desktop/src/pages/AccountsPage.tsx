@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@any-converter/core";
 import {
   Button,
@@ -20,6 +20,8 @@ import {
   management,
   useServerRequest,
   type AccountEntry,
+  type AccountModel,
+  type AccountModels,
   type PluginEntry,
   type QuotaEntry,
   type SignInTask,
@@ -28,7 +30,9 @@ import {
 const STRINGS = {
   en: {
     title: "Accounts",
-    subtitle: "OAuth sign-ins stored locally by the server. Tokens never leave the account store.",
+    subtitle:
+      "OAuth and plugin accounts stored locally by the server, with the models each can use. " +
+      "Tokens never leave the account store.",
     add: "Add account",
     provider: "Provider",
     providerHelp:
@@ -53,6 +57,25 @@ const STRINGS = {
     providerCol: "Provider",
     accountCol: "Account",
     kindCol: "Kind",
+    modelsCol: "Models",
+    modelsLoading: "Reading models…",
+    modelsUnsupported: "Discovery not supported",
+    modelsEmpty: "No models reported",
+    modelsError: "Model discovery failed",
+    modelsRetry: "Retry",
+    modelsAvailable: "models available",
+    modelsRefreshing: "Refreshing the account list and its models…",
+    signedIn: "signed in",
+    accountSaved: "Account saved",
+    unboundTitle: "Not bound to a provider",
+    unboundBody:
+      "The account is signed in and its models can be discovered, but requests are not routed " +
+      "until a provider names this account.",
+    unboundConfigHint:
+      "Add it to a [[providers]] entry's account/accounts list, then add a [[model_routes]] " +
+      "pattern for that provider.",
+    routeConfigHint:
+      "Signing in stores the credential only; requests still need a provider and a matching " + "model_routes entry.",
     idCol: "ID",
     quotaCol: "Quota windows",
     quotaNone: "—",
@@ -66,7 +89,8 @@ const STRINGS = {
       "carries the code and the client id. Paste the whole address.",
     pasteCode: "Paste the code Claude's page shows, or the whole address it ended on",
     plugins: "Plugins",
-    pluginsNone: "No plugins installed yet. Plugins are npm packages installed with the any-converter CLI: download it from the GitHub releases page (any-converter-x86_64-pc-windows-msvc.zip on Windows), then run `any-converter plugin install <spec>`.",
+    pluginsNone:
+      "No plugins installed yet. Plugins are npm packages installed with the any-converter CLI: download it from the GitHub releases page (any-converter-x86_64-pc-windows-msvc.zip on Windows), then run `any-converter plugin install <spec>`.",
     pluginFailed: "won't load",
     order: "Order",
     orderHint: "Which account routing tries first. Unnamed accounts follow, in config order.",
@@ -80,18 +104,18 @@ const STRINGS = {
     quotaResets: "resets",
     signInFailed: "Sign-in failed",
     hintKeyring:
-      "Codex keeps this sign-in in the system keychain. Set cli_auth_credentials_store = \"file\" in its config.toml, or sign in with Codex itself and use Discover instead.",
-    hintClientId:
-      "Paste the whole address the browser ended on — it carries the code and the client id OpenAI issued.",
+      'Codex keeps this sign-in in the system keychain. Set cli_auth_credentials_store = "file" in its config.toml, or sign in with Codex itself and use Discover instead.',
+    hintClientId: "Paste the whole address the browser ended on — it carries the code and the client id OpenAI issued.",
     hintInstallClaude: "Install Claude Code first: the `claude` command line (the desktop app is not it).",
     hintEligible:
       "OpenAI did not grant this account the use of its API; a ChatGPT plan that includes the API is needed.",
     hintRevoked: "This sign-in was turned away for good. Sign in again to restore the account.",
     orderSaved: "Order saved",
+    pluginManaged: "Managed by plugin",
   },
   "zh-CN": {
     title: "账户",
-    subtitle: "服务端本地保存的 OAuth 登录。令牌永不离开账户存储。",
+    subtitle: "服务端本地保存的 OAuth 与插件账户，以及每个账户可用的模型。令牌永不离开账户存储。",
     add: "添加账户",
     provider: "服务商",
     providerHelp:
@@ -114,18 +138,33 @@ const STRINGS = {
     providerCol: "服务商",
     accountCol: "账户",
     kindCol: "类型",
+    modelsCol: "模型",
+    modelsLoading: "正在读取模型…",
+    modelsUnsupported: "不支持模型发现",
+    modelsEmpty: "未返回模型",
+    modelsError: "模型发现失败",
+    modelsRetry: "重试",
+    modelsAvailable: "个可用模型",
+    modelsRefreshing: "正在刷新账户列表与模型…",
+    signedIn: "已登录",
+    accountSaved: "账户已保存",
+    unboundTitle: "尚未绑定 Provider",
+    unboundBody: "账户已登录，模型可以发现，但需要配置一个指向该账户的 Provider 才能路由请求。",
+    unboundConfigHint:
+      "把该账户加入某个 [[providers]] 的 account/accounts，并为该 Provider 添加 " + "[[model_routes]] 规则。",
+    routeConfigHint: "登录只会保存凭据；实际请求仍需要 Provider 与匹配的 model_routes。",
     idCol: "ID",
     quotaCol: "配额窗口",
     quotaNone: "—",
     remove: "移除",
     removed: "已移除",
-    antigravityRisk:
-      "Google 可能停用它在 Antigravity 之外看到被使用的账号。请用一个你承受得起损失的账号。",
+    antigravityRisk: "Google 可能停用它在 Antigravity 之外看到被使用的账号。请用一个你承受得起损失的账号。",
     siwcHint:
       "登录过程中 OpenAI 会现场注册本应用，所以浏览器最终落到的地址里同时带着 code 与 client id。请粘贴整条地址。",
     pasteCode: "粘贴 Claude 页面显示的 code，或浏览器最终落到的整条地址",
     plugins: "插件",
-    pluginsNone: "尚未安装插件。插件是通过 any-converter CLI 安装的 npm 包：先从 GitHub Releases 下载 CLI（Windows 选 any-converter-x86_64-pc-windows-msvc.zip 并解压），再运行 `any-converter plugin install <spec>`。",
+    pluginsNone:
+      "尚未安装插件。插件是通过 any-converter CLI 安装的 npm 包：先从 GitHub Releases 下载 CLI（Windows 选 any-converter-x86_64-pc-windows-msvc.zip 并解压），再运行 `any-converter plugin install <spec>`。",
     pluginFailed: "无法加载",
     order: "顺序",
     orderHint: "路由优先尝试哪个账户。未列出的账户按配置顺序排在后面。",
@@ -139,14 +178,40 @@ const STRINGS = {
     quotaResets: "重置于",
     signInFailed: "登录失败",
     hintKeyring:
-      "Codex 把这次登录放在系统钥匙串里。可在它的 config.toml 里设置 cli_auth_credentials_store = \"file\"，或先用 Codex 本身登录再使用 Discover。",
+      'Codex 把这次登录放在系统钥匙串里。可在它的 config.toml 里设置 cli_auth_credentials_store = "file"，或先用 Codex 本身登录再使用 Discover。',
     hintClientId: "请粘贴浏览器最终落到的整条地址——它同时带着 code 与 OpenAI 签发的 client id。",
     hintInstallClaude: "请先安装 Claude Code：`claude` 命令行（桌面应用不是它）。",
     hintEligible: "OpenAI 未授予该账户使用其 API 的权限；需要一个包含 API 的 ChatGPT 套餐。",
     hintRevoked: "这次登录已被永久拒绝。重新登录即可恢复该账户。",
     orderSaved: "顺序已保存",
+    pluginManaged: "由插件管理",
   },
 } as const;
+
+type ModelState =
+  { status: "loading" } | { status: "ready"; data: AccountModels } | { status: "failed"; error: string };
+
+/** The account a finished sign-in refers to.
+ *
+ * Drivers report different `user` shapes: Gemini and Copilot often carry the
+ * full account id, Codex/Claude/ChatGPT API carry the email or user, and a
+ * plugin carries `provider:account`. Try the exact forms first so two
+ * accounts with the same email under different providers cannot collide.
+ */
+function accountForTask(task: SignInTask, accounts: AccountEntry[]): AccountEntry | undefined {
+  const user = task.user.trim();
+  if (!user) return undefined;
+  const taskProvider = task.provider.startsWith("plugin:") ? task.provider.slice("plugin:".length) : task.provider;
+  const exact = accounts.find((account) => account.id === user || account.id === `${task.provider}:${user}`);
+  if (exact) return exact;
+  const sameProvider = accounts.find(
+    (account) =>
+      (account.provider === task.provider || account.provider === taskProvider) &&
+      (account.account === user || account.id.endsWith(`:${user}`)),
+  );
+  if (sameProvider) return sameProvider;
+  return accounts.find((account) => account.account === user || account.id.endsWith(`:${user}`));
+}
 
 /**
  * What to do about a sign-in failure, from what the server said. The server
@@ -154,8 +219,16 @@ const STRINGS = {
  * key in the system keychain"); a hint turns each into the next step rather
  * than leaving the raw text alone.
  */
-function hintFor(message: string, s: { hintKeyring: string; hintClientId: string;
-  hintInstallClaude: string; hintEligible: string; hintRevoked: string }): string | undefined {
+function hintFor(
+  message: string,
+  s: {
+    hintKeyring: string;
+    hintClientId: string;
+    hintInstallClaude: string;
+    hintEligible: string;
+    hintRevoked: string;
+  },
+): string | undefined {
   const text = message.toLowerCase();
   if (text.includes("keyring") || text.includes("keychain") || text.includes("cli_auth_credentials_store")) {
     return s.hintKeyring;
@@ -191,6 +264,9 @@ export function AccountsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [copied, setCopied] = useState(false);
+  const [modelStates, setModelStates] = useState<Record<string, ModelState>>({});
+  const requestedModels = useRef(new Set<string>());
+  const modelEpoch = useRef(0);
 
   // Management calls travel over Tauri IPC (see useServerRequest); the
   // webview never fetches the embedded server cross-origin.
@@ -212,25 +288,73 @@ export function AccountsPage() {
     }
   }, [describeError]);
 
+  const loadModels = useCallback(
+    async (id: string) => {
+      requestedModels.current.add(id);
+      const epoch = modelEpoch.current;
+      setModelStates((prev) => ({ ...prev, [id]: { status: "loading" } }));
+      try {
+        const data = await management.accountModels(id);
+        if (epoch !== modelEpoch.current) return;
+        setModelStates((prev) => ({ ...prev, [id]: { status: "ready", data } }));
+      } catch (cause) {
+        if (epoch !== modelEpoch.current) return;
+        setModelStates((prev) => ({
+          ...prev,
+          [id]: { status: "failed", error: describeError(cause) },
+        }));
+      }
+    },
+    [describeError],
+  );
+
+  const forgetModels = useCallback(() => {
+    modelEpoch.current += 1;
+    requestedModels.current.clear();
+    setModelStates({});
+  }, []);
+
+  const refreshAfterSignIn = useCallback(async () => {
+    forgetModels();
+    await refresh();
+  }, [forgetModels, refresh]);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Discover each account's models once. A sign-in clears the requested set
+  // because the credential behind an existing account may have changed.
+  useEffect(() => {
+    const live = new Set(accounts.map((account) => account.id));
+    setModelStates((prev) => {
+      const next = Object.fromEntries(Object.entries(prev).filter(([id]) => live.has(id)));
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+    for (const id of [...requestedModels.current]) {
+      if (!live.has(id)) requestedModels.current.delete(id);
+    }
+    for (const account of accounts) {
+      if (!requestedModels.current.has(account.id)) void loadModels(account.id);
+    }
+  }, [accounts, loadModels]);
 
   // Poll an in-flight sign-in every second until it settles.
   useEffect(() => {
     if (!task || task.state !== "waiting") return;
     const timer = window.setInterval(() => {
-      management.pollSignIn(task.id)
+      management
+        .pollSignIn(task.id)
         .then((latest) => {
           setTask(latest);
-          if (latest.state === "done") void refresh();
+          if (latest.state === "done") void refreshAfterSignIn();
         })
         .catch(() => {
           /* transient poll errors keep the task waiting */
         });
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [task, refresh]);
+  }, [task, refreshAfterSignIn]);
 
   const start = async () => {
     setBusy(true);
@@ -260,7 +384,7 @@ export function AccountsPage() {
     try {
       const finished = await management.submitSignIn(task.id, pastedUrl);
       setTask(finished);
-      if (finished.state === "done") void refresh();
+      if (finished.state === "done") await refreshAfterSignIn();
     } catch (cause) {
       setError(describeError(cause));
     } finally {
@@ -348,11 +472,128 @@ export function AccountsPage() {
 
   /// The accounts that share a provider prefix, in the order routing uses.
   const siblingsOf = (account: AccountEntry): string[] => {
-    const saved = order[account.provider];
-    if (saved && saved.length > 0) return saved;
-    return accounts
-      .filter((other) => other.provider === account.provider)
-      .map((other) => other.id);
+    const siblings = accounts.filter((other) => other.source !== "plugin" && other.provider === account.provider);
+    const ids = new Set(siblings.map((other) => other.id));
+    const saved = (order[account.provider] ?? []).filter((id) => ids.has(id));
+    if (saved.length > 0) return saved;
+    return siblings.map((other) => other.id);
+  };
+
+  const modelList = (models: AccountModel[]) => (
+    <ul className="grid max-w-64 gap-1">
+      {models.map((model) => (
+        <li key={model.id} className="grid gap-0.5">
+          {model.name !== model.id && <span>{model.name}</span>}
+          <code className="break-all text-[11px] text-muted-foreground" title={model.id}>
+            {model.id}
+          </code>
+        </li>
+      ))}
+    </ul>
+  );
+
+  const modelWarning = (message: string, id: string) => (
+    <div className="grid max-w-64 gap-1">
+      <span className="text-amber-600">{s.modelsError}</span>
+      <span className="break-words text-[11px] text-muted-foreground" title={message}>
+        {message}
+      </span>
+      <Button className="w-fit px-0" size="sm" variant="ghost" onClick={() => void loadModels(id)}>
+        {s.modelsRetry}
+      </Button>
+    </div>
+  );
+
+  const unboundNotice = (id: string) => (
+    <div className="grid max-w-64 gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+      <span className="text-xs font-medium text-amber-700 dark:text-amber-400">{s.unboundTitle}</span>
+      <span className="text-[11px] text-muted-foreground">{s.unboundBody}</span>
+      <code className="break-all text-[11px]">{id}</code>
+      <span className="text-[11px] text-muted-foreground">{s.unboundConfigHint}</span>
+    </div>
+  );
+
+  const renderModels = (id: string) => {
+    const state = modelStates[id];
+    if (!state || state.status === "loading") {
+      return <span className="text-muted-foreground">{s.modelsLoading}</span>;
+    }
+    if (state.status === "failed") {
+      return modelWarning(state.error, id);
+    }
+
+    const { data } = state;
+    return (
+      <div className="grid max-w-64 gap-2">
+        {data.models.length > 0 && modelList(data.models)}
+        {data.error && modelWarning(data.error, id)}
+        {data.models.length === 0 && data.source === "unsupported" && (
+          <span className="text-muted-foreground">{s.modelsUnsupported}</span>
+        )}
+        {data.models.length === 0 && data.source !== "unsupported" && !data.error && data.bound !== false && (
+          <span className="text-muted-foreground">{s.modelsEmpty}</span>
+        )}
+        {data.bound === false && unboundNotice(id)}
+      </div>
+    );
+  };
+
+  const renderSignInResult = (current: SignInTask) => {
+    const account = accountForTask(current, accounts);
+    const state = account ? modelStates[account.id] : undefined;
+    let modelStatus: ReactNode;
+    if (!account) {
+      modelStatus = <span className="text-sm text-muted-foreground">{s.modelsRefreshing}</span>;
+    } else if (!state || state.status === "loading") {
+      modelStatus = <span className="text-sm text-muted-foreground">{s.modelsLoading}</span>;
+    } else if (state.status === "failed") {
+      modelStatus = modelWarning(state.error, account.id);
+    } else {
+      const { data } = state;
+      const preview = data.models.slice(0, 6);
+      modelStatus = (
+        <div className="grid gap-2">
+          {data.models.length > 0 && (
+            <>
+              <span className="text-sm">
+                {data.models.length} {s.modelsAvailable}
+              </span>
+              <div className="flex flex-wrap gap-1">
+                {preview.map((model) => (
+                  <code key={model.id} className="rounded bg-muted px-1.5 py-0.5 text-[11px]">
+                    {model.id}
+                  </code>
+                ))}
+                {data.models.length > preview.length && (
+                  <span className="text-[11px] text-muted-foreground">+{data.models.length - preview.length}</span>
+                )}
+              </div>
+            </>
+          )}
+          {data.error && modelWarning(data.error, account.id)}
+          {data.models.length === 0 && data.source === "unsupported" && (
+            <span className="text-sm text-muted-foreground">{s.modelsUnsupported}</span>
+          )}
+          {data.models.length === 0 && data.source !== "unsupported" && !data.error && data.bound !== false && (
+            <span className="text-sm text-muted-foreground">{s.modelsEmpty}</span>
+          )}
+          {data.bound === false && unboundNotice(account.id)}
+        </div>
+      );
+    }
+
+    return (
+      <div className="grid gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2">
+        <div className="grid gap-0.5">
+          <span className="text-sm font-medium">{s.accountSaved}</span>
+          <span className="text-sm text-muted-foreground">
+            {current.provider}: {current.user || s.signedIn}
+          </span>
+        </div>
+        {modelStatus}
+        <span className="text-[11px] text-muted-foreground">{s.routeConfigHint}</span>
+      </div>
+    );
   };
 
   const rows = useMemo(
@@ -363,6 +604,7 @@ export function AccountsPage() {
           account.provider,
           account.account || "—",
           account.kind,
+          renderModels(account.id),
           account.id,
           windows.length === 0 ? (
             <span className="text-muted-foreground">{s.quotaNone}</span>
@@ -384,9 +626,7 @@ export function AccountsPage() {
                         style={{ width: `${Math.min(100, Math.max(0, window.used))}%` }}
                       />
                     </span>
-                    <span className="w-10 shrink-0 text-right text-xs tabular-nums">
-                      {Math.round(window.used)}%
-                    </span>
+                    <span className="w-10 shrink-0 text-right text-xs tabular-nums">{Math.round(window.used)}%</span>
                   </div>
                   {window.resets && (
                     <span className="text-[11px] text-muted-foreground">
@@ -398,33 +638,39 @@ export function AccountsPage() {
             </ul>
           ),
           <div key={account.id} className="flex flex-wrap items-center gap-1">
-            {account.provider !== "" && siblingsOf(account).length > 1 && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => moveUp(account.provider, account.id, siblingsOf(account))}
-              >
-                ↑ {s.moveUp}
-              </Button>
-            )}
-            {account.provider === "codex" && (
+            {account.source === "plugin" ? (
+              <span className="text-xs text-muted-foreground">{s.pluginManaged}</span>
+            ) : (
               <>
-                <Button size="sm" variant="outline" onClick={() => void adopt(account.id)}>
-                  {s.adopt}
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => void release(account.id)}>
-                  {s.release}
+                {account.provider !== "" && siblingsOf(account).length > 1 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => moveUp(account.provider, account.id, siblingsOf(account))}
+                  >
+                    ↑ {s.moveUp}
+                  </Button>
+                )}
+                {account.provider === "codex" && (
+                  <>
+                    <Button size="sm" variant="outline" onClick={() => void adopt(account.id)}>
+                      {s.adopt}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => void release(account.id)}>
+                      {s.release}
+                    </Button>
+                  </>
+                )}
+                <Button size="sm" variant="destructive" onClick={() => void remove(account.id)}>
+                  {s.remove}
                 </Button>
               </>
             )}
-            <Button size="sm" variant="destructive" onClick={() => void remove(account.id)}>
-              {s.remove}
-            </Button>
           </div>,
         ];
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [accounts, quotas, order, s],
+    [accounts, quotas, order, modelStates, s],
   );
 
   return (
@@ -432,9 +678,7 @@ export function AccountsPage() {
       <Header title={s.title} subtitle={s.subtitle} />
       {error && <ErrorBanner message={error} />}
       {notice && (
-        <p className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm">
-          {notice}
-        </p>
+        <p className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm">{notice}</p>
       )}
 
       <Card>
@@ -458,10 +702,7 @@ export function AccountsPage() {
                       plugin.providers
                         .filter((served) => served.methods.length > 0)
                         .map((served) => (
-                          <SelectItem
-                            key={`${plugin.spec}#${served.id}`}
-                            value={`plugin:${plugin.spec}#${served.id}`}
-                          >
+                          <SelectItem key={`${plugin.spec}#${served.id}`} value={`plugin:${plugin.spec}#${served.id}`}>
                             {served.name || served.id} · plugin
                           </SelectItem>
                         )),
@@ -490,12 +731,7 @@ export function AccountsPage() {
                 <div className="text-sm text-muted-foreground">{task.instructions}</div>
                 {task.url && (
                   <div className="flex items-center gap-2">
-                    <a
-                      className="truncate text-sm underline"
-                      href={task.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
+                    <a className="truncate text-sm underline" href={task.url} target="_blank" rel="noreferrer">
                       {s.openUrl}
                     </a>
                     <Button size="sm" variant="outline" onClick={() => void copyUrl()}>
@@ -506,31 +742,21 @@ export function AccountsPage() {
                 {task.code && (
                   <div className="flex items-center gap-2">
                     <span className="text-xs uppercase text-muted-foreground">{s.code}:</span>
-                    <code className="rounded bg-muted px-2 py-1 text-lg font-semibold tracking-wider">
-                      {task.code}
-                    </code>
+                    <code className="rounded bg-muted px-2 py-1 text-lg font-semibold tracking-wider">{task.code}</code>
                   </div>
                 )}
                 {(task.paste_callback || task.paste_code) && (
                   <div className="flex items-end gap-2">
                     <div className="flex-1">
-                      <Field
-                        label={task.paste_code ? s.pasteCodeLabel : s.paste}
-                        help=""
-                      >
+                      <Field label={task.paste_code ? s.pasteCodeLabel : s.paste} help="">
                         <Input
                           value={pastedUrl}
-                          placeholder={
-                            task.paste_code ? s.pasteCode : s.pastePlaceholder
-                          }
+                          placeholder={task.paste_code ? s.pasteCode : s.pastePlaceholder}
                           onChange={(event) => setPastedUrl(event.target.value)}
                         />
                       </Field>
                     </div>
-                    <Button
-                      onClick={() => void submit()}
-                      disabled={busy || !pastedUrl.trim()}
-                    >
+                    <Button onClick={() => void submit()} disabled={busy || !pastedUrl.trim()}>
                       {s.submit}
                     </Button>
                   </div>
@@ -556,17 +782,13 @@ export function AccountsPage() {
               )}
             </div>
           )}
-          {task && task.state === "done" && (
-            <p className="text-sm">
-              {task.provider}: {task.user || "signed in"}
-            </p>
-          )}
+          {task && task.state === "done" && renderSignInResult(task)}
         </CardContent>
       </Card>
 
       <Table
         emptyText={s.empty}
-        headers={[s.providerCol, s.accountCol, s.kindCol, s.idCol, s.quotaCol, ""]}
+        headers={[s.providerCol, s.accountCol, s.kindCol, s.modelsCol, s.idCol, s.quotaCol, ""]}
         rows={rows}
       />
 
@@ -589,9 +811,7 @@ export function AccountsPage() {
                       <span key={served.id} className="text-muted-foreground">
                         {served.name || served.id} ·{" "}
                         {served.methods
-                          .map((method) =>
-                            method.label ? `${method.type}(${method.label})` : method.type,
-                          )
+                          .map((method) => (method.label ? `${method.type}(${method.label})` : method.type))
                           .join(", ")}
                       </span>
                     ))

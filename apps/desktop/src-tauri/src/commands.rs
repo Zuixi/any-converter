@@ -7,33 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tauri::State;
 
-use crate::db::{DesktopModelRoute, DesktopProvider};
-use crate::secrets;
 use crate::server_manager::ServerStatus;
 use crate::server_proxy::{self, ProxyError};
 use crate::state::AppState;
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateSettingRequest {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateProviderRequest {
-    pub name: String,
-    pub format: String,
-    pub base_url: String,
-    pub api_key: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateModelRouteRequest {
-    pub pattern: String,
-    pub provider_ids: Vec<i64>,
-    pub upstream_model: Option<String>,
-    pub strategy: String,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct ConvertPayloadRequest {
@@ -48,30 +24,14 @@ pub struct ConvertPayloadResponse {
     pub output: String,
 }
 
-#[tauri::command]
-pub async fn get_settings(
-    state: State<'_, AppState>,
-) -> Result<std::collections::HashMap<String, String>, String> {
-    state.db().settings().map_err(to_error)
-}
-
-#[tauri::command]
-pub async fn update_setting(
-    state: State<'_, AppState>,
-    request: UpdateSettingRequest,
-) -> Result<std::collections::HashMap<String, String>, String> {
-    let db = state.db();
-    db.upsert_setting(&request.key, &request.value)
-        .map_err(to_error)?;
-    db.settings().map_err(to_error)
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ServerRequestArgs {
     pub method: String,
     pub path: String,
     #[serde(default)]
     pub body: Option<String>,
+    #[serde(default)]
+    pub if_match: Option<String>,
 }
 
 /// Thin IPC entrypoint forwarding one management call to the embedded
@@ -83,73 +43,14 @@ pub async fn server_request(
     args: ServerRequestArgs,
 ) -> Result<serde_json::Value, ProxyError> {
     server_proxy::forward(
-        state.db(),
         state.server_manager(),
+        &state.home(),
         &args.method,
         &args.path,
         args.body.as_deref(),
+        args.if_match.as_deref(),
     )
     .await
-}
-
-#[tauri::command]
-pub async fn list_providers(state: State<'_, AppState>) -> Result<Vec<DesktopProvider>, String> {
-    state.db().list_providers().map_err(to_error)
-}
-
-#[tauri::command]
-pub async fn create_provider(
-    state: State<'_, AppState>,
-    request: CreateProviderRequest,
-) -> Result<Vec<DesktopProvider>, String> {
-    let format = parse_format(&request.format)?;
-    let keychain_ref =
-        secrets::set_provider_key(&request.name, &request.api_key).map_err(to_error)?;
-    let db = state.db();
-    db.create_provider(&request.name, format, &request.base_url, &keychain_ref)
-        .map_err(to_error)?;
-    db.list_providers().map_err(to_error)
-}
-
-#[tauri::command]
-pub async fn delete_provider(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<Vec<DesktopProvider>, String> {
-    let db = state.db();
-    if let Some(provider) = db
-        .list_providers()
-        .map_err(to_error)?
-        .into_iter()
-        .find(|provider| provider.id == id)
-    {
-        let _ = secrets::delete_provider_key(&provider.name);
-    }
-    db.delete_provider(id).map_err(to_error)?;
-    db.list_providers().map_err(to_error)
-}
-
-#[tauri::command]
-pub async fn list_model_routes(
-    state: State<'_, AppState>,
-) -> Result<Vec<DesktopModelRoute>, String> {
-    state.db().list_model_routes().map_err(to_error)
-}
-
-#[tauri::command]
-pub async fn create_model_route(
-    state: State<'_, AppState>,
-    request: CreateModelRouteRequest,
-) -> Result<Vec<DesktopModelRoute>, String> {
-    let db = state.db();
-    db.create_model_route(
-        &request.pattern,
-        request.provider_ids,
-        request.upstream_model.as_deref(),
-        &request.strategy,
-    )
-    .map_err(to_error)?;
-    db.list_model_routes().map_err(to_error)
 }
 
 #[tauri::command]
@@ -327,7 +228,7 @@ pub async fn get_server_status(state: State<'_, AppState>) -> Result<ServerStatu
 pub async fn start_server(state: State<'_, AppState>) -> Result<ServerStatus, String> {
     state
         .server_manager()
-        .start(state.db(), state.log_dir())
+        .start(state.home().clone())
         .await
         .map_err(to_error)
 }
@@ -341,7 +242,7 @@ pub async fn stop_server(state: State<'_, AppState>) -> Result<ServerStatus, Str
 pub async fn restart_server(state: State<'_, AppState>) -> Result<ServerStatus, String> {
     state
         .server_manager()
-        .restart(state.db(), state.log_dir())
+        .restart(state.home().clone())
         .await
         .map_err(to_error)
 }

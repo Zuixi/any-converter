@@ -15,7 +15,6 @@
     "@any-converter/shared": "workspace:*",
     "@any-converter/ui": "workspace:*",
     "@any-converter/views": "workspace:*",
-    "@iarna/toml": "^2.2.5",
     "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^12.11.1",
     "next": "14.2.7",

@@ -10,14 +10,13 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Path as AxumPath, State},
-    http::{HeaderMap, StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::agents_registry::{STATUS_CONNECTED, STATUS_DISCONNECTED, spec_for};
-use crate::auth::{self, AuthError};
 use crate::handlers::AppState;
 
 pub use crate::agents_registry::{AgentRegistry, AgentStatus, KeyInfo, catalog_from_config};
@@ -133,14 +132,8 @@ impl From<agent_wiring::WiringError> for ApiError {
 // ── HTTP handlers ────────────────────────────────────────────────────
 
 /// `GET /v1/agents`
-pub async fn handle_agents_list(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_agents_list(State(state): State<Arc<AppState>>) -> Response {
     state.agents.set_catalog(catalog_from_config(&state.config));
-    if let Some(response) = read_auth(&state, &headers).await {
-        return response;
-    }
     let home = state.agents.home();
     let agents = state.agents.list(&home).await;
     Json(json!({ "agents": agents })).into_response()
@@ -150,12 +143,8 @@ pub async fn handle_agents_list(
 pub async fn handle_agent_connect(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Some(response) = management_auth(&state, &headers) {
-        return response;
-    }
     let model = if body.is_empty() {
         None
     } else {
@@ -196,11 +185,7 @@ pub async fn handle_agent_connect(
 pub async fn handle_agent_disconnect(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if let Some(response) = management_auth(&state, &headers) {
-        return response;
-    }
     let home = state.agents.home();
     match state.agents.disconnect(&id, &home).await {
         Ok(report) => Json(json!({
@@ -227,11 +212,7 @@ pub async fn handle_agent_disconnect(
 pub async fn handle_agent_sync(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if let Some(response) = management_auth(&state, &headers) {
-        return response;
-    }
     state.agents.set_catalog(catalog_from_config(&state.config));
     let home = state.agents.home();
     match state.agents.sync(&id, &home).await {
@@ -249,11 +230,7 @@ pub async fn handle_agent_sync(
 pub async fn handle_agent_rotate_key(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if let Some(response) = management_auth(&state, &headers) {
-        return response;
-    }
     state.agents.set_catalog(catalog_from_config(&state.config));
     let home = state.agents.home();
     match state.agents.rotate_key(&id, &home).await {
@@ -266,11 +243,7 @@ pub async fn handle_agent_rotate_key(
 pub async fn handle_agent_keys(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if let Some(response) = read_auth(&state, &headers).await {
-        return response;
-    }
     if spec_for(&id).is_err() {
         return api_error(ApiError::UnknownAgent(id));
     }
@@ -284,53 +257,6 @@ struct ConnectBody {
     model: Option<String>,
     #[serde(default, rename = "codexHome")]
     codex_home: Option<String>,
-}
-
-async fn read_auth(state: &AppState, headers: &HeaderMap) -> Option<Response> {
-    let header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    match state
-        .agents
-        .validate_key(state.config.server.api_key.as_deref(), header)
-        .await
-    {
-        Ok(()) => None,
-        Err(error) => Some(auth_response(error)),
-    }
-}
-
-fn management_auth(state: &AppState, headers: &HeaderMap) -> Option<Response> {
-    let header = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    match auth::require_management_key(state.config.server.api_key.as_deref(), header) {
-        Ok(()) => None,
-        Err(AuthError::Missing) => Some(error_response(
-            StatusCode::UNAUTHORIZED,
-            "authentication_error",
-            "missing management API key",
-            None,
-            None,
-        )),
-        Err(AuthError::Invalid) => Some(error_response(
-            StatusCode::FORBIDDEN,
-            "management_forbidden",
-            "agent keys cannot manage agents; use the server API key",
-            Some("send the global server API key, not an agent key"),
-            None,
-        )),
-    }
-}
-
-fn auth_response(error: AuthError) -> Response {
-    error_response(
-        StatusCode::UNAUTHORIZED,
-        "authentication_error",
-        error.to_string(),
-        None,
-        None,
-    )
 }
 
 fn api_error(error: ApiError) -> Response {
