@@ -1,5 +1,11 @@
 # Any Converter CHANGELOGS
 
+## Unreleased
+
+### Changed
+
+- **Default gateway port is now `3028`** (was `1228`). Fresh homes, CLI defaults, daemon fallbacks, and Desktop defaults agree. Existing `config.toml` files keep their explicit `port`, so old installs must change it themselves.
+
 ## v0.1.3 (2026-11-10) — One gateway, one UI
 
 ### Changed

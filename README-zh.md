@@ -51,7 +51,7 @@ cargo install --path crates/cli
 ```toml
 [server]
 host = "127.0.0.1"
-port = 1228
+port = 3028
 api_key = "keychain:any-converter:server:inference"
 
 [[providers]]
@@ -71,8 +71,8 @@ provider = "anthropic"
 any-converter serve
 ```
 
-启动后，本地网关地址就是 `http://127.0.0.1:1228`。`serve` 会打印一个带
-一次性页面密钥的地址（`http://127.0.0.1:1228/?k=…`），在浏览器打开即可
+启动后，本地网关地址就是 `http://127.0.0.1:3028`。`serve` 会打印一个带
+一次性页面密钥的地址（`http://127.0.0.1:3028/?k=…`），在浏览器打开即可
 解锁会话，重启之前不再需要密钥。
 
 想让它开机自启，可以装成用户服务（不需要 `sudo`，也不装系统服务）：
@@ -129,7 +129,7 @@ User-Agent，密钥可独立轮换；Agent 密钥只能调推理接口，不能�
 把 Claude 侧流量指向本地网关：
 
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:1228
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3028
 export ANTHROPIC_AUTH_TOKEN=<inference-key>
 ```
 
@@ -138,7 +138,7 @@ export ANTHROPIC_AUTH_TOKEN=<inference-key>
 必须使用 OpenAI Responses wire API，不要按 Chat Completions 来测：
 
 ```toml
-base_url = "http://127.0.0.1:1228/v1"
+base_url = "http://127.0.0.1:3028/v1"
 wire_api = "responses"
 api_key = "<inference-key>"
 ```
@@ -152,7 +152,7 @@ api_key = "<inference-key>"
 ### OpenAI-compatible 客户端
 
 ```bash
-export OPENAI_BASE_URL=http://127.0.0.1:1228/v1
+export OPENAI_BASE_URL=http://127.0.0.1:3028/v1
 export OPENAI_API_KEY=<inference-key>
 ```
 

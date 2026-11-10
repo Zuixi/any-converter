@@ -1127,7 +1127,7 @@ fn initialize_document(
 ) -> Result<(), ConfigStoreError> {
     let mut server = Table::new();
     server["host"] = toml_edit::value("127.0.0.1");
-    server["port"] = toml_edit::value(1228_i64);
+    server["port"] = toml_edit::value(3028_i64);
     document["server"] = Item::Table(server);
     set_management_key_ref(document, management_reference)
 }

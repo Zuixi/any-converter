@@ -132,7 +132,7 @@ impl ServerManager {
                 status: ServerStatus {
                     state: ServerRunState::Stopped,
                     host: "127.0.0.1".to_string(),
-                    port: 1228,
+                    port: 3028,
                     last_error: None,
                 },
                 busy: false,
@@ -182,7 +182,7 @@ impl ServerManager {
             inner.status = ServerStatus {
                 state: ServerRunState::Starting,
                 host: "127.0.0.1".to_string(),
-                port: 1228,
+                port: 3028,
                 last_error: None,
             };
         }

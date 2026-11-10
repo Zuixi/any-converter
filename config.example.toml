@@ -9,7 +9,7 @@ api_key = "keychain:any-converter:server:management"
 
 [server]
 host = "127.0.0.1"
-port = 1228
+port = 3028
 # Optional inference key — clients must send `Authorization: Bearer <api_key>`
 # api_key = "keychain:any-converter:server:inference"
 

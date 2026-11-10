@@ -51,7 +51,7 @@ temporary legacy config containing literal keys once.
 ```toml
 [server]
 host = "127.0.0.1"
-port = 1228
+port = 3028
 api_key = "keychain:any-converter:server:inference"
 
 [[providers]]
@@ -71,8 +71,8 @@ provider = "anthropic"
 any-converter serve
 ```
 
-Your local gateway is now available at `http://127.0.0.1:1228`. `serve` prints
-a URL with a one-time page key (`http://127.0.0.1:1228/?k=…`) — open it in a
+Your local gateway is now available at `http://127.0.0.1:3028`. `serve` prints
+a URL with a one-time page key (`http://127.0.0.1:3028/?k=…`) — open it in a
 browser and the session unlocks; the key is never needed again until restart.
 
 To start the gateway at login instead, install it as a user service (no `sudo`,
@@ -191,7 +191,7 @@ editing configs yourself):
 Point Claude-compatible traffic at the gateway:
 
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:1228
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3028
 export ANTHROPIC_AUTH_TOKEN=<inference-key>
 ```
 
@@ -200,7 +200,7 @@ export ANTHROPIC_AUTH_TOKEN=<inference-key>
 Use the OpenAI Responses wire API, not Chat Completions:
 
 ```toml
-base_url = "http://127.0.0.1:1228/v1"
+base_url = "http://127.0.0.1:3028/v1"
 wire_api = "responses"
 api_key = "<inference-key>"
 ```
@@ -214,7 +214,7 @@ Important:
 ### OpenAI-compatible clients
 
 ```bash
-export OPENAI_BASE_URL=http://127.0.0.1:1228/v1
+export OPENAI_BASE_URL=http://127.0.0.1:3028/v1
 export OPENAI_API_KEY=<inference-key>
 ```
 
