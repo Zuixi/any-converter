@@ -1,6 +1,6 @@
 # Any Converter CHANGELOGS
 
-## Unreleased — One gateway, one UI
+## v0.1.3 (2026-11-10) — One gateway, one UI
 
 ### Changed
 
@@ -16,10 +16,12 @@
 ### Fixed
 
 - Fresh-home startup no longer logs `ERROR r2d2: database is locked`: r2d2 opens its first pool connections concurrently, and every connection switching `journal_mode = wal` raced. WAL is now switched once on the migration connection, after migrations.
+- Page-key handling is hardened: concurrent first-start creation is serialized by a kernel lock, `/?k=` and `POST /v1/session` share one failure window while a correct key always succeeds, key-exchange responses are `no-store`/`no-referrer`, and app logs, request/usage JSONL, and SQLite DB/WAL/SHM files are private (0600 inside 0700 directories).
+- A Desktop attached to an external gateway now fails closed when that gateway dies: status becomes `Stopped` with a `last_error`, and management IPC returns `NotRunning` instead of dialing a dead address.
 
-## Unreleased — Resident gateway
+### Resident gateway foundation
 
-### Changed
+#### Changed
 
 - **The server is now the configuration and lifecycle authority.** The canonical home is `%APPDATA%\any-converter` on Windows and `$XDG_CONFIG_HOME/any-converter` (or `$HOME/.config/any-converter`) elsewhere; `ANY_CONVERTER_HOME` overrides it. `config.toml` is loaded and written through a kernel-locked, atomic, revision-checked `ConfigStore`, not reconstructed from Desktop SQLite.
 - **Provider, inference/client, and management credentials use separate OS keychain namespaces.** TOML stores `keychain:any-converter:*` references. Missing or unreadable secrets fail closed; management and inference credentials are no longer interchangeable.
@@ -29,12 +31,12 @@
 - **Web config editing proxies the management API.** It no longer reads or writes `config.toml` directly.
 - **Desktop hardening:** non-IPC management proxying is gone, requests are limited to an allowlist and the management key, Tauri has a restrictive CSP/single-instance/tray close-to-hide behavior, and the unused shell capability was removed.
 
-### Added
+#### Added
 
 - Accepted architecture: [`docs/design/desktop-resident-gateway.md`](docs/design/desktop-resident-gateway.md).
 - Management endpoints for typed config patches (`ETag`/`If-Match`), provider and inference secrets, management-key rotation, and server status.
 
-### Fixed
+#### Fixed
 
 - One-time CLI imports and management secret mutations now hold the same cross-process config lock while writing the keychain and config, restore previous keychain values if an import fails, and serialize management-key rotation. This prevents orphaned keys, stale successful-looking writes, and concurrent import races.
 - Initialization and legacy migration no longer overwrite an existing canonical secret with a different value. Equal values retry idempotently after a crash; conflicts fail closed, preserving the prior credential.
