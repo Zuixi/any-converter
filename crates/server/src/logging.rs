@@ -226,7 +226,7 @@ impl RotatingWriter {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let current_date = today_str();
         let path = Self::build_path(dir, prefix, &current_date, rotation);
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = open_private_append(&path)?;
         Ok(Self {
             dir: dir.to_path_buf(),
             prefix: prefix.to_string(),
@@ -246,7 +246,7 @@ impl RotatingWriter {
         }
         let _ = self.writer.flush();
         let path = Self::build_path(&self.dir, &self.prefix, &now, self.rotation);
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = open_private_append(&path)?;
         self.writer = BufWriter::new(file);
         self.current_date = now;
         Ok(())
@@ -258,6 +258,48 @@ impl RotatingWriter {
             Rotation::Never => dir.join(format!("{prefix}.jsonl")),
         }
     }
+}
+
+/// Open a log file for append, creating it 0600 and repairing the mode of
+/// an existing one. Log files can carry a page key or request bodies, so
+/// the default umask (typically world-readable 0644) is never acceptable.
+pub(crate) fn open_private_append(path: &Path) -> std::io::Result<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        repair_private_dir(parent)?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    repair_private_file(path)?;
+    Ok(file)
+}
+
+pub(crate) fn repair_private_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+pub(crate) fn repair_private_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 // ── Formatting ───────────────────────────────────────────────────────
@@ -351,4 +393,35 @@ fn expand_tilde(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+#[cfg(test)]
+mod permission_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn private_append_repairs_file_and_parent_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap().path().join("logs");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("app.jsonl");
+        std::fs::write(&path, b"old\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        drop(open_private_append(&path).unwrap());
+
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }

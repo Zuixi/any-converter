@@ -1,8 +1,11 @@
-use serde::Serialize;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use serde::Serialize;
 use tokio::sync::mpsc;
+
+use crate::logging::{open_private_append, repair_private_dir};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageRecord {
@@ -49,12 +52,10 @@ impl UsageLogger {
 
 fn write_record(log_dir: &PathBuf, record: &UsageRecord) -> std::io::Result<()> {
     std::fs::create_dir_all(log_dir)?;
+    repair_private_dir(log_dir)?;
     let date = &record.timestamp[..10]; // YYYY-MM-DD
     let path = log_dir.join(format!("usage.{date}.jsonl"));
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = open_private_append(&path)?;
     let line = serde_json::to_string(record).unwrap_or_default();
     writeln!(file, "{line}")?;
     Ok(())

@@ -20,12 +20,14 @@ use crate::home::Home;
 use crate::secrets::{
     ApiKeyStore, SecretError, SecretRef, SecretResolutionReport, resolve_runtime_secrets,
 };
+use crate::web_auth::{WebAuth, resolve};
 
 /// A prepared runtime configuration and its control plane.
 pub struct PreparedServer {
     pub config: ServerConfig,
     pub control_plane: Arc<ControlPlane>,
     pub secret_report: SecretResolutionReport,
+    pub web_auth: Arc<WebAuth>,
 }
 
 /// Server-owned control-plane state.
@@ -59,6 +61,8 @@ impl ControlPlane {
         if !errors.is_empty() {
             return Err(ControlPlaneError::Validation(errors.join("; ")));
         }
+        let web_auth =
+            Arc::new(resolve(&home).map_err(|error| ControlPlaneError::WebKey(error.to_string()))?);
 
         let control_plane = Arc::new(Self {
             home,
@@ -77,6 +81,7 @@ impl ControlPlane {
             config,
             control_plane,
             secret_report,
+            web_auth,
         })
     }
 
@@ -1196,6 +1201,8 @@ pub enum ControlPlaneError {
     InvalidProviderName(String),
     #[error("config validation failed: {0}")]
     Validation(String),
+    #[error("web key: {0}")]
+    WebKey(String),
     #[error(
         "management key is not configured; restart through the managed launcher to bootstrap it"
     )]

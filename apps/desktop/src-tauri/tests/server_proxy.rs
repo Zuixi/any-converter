@@ -44,3 +44,19 @@ async fn never_falls_back_to_an_external_server_when_stopped() {
 
     assert!(matches!(error, ProxyError::NotRunning));
 }
+
+#[tokio::test]
+async fn dead_attached_gateway_fails_closed() {
+    let error = server_proxy::forward(
+        ServerManager::fake_attached("127.0.0.1", 18999),
+        &Home::from_root("unused-any-converter-home"),
+        "GET",
+        "/v1/admin/config",
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(error, ProxyError::NotRunning));
+}

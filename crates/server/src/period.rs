@@ -30,8 +30,6 @@ const MAX_PRESET_DAYS: i64 = 3650;
 
 /// Resolves a preset, a rolling window, or a picked day range into UTC bounds.
 ///
-/// Mirrored by `resolvePeriod` in `apps/web/src/app/api/log-store.ts`.
-///
 /// - `today`  : this UTC day, midnight to midnight
 /// - `<n>d`   : the last `n` days, ending now, for any `n` from 1 to 3650
 ///   (so `1d`, `3d`, `7d`, and `30d` are the same kind of window)

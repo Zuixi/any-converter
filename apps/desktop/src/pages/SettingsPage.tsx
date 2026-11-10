@@ -1,23 +1,25 @@
 import { useEffect, useState } from "react";
-import { useI18n } from "@any-converter/core";
+import { useApiClient, useI18n } from "@any-converter/core";
 import { Button, Card, CardContent, Input } from "@any-converter/ui";
 
 import { ErrorBanner } from "../components/layout/ErrorBanner";
 import { Field } from "../components/layout/Field";
 import { Header } from "../components/layout/Header";
 import { useAsyncState } from "../hooks/useAsyncState";
-import { api } from "../lib/api";
 import { management, useServerRequest, type AdminConfigView } from "../lib/management";
+import { isDesktopApp } from "../lib/platform";
 
 export function SettingsPage() {
   const { t } = useI18n();
   const { describeError } = useServerRequest();
+  const apiClient = useApiClient();
+  const hostManaged = isDesktopApp();
   const [config, setConfig, loadError] = useAsyncState<AdminConfigView>(() =>
     management.getConfig().catch((cause) => {
       throw new Error(describeError(cause));
     }),
   );
-  const [recentLogs] = useAsyncState(() => api.listRequestLogs(1), []);
+  const [recentLogs] = useAsyncState(() => apiClient.getLogs(1), []);
   const [host, setHost] = useState("");
   const [port, setPort] = useState("");
   const [maxDiskMb, setMaxDiskMb] = useState("");
@@ -43,7 +45,9 @@ export function SettingsPage() {
   const save = async () => {
     try {
       let next = await management.patchConfig(configuration?.revision ?? "", {
-        server: { host, port: Number(port) },
+        // The browser cannot restart the gateway, so host/port stay
+        // untouched there; only the desktop may edit them.
+        ...(hostManaged ? { server: { host, port: Number(port) } } : {}),
         logging: {
           max_disk_mb: Number(maxDiskMb),
           request_log_enabled: requestLogging,
@@ -75,12 +79,16 @@ export function SettingsPage() {
             <code className="rounded bg-muted px-2 py-1 text-xs font-medium">{lastClientId}</code>
           </div>
           <div className="grid gap-4 md:grid-cols-3">
-            <Field label={t("desktop.settings.host")} help="">
-              <Input value={host} onChange={(event) => setHost(event.target.value)} />
-            </Field>
-            <Field label={t("desktop.settings.port")} help="">
-              <Input value={port} onChange={(event) => setPort(event.target.value.replace(/\D/g, ""))} />
-            </Field>
+            {hostManaged && (
+              <>
+                <Field label={t("desktop.settings.host")} help="">
+                  <Input value={host} onChange={(event) => setHost(event.target.value)} />
+                </Field>
+                <Field label={t("desktop.settings.port")} help="">
+                  <Input value={port} onChange={(event) => setPort(event.target.value.replace(/\D/g, ""))} />
+                </Field>
+              </>
+            )}
             <Field label={t("desktop.settings.maxDisk")} help="">
               <Input value={maxDiskMb} onChange={(event) => setMaxDiskMb(event.target.value.replace(/\D/g, ""))} />
             </Field>
@@ -100,7 +108,11 @@ export function SettingsPage() {
           >
             <Input type="password" value={inferenceKey} onChange={(event) => setInferenceKey(event.target.value)} />
           </Field>
-          <Button className="w-fit" onClick={() => void save()} disabled={!host || !port || !maxDiskMb}>
+          <Button
+            className="w-fit"
+            onClick={() => void save()}
+            disabled={!maxDiskMb || (hostManaged && (!host || !port))}
+          >
             {t("desktop.settings.saveConfig")}
           </Button>
         </CardContent>

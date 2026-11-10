@@ -48,7 +48,6 @@ pub(crate) fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), 
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::fs::PermissionsExt;
         options.mode(0o600);
     }
 

@@ -29,8 +29,9 @@
 - 支持精确匹配和通配符的模型映射
 - 支持带脱敏的请求日志
 - 支持 SQLite 主存储 + JSONL fallback 的双写日志
-- 提供 Web UI：playground、logs、usage、status、config
-- 提供常驻 Desktop 网关：本地管理 provider、route、secret 和生命周期
+- 一套 UI 同时服务浏览器与 Desktop 应用：playground、logs、usage、status、config
+- 支持开机自启：`any-converter daemon install`（macOS 用 launchd，Linux 用 systemd 用户服务）
+- 提供 Desktop 应用：本地管理 provider、route、secret 和生命周期
 
 ## 快速开始
 
@@ -70,7 +71,17 @@ provider = "anthropic"
 any-converter serve
 ```
 
-启动后，本地网关地址就是 `http://127.0.0.1:1228`。
+启动后，本地网关地址就是 `http://127.0.0.1:1228`。`serve` 会打印一个带
+一次性页面密钥的地址（`http://127.0.0.1:1228/?k=…`），在浏览器打开即可
+解锁会话，重启之前不再需要密钥。
+
+想让它开机自启，可以装成用户服务（不需要 `sudo`，也不装系统服务）：
+
+```bash
+any-converter daemon install   # macOS: launchd / Linux: systemd 用户服务
+any-converter daemon status    # 查看服务状态和 UI 地址
+any-converter daemon stop      # 还有 start / restart / uninstall
+```
 
 Desktop 首次启动会创建规范 home 和系统钥匙串条目。无桌面环境时设置
 `ANY_CONVERTER_UPSTREAM_KEY` 并运行 `serve --format ... --base-url ...
@@ -94,7 +105,7 @@ any-converter agents rotate-key pi           # 重发该 Agent 的专属密钥
 ```
 
 支持的 Agent：**Claude Code**、**Codex**、**Gemini CLI**、**Pi**。
-Web 界面（`/agents` 页）提供同样能力，并带漂移检测：接入期间若有其他工具改写了
+UI 的 Agents 页提供同样能力，并带漂移检测：接入期间若有其他工具改写了
 Agent 配置，页面会提示「配置被外部修改」并可一键重新应用。
 
 每个接入的 Agent 拿到自己的网关密钥（`acw_<agent>_…`），请求归因不依赖
@@ -241,36 +252,34 @@ trace_enabled = true
 - 只有 `logging.request_log.enabled = true` 还不够，必须同时设置 `logging.dir`
 - 对于流式请求，日志中的延迟是首包时间，不是整条流结束时间
 
-## Web UI
+## 浏览器 UI
 
-Web UI 会作为独立进程运行在 Rust gateway 旁边，提供：
+网关自己托管 UI——不需要第二个进程，也没有单独的 web 应用要启动。发布版
+二进制内嵌了构建好的 SPA；在仓库里先执行一次
+`pnpm --filter @any-converter/desktop build`（或用 `ANY_CONVERTER_WEB_DIR`
+指向任意包含构建产物 `index.html` 的目录）。
+
+打开 `serve`（或 `daemon status`）打印的地址即可。首次访问会要求输入页面
+密钥，之后浏览器持有仅限回环地址的会话 cookie。UI 提供：
 
 - `/playground`：交互式转换调试
 - `/logs`：请求日志查看
-- `/usage`：token 和延迟统计
-- `/status`：健康状态和磁盘占用
-- `/config`：编辑 `config.toml`
-
-先启动 Rust server，再启动 Web UI：
-
-```bash
-SERVER_URL=http://127.0.0.1:1228 \
-LOG_DIR=../../logs \
-CONFIG_PATH=../../config.toml \
-  pnpm --filter @any-converter/web dev
-```
-
-默认访问地址是 `http://localhost:3000`。
+- `/usage`：token 和延迟统计，支持 ledger CSV 导出
+- `/settings`：编辑 `config.toml`
+- `/accounts` 与 `/agents`：订阅账号与 Agent 接入
 
 ## Desktop 应用
 
 Tauri Desktop 应用提供本地控制台能力：
 
-- 管理 provider
-- 管理 model route
+- 管理 provider 和 model route
 - 启动、停止、重启内嵌 server
 - 查看本地 logs 和 usage
 - 使用转换 playground
+
+它通过 Tauri IPC 调用同一套 `/v1/admin/*` API。如果该 home 已有网关在
+运行（例如 `daemon` 启动的），应用会直接挂接上去而不是再起一个实例，
+生命周期按钮也会让位——关掉窗口，网关继续运行。
 
 在仓库根目录运行：
 
@@ -311,13 +320,6 @@ curl -N https://example.com/stream \
 - 是否设置了 `logging.dir`
 - 是否开启了 `[logging.request_log].enabled = true`
 - server 启动后是否真的处理过请求
-
-### Web UI 里没有 logs 或 usage
-
-重点检查：
-
-- `LOG_DIR` 是否和 `logging.dir` 指向同一个目录
-- 该目录下是否已经生成 `any-converter.sqlite3` 或 JSONL 文件
 
 ## 更多文档
 

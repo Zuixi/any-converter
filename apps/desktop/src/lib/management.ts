@@ -2,17 +2,18 @@ import type { ApiClient } from "@any-converter/core";
 import { useI18n } from "@any-converter/core";
 import { useCallback } from "react";
 
-import { api } from "./api";
 import type { ProxyErrorShape } from "./proxy-error";
+import { requestServer } from "./transport";
 
 /**
  * The single façade for the server's management API.
  *
  * Every management call (accounts, sign-ins, agent wiring) goes through the
- * typed methods below. Pages never assemble URLs, never `fetch` the
- * embedded server directly (a browser origin cannot cross into loopback:
- * the CORS preflight the server never answers surfaces as
- * `TypeError: Failed to fetch`), and never re-declare these payload shapes.
+ * typed methods below. Pages never assemble URLs, never `fetch` loopback
+ * directly, and never re-declare these payload shapes. `requestServer` is
+ * the transport: Tauri IPC in the desktop webview (the Rust side dials the
+ * embedded server), same-origin fetch with the session cookie in the
+ * browser.
  *
  * Adding a management operation = adding one method here. The HTTP path
  * lives in exactly one file.
@@ -172,15 +173,14 @@ export interface ServerControlStatus {
   started_at_unix?: number | null;
 }
 
-/** One management call over the `server_request` Tauri command. */
+/** One management call over the `requestServer` transport. */
 async function call<T>(
   path: string,
   method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE" = "GET",
   body?: string,
   ifMatch?: string,
 ): Promise<T> {
-  const value = await api.serverRequest({ method, path, body, ifMatch });
-  return value as T;
+  return requestServer<T>({ method, path, body, ifMatch });
 }
 
 export const management = {
@@ -298,10 +298,11 @@ export const management = {
 };
 
 /**
- * One typed `server_request` call over Tauri IPC. The Rust side dials the
- * embedded server; the webview never fetches it cross-origin. Prefer the
- * typed `management` façade for every management operation — this hook is
- * the transport it rides on.
+ * One typed management call. The transport dispatches: `server_request`
+ * over Tauri IPC in the desktop (the Rust side dials the embedded server;
+ * the webview never fetches it cross-origin), same-origin fetch with the
+ * session cookie in the browser. Prefer the typed `management` façade for
+ * every management operation — this hook is the transport it rides on.
  */
 export function useServerRequest() {
   const { t } = useI18n();
@@ -312,7 +313,7 @@ export function useServerRequest() {
     [],
   );
 
-  /** Render a `server_request` rejection as localized user-facing text. */
+  /** Render a transport rejection as localized user-facing text. */
   const describeError = useCallback(
     (cause: unknown): string => {
       const shape = cause as ProxyErrorShape | undefined;

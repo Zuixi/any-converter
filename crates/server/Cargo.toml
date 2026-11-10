@@ -31,6 +31,11 @@ atomicwrites = "0.4"
 fs4 = { workspace = true }
 keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 subtle = "2"
+# rust-embed 8.12+ requires sha2 0.11 (Rust 1.88+); pin the 8.11 line so
+# the workspace MSRV (1.85) keeps building without the UI dist present.
+rust-embed = "=8.11.0"
+rust-embed-impl = "=8.11.0"
+rust-embed-utils = "=8.11.0"
 
 [dev-dependencies]
 tokio = { workspace = true }

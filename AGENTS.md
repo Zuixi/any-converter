@@ -1,6 +1,6 @@
 # any-converter — Agent Entrypoint
 
-> **What is this?** A workspace for running one LLM client protocol against a different upstream provider protocol, with conversion, routing, logging, Web UI, and Desktop control surfaces.
+> **What is this?** A workspace for running one LLM client protocol against a different upstream provider protocol, with conversion, routing, logging, one browser/desktop UI, and Desktop control surfaces.
 >
 > **Progressive Disclosure**: This file is the workspace navigation hub only. Pick the domain you are changing, then drill down into that domain's `AGENTS.md`.
 
@@ -10,8 +10,8 @@
 
 | If you are working on... | Go to |
 |--------------------------|-------|
-| Rust conversion, proxying, CLI, or native bridge code | [`crates/AGENTS.md`](./crates/AGENTS.md) |
-| Web or Desktop application code | [`apps/AGENTS.md`](./apps/AGENTS.md) |
+| Rust conversion, proxying, or CLI code | [`crates/AGENTS.md`](./crates/AGENTS.md) |
+| Desktop application code | [`apps/AGENTS.md`](./apps/AGENTS.md) |
 | Shared frontend components, hooks, types, or UI primitives | [`packages/AGENTS.md`](./packages/AGENTS.md) |
 | Build, architecture, design notes, or memory docs | [`docs/AGENTS.md`](./docs/AGENTS.md) |
 | Cross-workspace test fixtures or future integration tests | [`tests/AGENTS.md`](./tests/AGENTS.md) |
@@ -26,8 +26,8 @@
 
 ```
 any-converter/
-├── crates/     # Rust runtime and native bridge code
-├── apps/       # User-facing Web and Desktop applications
+├── crates/     # Rust runtime code
+├── apps/       # The Desktop application (its SPA is also the browser UI)
 ├── packages/   # Shared frontend building blocks
 ├── docs/       # Build, architecture, design, and memory docs
 ├── tests/      # Cross-workspace fixtures / future integration harnesses
@@ -40,13 +40,13 @@ any-converter/
 Clients
   │
   ▼
-apps/web ───────────────┐
-apps/desktop ───────────┼────► crates/server ───► upstream providers
-                        │
-packages/views/core/ui ─┘
+apps/desktop ─────────────► crates/server ──► upstream providers
+      ▲
+      │
+packages/views/core/ui     (one SPA build, served in the desktop webview
+                           and by the gateway in any browser)
 
 crates/cli ─────────────► crates/server / crates/core
-packages/bridge ────────► crates/web-bridge ─► crates/core
 ```
 
 ### Read These Next
@@ -54,7 +54,7 @@ packages/bridge ────────► crates/web-bridge ─► crates/core
 | Document | Purpose | When to read |
 |----------|---------|--------------|
 | [`crates/AGENTS.md`](./crates/AGENTS.md) | Rust-domain routing and constraints | Before touching any Rust crate |
-| [`apps/AGENTS.md`](./apps/AGENTS.md) | App-domain routing for Web and Desktop | Before touching app entrypoints |
+| [`apps/AGENTS.md`](./apps/AGENTS.md) | App-domain routing for the Desktop app | Before touching app entrypoints |
 | [`packages/AGENTS.md`](./packages/AGENTS.md) | Shared frontend package boundaries | Before touching hooks, views, or shared types |
 | [`docs/AGENTS.md`](./docs/AGENTS.md) | Documentation routing | Before updating docs beyond a single file |
 | [`docs/architecture.md`](./docs/architecture.md) | Full architecture and data flow | When you need the big picture |

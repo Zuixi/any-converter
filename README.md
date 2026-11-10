@@ -29,8 +29,9 @@ It is built for practical cross-vendor setups such as:
 - Model name remapping with exact and wildcard matches
 - Request logging with redaction
 - Dual log storage: SQLite primary mirror plus JSONL fallback
-- Web UI for playground, logs, usage, status, and config editing
-- Resident Desktop gateway for local provider, route, secret, and lifecycle management
+- One UI for playground, logs, usage, status, and config editing — the same page served to any browser and loaded by the Desktop app
+- Optional boot autostart via `any-converter daemon install` (launchd on macOS, systemd user unit on Linux)
+- Desktop app for local provider, route, secret, and lifecycle management
 
 ## Quick start
 
@@ -70,7 +71,18 @@ provider = "anthropic"
 any-converter serve
 ```
 
-Your local gateway is now available at `http://127.0.0.1:1228`.
+Your local gateway is now available at `http://127.0.0.1:1228`. `serve` prints
+a URL with a one-time page key (`http://127.0.0.1:1228/?k=…`) — open it in a
+browser and the session unlocks; the key is never needed again until restart.
+
+To start the gateway at login instead, install it as a user service (no `sudo`,
+no system install):
+
+```bash
+any-converter daemon install   # launchd (macOS) / systemd user unit (Linux)
+any-converter daemon status    # prints the service state and the UI URL
+any-converter daemon stop      # also: start / restart / uninstall
+```
 
 Desktop creates the canonical home and keychain entries on first launch. For a
 headless first run, set `ANY_CONVERTER_UPSTREAM_KEY`, run `serve --format ...
@@ -151,7 +163,7 @@ any-converter agents rotate-key pi           # issue a fresh per-agent key
 ```
 
 Supported agents: **Claude Code**, **Codex**, **Gemini CLI**, and **Pi**.
-The Web UI (`/agents`) offers the same operations with drift detection: if
+The UI's Agents page offers the same operations with drift detection: if
 another tool rewrites an agent's config while it is connected, the page shows
 a "config changed externally" banner and a one-click reapply.
 
@@ -302,36 +314,36 @@ Important:
 - `logging.request_log.enabled = true` does nothing unless `logging.dir` is also set
 - For streaming requests, logged latency is time-to-first-byte, not full stream duration
 
-## Web UI
+## Browser UI
 
-The web app runs as a separate process beside the Rust gateway and provides:
+The gateway serves the UI itself — there is no second process and no separate
+web app to start. Release binaries embed the built SPA; from a repo checkout,
+build it once with `pnpm --filter @any-converter/desktop build` (or point
+`ANY_CONVERTER_WEB_DIR` at any directory containing the built `index.html`).
+
+Open the URL `serve` (or `daemon status`) prints. The first visit asks for the
+page key; after that the browser holds a loopback-only session cookie. The UI
+provides:
 
 - `/playground` for interactive conversion
 - `/logs` for request log inspection
-- `/usage` for token and latency views
-- `/status` for health and disk status
-- `/config` for editing `config.toml`
-
-Start it after the Rust server is running:
-
-```bash
-SERVER_URL=http://127.0.0.1:1228 \
-LOG_DIR=../../logs \
-CONFIG_PATH=../../config.toml \
-  pnpm --filter @any-converter/web dev
-```
-
-By default it opens on `http://localhost:3000`.
+- `/usage` for token and latency views, with ledger CSV export
+- `/settings` for editing `config.toml`
+- `/accounts` and `/agents` for subscription accounts and agent wiring
 
 ## Desktop app
 
 The Tauri desktop app provides a local control plane for:
 
-- Provider management
-- Model route management
+- Provider and model route management
 - Embedded server start, stop, and restart
 - Local logs and usage views
 - Conversion playground
+
+It talks to the same `/v1/admin/*` API over Tauri IPC. If a gateway is
+already running for the home (for example under `daemon`), the app attaches to
+it instead of starting a second instance, and lifecycle controls step aside —
+the gateway keeps running when the window closes.
 
 Run it from the **repo root** (always reinstall after pulling dependency changes):
 
@@ -376,13 +388,6 @@ Check all three:
 - `logging.dir` is set
 - `[logging.request_log].enabled = true`
 - the server process has actually handled requests since startup
-
-### Web UI shows no logs or usage
-
-Check:
-
-- `LOG_DIR` points to the same directory used by `logging.dir`
-- the server has created `any-converter.sqlite3` or JSONL files there
 
 ## More documentation
 

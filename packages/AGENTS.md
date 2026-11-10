@@ -12,7 +12,6 @@
 | Page-level shared views used by apps | [`views/AGENTS.md`](./views/AGENTS.md) |
 | Shared types, constants, and simple utilities | [`shared/AGENTS.md`](./shared/AGENTS.md) |
 | UI primitives and low-level design system pieces | [`ui/AGENTS.md`](./ui/AGENTS.md) |
-| JS wrapper around the native Rust bridge | [`bridge/AGENTS.md`](./bridge/AGENTS.md) |
 | Shared TypeScript compiler presets | [`tsconfig/AGENTS.md`](./tsconfig/AGENTS.md) |
 
 ## Package Overview
@@ -23,7 +22,6 @@
 | `@any-converter/views` | Shared page-level view assemblies |
 | `@any-converter/shared` | Shared types, constants, and utilities |
 | `@any-converter/ui` | Low-level UI primitives and styling helpers |
-| `@any-converter/bridge` | JS package exposing the native conversion bridge |
 | `@any-converter/tsconfig` | Shared TypeScript config presets |
 
 ## Shared Constraints

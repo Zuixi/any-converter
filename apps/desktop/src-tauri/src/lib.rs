@@ -96,11 +96,6 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::convert_payload,
-            commands::list_request_logs,
-            commands::get_heatmap,
-            commands::get_usage_summary,
-            commands::list_ledger_page,
             commands::get_server_status,
             commands::server_request,
             commands::start_server,

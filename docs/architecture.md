@@ -23,15 +23,47 @@
 
 ## 1. Bird's-Eye View
 
-**Any Converter** is a Rust workspace that translates between major LLM provider API formats. Its product shape is a long-lived local gateway with thin CLI, Web, and Desktop clients:
+**Any Converter** is a Rust workspace that translates between major LLM provider API formats. Its product shape is a long-lived local gateway with a thin CLI and one UI — a Vite SPA that the Tauri desktop app loads in its webview and the gateway itself embeds and serves to any browser:
 
 | Mode           | Entry Point                  | Use Case                            |
 | -------------- | ---------------------------- | ----------------------------------- |
 | **Library**    | `any-converter-core` crate   | Embed format conversion in your app |
 | **CLI**        | `any-converter` binary       | Offline JSON/SSE conversion         |
 | **HTTP Proxy** | `any-converter-server` crate | Transparent API gateway             |
+| **UI**         | `apps/desktop` SPA build     | Playground, logs, usage, status, config — in the desktop webview and in the browser |
 
-### 1.1 Resident Gateway Contract
+### 1.1 UI Serving Topology
+
+The gateway serves the SPA itself; there is no second runtime:
+
+```
+┌─────────────┐  GET / (embedded SPA)        ┌──────────────────────┐
+│  Browser    │ ───────────────────────────► │  any-converter server │
+│             │  page auth: /v1/session      │  (Rust gateway)       │
+│             │  data: /v1/admin/*           └──────────┬───────────┘
+└─────────────┘                                         │
+                                                        ▼
+                                               upstream providers
+
+┌─────────────┐  same SPA build (webview)    ┌──────────────────────┐
+│  Desktop    │ ───────────────────────────► │  Tauri shell          │
+│  app        │  data over Tauri IPC         │  attaches to /        │
+└─────────────┘                              │  supervises gateway   │
+                                             └──────────────────────┘
+```
+
+- `apps/desktop` is the only frontend build. `crates/server/build.rs` embeds
+  `apps/desktop/dist` at compile time whenever it exists (`has_ui_dist`); a
+  binary without it serves `ANY_CONVERTER_WEB_DIR` or answers `GET /` with
+  503 build instructions.
+- The browser exchanges the page key for a session cookie over
+  `GET/POST/DELETE /v1/session` (or the one-time `/?k=…` URL printed at
+  startup); the SPA then calls `/v1/admin/*` with that cookie.
+- The desktop webview loads the same build; its data calls go over Tauri IPC
+  to the Rust shell, which dials the gateway's `/v1/admin/*` on loopback
+  with the management key.
+
+### 1.2 Resident Gateway Contract
 
 The server owns the authoritative canonical home:
 
@@ -45,7 +77,7 @@ The supervised lifecycle is `Stopped → Starting → Running → Stopping → S
 
 See [`design/desktop-resident-gateway.md`](./design/desktop-resident-gateway.md) for the accepted ownership, authentication, migration, and failure model.
 
-### 1.2 Core Design Pattern: Pairwise Converters
+### 1.3 Core Design Pattern: Pairwise Converters
 
 Each (source, target) format pair has a **dedicated converter** that translates requests, responses, and streaming events directly:
 
@@ -358,7 +390,8 @@ out, and 0.008 s from the rollup.
 - **JSONL mirror:** `logging.jsonl_mirror` (default `false`) additionally writes each
   record to `{dir}/usage.YYYY-MM-DD.jsonl`. Nothing reads it for queries; it exists for
   `tail`, `jq` and backup.
-- **Read path:** the Web UI opens `any-converter.sqlite3` read-only. There is no JSONL
+- **Read path:** the UI opens `any-converter.sqlite3` read-only through the
+  gateway's `/v1/admin/logs` and `/v1/admin/usage` routes. There is no JSONL
   fallback any more — a fallback that silently switches data source hides storage bugs,
   so an empty database answers zeroed totals instead.
 
