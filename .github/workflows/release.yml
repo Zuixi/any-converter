@@ -84,7 +84,7 @@ jobs:
         timeout-minutes: 15
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev dbus-x11 gnome-keyring
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -111,6 +111,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The gateway resolves credentials from the OS keychain and fails
+          # closed when none is available. Linux runners are headless and have
+          # no Secret Service, so start an unlocked ephemeral keyring whose
+          # D-Bus session lives for the duration of this step.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            eval "$(dbus-launch --sh-syntax)"
+            eval "$(echo '' | gnome-keyring-daemon --unlock)"
+          fi
           BIN=target/release/any-converter
           "$BIN" serve --port 18931 --format openai-chat \
             --base-url https://api.example.com --upstream-key sk-ci-dummy \
@@ -120,7 +128,9 @@ jobs:
             curl -sf http://127.0.0.1:18931/health >/dev/null && break
             sleep 1
           done
-          H=$(curl -sf http://127.0.0.1:18931/health)
+          H=$(curl -sf http://127.0.0.1:18931/health) || {
+            echo "server did not become healthy"; cat /tmp/ac-smoke.log; exit 1
+          }
           echo "$H" | jq -e '.status == "ok"' >/dev/null || { echo "bad /health: $H"; exit 1; }
           curl -sf http://127.0.0.1:18931/v1/models | jq -e '.data and (.data | type == "array")' >/dev/null
           # The release binary embeds the SPA (tauri build ran first): /
