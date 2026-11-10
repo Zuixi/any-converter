@@ -109,7 +109,7 @@ impl InstanceLock {
         let lock = self.clone();
         tokio::task::spawn_blocking(move || lock.acquire_timeout(timeout))
             .await
-            .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?
+            .map_err(|error| io::Error::other(error.to_string()))?
     }
 }
 
@@ -120,7 +120,9 @@ pub struct InstanceLockGuard {
 
 impl Drop for InstanceLockGuard {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        // Fully qualified: `std::fs::File::unlock` is on its way into the
+        // standard library and would shadow the `fs4` extension method.
+        let _ = FileExt::unlock(&self.file);
     }
 }
 

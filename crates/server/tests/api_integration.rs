@@ -78,7 +78,7 @@ async fn nonexistent_path_returns_404() {
     let (status, _) = send_request(
         app,
         Request::builder()
-            .uri("/nonexistent")
+            .uri("/v1/nonexistent")
             .body(Body::empty())
             .unwrap(),
     )

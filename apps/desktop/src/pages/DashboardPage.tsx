@@ -1,10 +1,11 @@
-import { useI18n } from "@any-converter/core";
+import { errorMessage, useI18n } from "@any-converter/core";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@any-converter/ui";
 
 import { ErrorBanner } from "../components/layout/ErrorBanner";
 import { Header } from "../components/layout/Header";
 import { useAsyncState } from "../hooks/useAsyncState";
 import { api } from "../lib/api";
+import { isDesktopApp } from "../lib/platform";
 import type { ServerStatus } from "../types";
 
 const statusBadgeVariant: Record<ServerStatus["state"], "default" | "secondary" | "destructive" | "outline"> = {
@@ -13,18 +14,20 @@ const statusBadgeVariant: Record<ServerStatus["state"], "default" | "secondary" 
   stopped: "outline",
   stopping: "outline",
   failed: "destructive",
+  attached: "secondary",
 };
 
 export function DashboardPage() {
   const { t } = useI18n();
   const [status, setStatus, error, setError] = useAsyncState<ServerStatus>(api.getServerStatus);
+  const canManageLifecycle = isDesktopApp() && status?.state !== "attached";
 
   const run = async (action: () => Promise<ServerStatus>) => {
     try {
       setStatus(await action());
       setError(undefined);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorMessage(cause));
     }
   };
 
@@ -46,16 +49,26 @@ export function DashboardPage() {
               <p className="text-sm text-muted-foreground">{t("desktop.dashboard.lanHint")}</p>
             )}
             {status?.last_error && <p className="text-sm text-destructive">{status.last_error}</p>}
+            {status?.state === "attached" && (
+              <p className="text-sm text-muted-foreground">{t("desktop.dashboard.externalHint")}</p>
+            )}
+            {!isDesktopApp() && (
+              <p className="text-sm text-muted-foreground">{t("desktop.dashboard.externalHintBrowser")}</p>
+            )}
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => void run(api.startServer)}>
-                {t("desktop.dashboard.start")}
-              </Button>
-              <Button size="sm" variant="secondary" onClick={() => void run(api.stopServer)}>
-                {t("desktop.dashboard.stop")}
-              </Button>
-              <Button size="sm" variant="secondary" onClick={() => void run(api.restartServer)}>
-                {t("desktop.dashboard.restart")}
-              </Button>
+              {canManageLifecycle && (
+                <>
+                  <Button size="sm" onClick={() => void run(api.startServer)}>
+                    {t("desktop.dashboard.start")}
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => void run(api.stopServer)}>
+                    {t("desktop.dashboard.stop")}
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => void run(api.restartServer)}>
+                    {t("desktop.dashboard.restart")}
+                  </Button>
+                </>
+              )}
               <Button size="sm" variant="outline" onClick={() => void run(api.getServerStatus)}>
                 {t("desktop.dashboard.refresh")}
               </Button>

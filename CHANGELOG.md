@@ -1,5 +1,22 @@
 # Any Converter CHANGELOGS
 
+## Unreleased — One gateway, one UI
+
+### Changed
+
+- **One SPA for browser and desktop.** The Rust gateway now serves the built `apps/desktop` SPA itself: release binaries embed it (dev override: `ANY_CONVERTER_WEB_DIR`), and the Tauri webview loads the same build. Only the transport differs — Tauri IPC in the desktop, same-origin `fetch` with the session cookie in the browser. Every page (playground, logs, usage, settings, accounts, agents) reads data from the `/v1/admin/*` data API; the direct SQLite Tauri commands and the Next.js web app are gone.
+- **Browser page sessions.** `serve` prints a URL with a one-time page key (`/?k=…`); `POST /v1/session` exchanges the key for a loopback-only, same-origin cookie. Page sessions never work off-loopback, a supplied bearer never falls back to a session, and the key file (`<home>/web-key`) is 0600.
+- **`any-converter daemon`** installs the gateway as a boot-autostart user service — launchd on macOS, systemd user unit on Linux. No `sudo`, no system service; `install` refuses when a gateway is already running, and the service file carries only the executable and home paths, never a key.
+- **Desktop attaches to an externally managed gateway.** When `instance.json` (now written after bind with host/port/version) points at a live `/health`, the app enters the `attached` state instead of starting a second instance; stop/restart step aside with a clear error so the daemon keeps running.
+
+### Removed
+
+- The Next.js web app (`apps/web`), the napi bridge crate (`crates/web-bridge`), and its JS package (`packages/bridge`). The workspace is two runtimes: the Rust gateway and one Vite SPA.
+
+### Fixed
+
+- Fresh-home startup no longer logs `ERROR r2d2: database is locked`: r2d2 opens its first pool connections concurrently, and every connection switching `journal_mode = wal` raced. WAL is now switched once on the migration connection, after migrations.
+
 ## Unreleased — Resident gateway
 
 ### Changed

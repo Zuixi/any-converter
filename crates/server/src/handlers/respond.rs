@@ -27,6 +27,25 @@ pub(crate) fn api_error_response(
         .into_response()
 }
 
+/// The data endpoints' error envelope: `{"error": "<message>", "code":
+/// "<stable-code>"}`, the shape the Web UI's data client reads. The `code` is
+/// a stable machine-readable tag ("storage_error", "invalid_limit", ...), so
+/// callers can branch without parsing the message.
+pub(crate) fn data_error_response(
+    status: StatusCode,
+    code: &str,
+    message: impl std::fmt::Display,
+) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "error": message.to_string(),
+            "code": code,
+        })),
+    )
+        .into_response()
+}
+
 pub(crate) fn auth_error_response(err: AuthError) -> Response {
     api_error_response(
         match err {

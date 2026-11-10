@@ -1,34 +1,25 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Heatmap, LedgerFilter, LedgerPage, RequestLogRecord, UsageSummary } from "@any-converter/shared";
 
-import type { ConvertPayloadRequest, ConvertPayloadResponse, ServerProxyRequest, ServerStatus } from "../types";
+import type { ServerStatus } from "../types";
+import { isDesktopApp } from "./platform";
+import { requestServer } from "./transport";
 
+/** Host lifecycle. Only the desktop owns a process, so start/stop/restart
+ * stay Tauri commands; the browser only ever reports what serves the page. */
 export const api = {
-  convertPayload(request: ConvertPayloadRequest): Promise<ConvertPayloadResponse> {
-    return invoke("convert_payload", { request });
-  },
-
-  listRequestLogs(limit = 500): Promise<RequestLogRecord[]> {
-    return invoke("list_request_logs", { limit });
-  },
-
-  getUsageSummary(preset = "7d", granularity = "day"): Promise<UsageSummary> {
-    return invoke("get_usage_summary", { preset, granularity });
-  },
-
-  getHeatmap(filter: LedgerFilter): Promise<Heatmap> {
-    return invoke("get_heatmap", { filter });
-  },
-  getLedgerPage(filter: LedgerFilter, cursor?: number, limit?: number): Promise<LedgerPage> {
-    return invoke("list_ledger_page", { filter, cursor, limit });
-  },
-
-  getServerStatus(): Promise<ServerStatus> {
-    return invoke("get_server_status");
-  },
-
-  serverRequest(request: ServerProxyRequest): Promise<unknown> {
-    return invoke("server_request", { args: request });
+  async getServerStatus(): Promise<ServerStatus> {
+    if (isDesktopApp()) {
+      return invoke("get_server_status") as Promise<ServerStatus>;
+    }
+    // The gateway is answering this page; prove it and report what the
+    // browser is actually talking to.
+    await requestServer({ method: "GET", path: "/v1/admin/status" });
+    const port = window.location.port
+      ? Number(window.location.port)
+      : window.location.protocol === "https:"
+        ? 443
+        : 80;
+    return { state: "running", host: window.location.hostname, port };
   },
 
   startServer(): Promise<ServerStatus> {

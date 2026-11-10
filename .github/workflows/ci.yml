@@ -64,3 +64,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: typecheck
         run: pnpm typecheck
+      - name: build desktop SPA
+        run: pnpm --filter @any-converter/desktop build

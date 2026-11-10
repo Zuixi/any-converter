@@ -46,6 +46,12 @@ pub(crate) async fn run(command: AgentsCommand) -> i32 {
     }
 }
 
+/// Whether the gateway at `base` answers `GET /health` (unauthenticated).
+/// The daemon refuses to install beside a healthy gateway.
+pub(crate) async fn server_reachable(base: &str) -> bool {
+    call(base, None, "GET", "/health", None).await.is_ok()
+}
+
 async fn execute(command: AgentsCommand) -> Result<(), AgentCliError> {
     let base = server_base();
     let key = management_key()?;

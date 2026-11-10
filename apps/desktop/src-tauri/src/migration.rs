@@ -134,8 +134,7 @@ fn migrate_provider_keys(
     for provider in &legacy.providers {
         let value = if let Some(account) = provider.api_key.strip_prefix("keychain:any-converter:")
         {
-            let value = secrets::get_provider_key(account)?;
-            value
+            secrets::get_provider_key(account)?
         } else if !provider.api_key.is_empty() {
             provider.api_key.clone()
         } else {
