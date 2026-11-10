@@ -8,6 +8,8 @@ use thiserror::Error;
 use tokio::sync::{Mutex, oneshot};
 
 const STOP_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an attach probe may wait for `/health` before giving up.
+const ATTACH_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +19,7 @@ pub enum ServerRunState {
     Running,
     Stopping,
     Failed,
+    Attached,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,11 +42,71 @@ pub enum ServerManagerError {
     StopTimeout(u64),
     #[error("server stop failed: {0}")]
     StopFailed(String),
+    #[error(
+        "the gateway is managed by another process; stop it with `any-converter daemon stop` or the command that started it"
+    )]
+    ExternallyManaged,
 }
 
 struct ServerTask {
     shutdown_tx: oneshot::Sender<()>,
     join_handle: tokio::task::JoinHandle<()>,
+}
+
+/// The subset of `instance.json` v2 an attaching desktop reads.
+#[derive(Deserialize)]
+struct AttachInfo {
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+}
+
+/// Resolve instance metadata to a dialable `(host, port)` pair, or `None`
+/// when the metadata is absent, unparsable, or not yet bound.
+fn attach_target(source: &str) -> Option<(String, u16)> {
+    let info: AttachInfo = serde_json::from_str(source).ok()?;
+    let host = info.host?;
+    let port = info.port?;
+    if host.is_empty() || port == 0 {
+        return None;
+    }
+    let dial = match host.as_str() {
+        "0.0.0.0" | "::" | "[::]" => "127.0.0.1".to_string(),
+        other => {
+            // Bracket bare IPv6 literals so they survive URL parsing.
+            if other.contains(':') && !other.starts_with('[') {
+                format!("[{other}]")
+            } else {
+                other.to_string()
+            }
+        }
+    };
+    Some((dial, port))
+}
+
+async fn gateway_is_healthy(host: &str, port: u16) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(ATTACH_PROBE_TIMEOUT)
+        .no_proxy()
+        .build()
+    else {
+        return false;
+    };
+    let Ok(response) = client
+        .get(format!("http://{host}:{port}/health"))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    response
+        .json::<serde_json::Value>()
+        .await
+        .is_ok_and(|body| body["status"] == "ok")
 }
 
 #[derive(Clone)]
@@ -82,7 +145,23 @@ impl ServerManager {
     }
 
     pub async fn status(&self) -> ServerStatus {
-        self.inner.lock().await.status.clone()
+        let status = self.inner.lock().await.status.clone();
+        if status.state != ServerRunState::Attached
+            || gateway_is_healthy(&status.host, status.port).await
+        {
+            return status;
+        }
+
+        let mut inner = self.inner.lock().await;
+        if inner.status.state == ServerRunState::Attached
+            && inner.status.host == status.host
+            && inner.status.port == status.port
+        {
+            inner.status.state = ServerRunState::Stopped;
+            inner.status.last_error =
+                Some("the externally managed gateway is no longer reachable".to_string());
+        }
+        inner.status.clone()
     }
 
     pub async fn start(&self, home: Home) -> Result<ServerStatus, ServerManagerError> {
@@ -106,6 +185,15 @@ impl ServerManager {
                 port: 1228,
                 last_error: None,
             };
+        }
+
+        // A gateway we did not start may already be running for this home:
+        // attach instead of spawning a second instance.
+        if let Some(status) = self.attach_if_running(&home).await {
+            let mut inner = self.inner.lock().await;
+            inner.busy = false;
+            inner.status = status.clone();
+            return Ok(status);
         }
 
         let config = match ConfigStore::from_home(&home).load() {
@@ -207,12 +295,41 @@ impl ServerManager {
         }
     }
 
+    /// Detect a live gateway for this home (valid `instance.json` whose
+    /// `/health` answers) and enter the `Attached` state without touching
+    /// `busy` or the task slot.
+    async fn attach_if_running(&self, home: &Home) -> Option<ServerStatus> {
+        let source = std::fs::read_to_string(home.instance_path()).ok()?;
+        let (host, port) = attach_target(&source)?;
+        // Any 200 is not enough: a crashed gateway's reassigned port may
+        // host another local HTTP server. Require the gateway's own health
+        // body so attach never wedges on a stranger.
+        if !gateway_is_healthy(&host, port).await {
+            return None;
+        }
+        let status = ServerStatus {
+            state: ServerRunState::Attached,
+            host,
+            port,
+            last_error: None,
+        };
+        // Only enter `attached` after the probe proves the gateway is alive.
+        self.inner.lock().await.status = status.clone();
+        Some(status)
+    }
+
     pub async fn stop(&self) -> Result<ServerStatus, ServerManagerError> {
         let _operation = self.operations.lock().await;
         self.stop_inner().await
     }
 
     async fn stop_inner(&self) -> Result<ServerStatus, ServerManagerError> {
+        {
+            let inner = self.inner.lock().await;
+            if inner.status.state == ServerRunState::Attached {
+                return Err(ServerManagerError::ExternallyManaged);
+            }
+        }
         let task = {
             let mut inner = self.inner.lock().await;
             let Some(task) = inner.task.take() else {
@@ -271,6 +388,9 @@ impl ServerManager {
 
     pub async fn restart(&self, home: Home) -> Result<ServerStatus, ServerManagerError> {
         let _operation = self.operations.lock().await;
+        if self.inner.lock().await.status.state == ServerRunState::Attached {
+            return Err(ServerManagerError::ExternallyManaged);
+        }
         if self.inner.lock().await.busy {
             let _ = self.stop_inner().await;
         }
@@ -291,6 +411,17 @@ impl ServerManager {
         let manager = Self::new();
         if let Ok(mut inner) = manager.inner.try_lock() {
             inner.status.state = ServerRunState::Running;
+            inner.status.host = host.to_string();
+            inner.status.port = port;
+        }
+        manager
+    }
+
+    #[doc(hidden)]
+    pub fn fake_attached(host: &str, port: u16) -> Self {
+        let manager = Self::new();
+        if let Ok(mut inner) = manager.inner.try_lock() {
+            inner.status.state = ServerRunState::Attached;
             inner.status.host = host.to_string();
             inner.status.port = port;
         }
@@ -323,6 +454,13 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn temp_home() -> (tempfile::TempDir, Home) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::from_root(dir.path().to_path_buf());
+        (dir, home)
+    }
 
     #[test]
     fn initial_failure_is_reported_once() {
@@ -340,5 +478,165 @@ mod tests {
         let status = manager.inner.try_lock().unwrap().status.clone();
         assert_eq!(status.state, ServerRunState::Running);
         assert_eq!(status.port, 18080);
+    }
+
+    #[test]
+    fn attach_target_resolves_metadata_hosts() {
+        // Valid host/port pairs pass through.
+        assert_eq!(
+            attach_target(r#"{"host":"127.0.0.1","port":1228}"#),
+            Some(("127.0.0.1".to_string(), 1228))
+        );
+        assert_eq!(
+            attach_target(r#"{"host":"localhost","port":1228}"#),
+            Some(("localhost".to_string(), 1228))
+        );
+        assert_eq!(
+            attach_target(r#"{"host":"192.168.1.4","port":1228}"#),
+            Some(("192.168.1.4".to_string(), 1228))
+        );
+        // Wildcard binds are not dialable: they resolve to loopback.
+        assert_eq!(
+            attach_target(r#"{"host":"0.0.0.0","port":1228}"#),
+            Some(("127.0.0.1".to_string(), 1228))
+        );
+        assert_eq!(
+            attach_target(r#"{"host":"::","port":1228}"#),
+            Some(("127.0.0.1".to_string(), 1228))
+        );
+        assert_eq!(
+            attach_target(r#"{"host":"[::]","port":1228}"#),
+            Some(("127.0.0.1".to_string(), 1228))
+        );
+        // A bare IPv6 literal is bracketed so it survives URL parsing.
+        assert_eq!(
+            attach_target(r#"{"host":"::1","port":1228}"#),
+            Some(("[::1]".to_string(), 1228))
+        );
+        // Missing host, missing port, unbound port, empty host, garbage.
+        assert_eq!(attach_target(r#"{"port":1228}"#), None);
+        assert_eq!(attach_target(r#"{"host":"127.0.0.1"}"#), None);
+        assert_eq!(attach_target(r#"{"host":"127.0.0.1","port":0}"#), None);
+        assert_eq!(attach_target(r#"{"host":"","port":1228}"#), None);
+        assert_eq!(attach_target("not json"), None);
+    }
+
+    #[tokio::test]
+    async fn attach_probe_recognizes_a_running_gateway() {
+        let (_dir, home) = temp_home();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let probe = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0u8; 512];
+                let read = socket.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}";
+            socket.write_all(response).await.unwrap();
+        });
+
+        std::fs::write(
+            home.instance_path(),
+            serde_json::json!({ "host": "127.0.0.1", "port": port }).to_string(),
+        )
+        .unwrap();
+
+        let manager = ServerManager::new();
+        let status = manager.attach_if_running(&home).await.unwrap();
+        assert_eq!(status.state, ServerRunState::Attached);
+        assert_eq!(status.host, "127.0.0.1");
+        assert_eq!(status.port, port);
+
+        let error = manager.stop().await.unwrap_err();
+        assert!(matches!(error, ServerManagerError::ExternallyManaged));
+
+        let _ = probe.await;
+    }
+
+    #[tokio::test]
+    async fn a_foreign_200_on_health_does_not_attach() {
+        // Port reuse after a crash: a stranger answering 200 with any body
+        // must not wedge the app in `attached`.
+        let (_dir, home) = temp_home();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let probe = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0u8; 512];
+                let read = socket.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response =
+                b"HTTP/1.1 200 OK\r\nContent-Length: 21\r\n\r\n{\"status\":\"imposter\"}";
+            socket.write_all(response).await.unwrap();
+        });
+
+        std::fs::write(
+            home.instance_path(),
+            serde_json::json!({ "host": "127.0.0.1", "port": port }).to_string(),
+        )
+        .unwrap();
+
+        let manager = ServerManager::new();
+        assert!(manager.attach_if_running(&home).await.is_none());
+
+        let _ = probe.await;
+    }
+
+    #[tokio::test]
+    async fn stale_metadata_does_not_attach() {
+        let (_dir, home) = temp_home();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        std::fs::write(
+            home.instance_path(),
+            serde_json::json!({ "host": "127.0.0.1", "port": port }).to_string(),
+        )
+        .unwrap();
+
+        let manager = ServerManager::new();
+        assert!(manager.attach_if_running(&home).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn attached_manager_refuses_stop_and_restart() {
+        let (_dir, home) = temp_home();
+        let manager = ServerManager::fake_attached("127.0.0.1", 1228);
+
+        let status = manager.inner.try_lock().unwrap().status.clone();
+        assert_eq!(status.state, ServerRunState::Attached);
+        assert_eq!(status.port, 1228);
+
+        let error = manager.stop().await.unwrap_err();
+        assert!(matches!(error, ServerManagerError::ExternallyManaged));
+        let error = manager.restart(home).await.unwrap_err();
+        assert!(matches!(error, ServerManagerError::ExternallyManaged));
+    }
+
+    #[tokio::test]
+    async fn status_leaves_attached_when_the_external_gateway_dies() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let manager = ServerManager::fake_attached("127.0.0.1", port);
+        drop(listener);
+
+        let status = manager.status().await;
+        assert_eq!(status.state, ServerRunState::Stopped);
+        assert!(status.last_error.is_some());
     }
 }

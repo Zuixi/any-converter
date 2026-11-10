@@ -10,4 +10,6 @@ export * from "./hooks/use-usage";
 export * from "./hooks/use-status";
 export * from "./hooks/use-config";
 export * from "./hooks/api-client";
+export * from "./hooks/error-message";
+export * from "./hooks/usage-params";
 export * from "./i18n";

@@ -35,6 +35,7 @@ use any_converter_server::{logging::init_logging, run_from_home};
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod agents_cmd;
+mod daemon;
 mod format;
 mod stats;
 mod tui;
@@ -150,6 +151,14 @@ enum Commands {
     Agents {
         #[command(subcommand)]
         command: AgentsCommand,
+    },
+    /// Manage the login-time gateway service (launchd / systemd user)
+    Daemon {
+        /// Canonical gateway home (defaults to the platform config directory)
+        #[arg(long, global = true)]
+        home: Option<PathBuf>,
+        #[command(subcommand)]
+        command: daemon::DaemonCommand,
     },
 }
 
@@ -307,7 +316,7 @@ pub fn took_opened_url(args: &[String], env: impl Fn(&str) -> Option<String>) ->
 }
 
 /// Write `data` to `path`, creating it with `0600` (never world-readable).
-fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -331,14 +340,12 @@ fn toml_string(value: &str) -> Result<String, Box<dyn std::error::Error>> {
     ))
 }
 
-fn inline_config_toml(
+/// The `[server]` + `[logging]` prefix shared by the inline-provider
+/// config and the fresh-home bootstrap config.
+fn server_logging_toml(
     host: &str,
     port: u16,
     api_key: Option<&str>,
-    provider: &str,
-    format: Format,
-    base_url: &str,
-    upstream_key: &str,
     log_dir: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut source = format!("[server]\nhost = {}\nport = {port}\n", toml_string(host)?);
@@ -349,6 +356,21 @@ fn inline_config_toml(
         "\n[logging]\ndir = {}\nmax_disk_mb = 500\n",
         toml_string(&log_dir.to_string_lossy())?
     ));
+    Ok(source)
+}
+
+#[allow(clippy::too_many_arguments)] // one inline provider's full identity: host, port, keys, provider, wire, and log dir.
+fn inline_config_toml(
+    host: &str,
+    port: u16,
+    api_key: Option<&str>,
+    provider: &str,
+    format: Format,
+    base_url: &str,
+    upstream_key: &str,
+    log_dir: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut source = server_logging_toml(host, port, api_key, log_dir)?;
     source.push_str(&format!(
         "\n[[providers]]\nname = {}\nformat = \"{}\"\nbase_url = {}\napi_key = {}\n",
         toml_string(provider)?,
@@ -373,6 +395,12 @@ fn resolve_upstream_key(flag: Option<&str>) -> Result<String, Box<dyn std::error
         Ok(_) => Err("ANY_CONVERTER_UPSTREAM_KEY must not be empty".into()),
         Err(_) => Err("--upstream-key is required when not using --config".into()),
     }
+}
+
+/// The legacy-route warning `serve --config` prints on stderr.
+#[allow(clippy::print_stderr)]
+fn warn_legacy_routes() {
+    eprintln!("warning: legacy [[routes]] entries are ignored; migrate them to [[model_routes]]");
 }
 
 #[tokio::main]
@@ -451,15 +479,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => Home::discover()?,
             };
 
+            let inline_requested = config.is_some()
+                || format.is_some()
+                || base_url.is_some()
+                || upstream_key.is_some()
+                || api_key.is_some()
+                || host != "127.0.0.1"
+                || port != 1228
+                || provider != "default";
+
             if home.config_path().exists() {
-                let inline_requested = config.is_some()
-                    || format.is_some()
-                    || base_url.is_some()
-                    || upstream_key.is_some()
-                    || api_key.is_some()
-                    || host != "127.0.0.1"
-                    || port != 1228
-                    || provider != "default";
                 if inline_requested {
                     return Err(format!(
                         "canonical config already exists at {}; start it without inline flags and update it through the management API",
@@ -484,14 +513,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let config = ServerConfig::from_toml(&content)?;
                 warn_if_world_readable(&path);
                 if !config.routes.is_empty() {
-                    eprintln!(
-                        "warning: legacy [[routes]] entries are ignored; migrate them to [[model_routes]]"
-                    );
+                    warn_legacy_routes();
                 }
                 content
-            } else {
-                let fmt = format.ok_or("--format is required when not using --config")?;
-                let base = base_url.ok_or("--base-url is required when not using --config")?;
+            } else if inline_requested {
+                // Inline flags on a fresh home keep the old error path,
+                // now naming the bare-`serve` bootstrap as the fix.
+                let fmt = format.ok_or(
+                    "a bare `serve` bootstraps a default gateway config; to point at a provider inline, pass `--format` and `--base-url`",
+                )?;
+                let base = base_url.ok_or(
+                    "a bare `serve` bootstraps a default gateway config; to point at a provider inline, pass `--format` and `--base-url`",
+                )?;
                 let key = resolve_upstream_key(upstream_key.as_deref())?;
                 let provider_format = fmt.to_format();
 
@@ -505,6 +538,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &key,
                     &home.logs_dir(),
                 )?
+            } else {
+                // A bare `serve` on a fresh home bootstraps `[server]` +
+                // `[logging]` through the control plane, so a daemon
+                // installed on a clean home starts and the browser can
+                // configure providers through the management API. Never
+                // writes a provider or a key.
+                server_logging_toml("127.0.0.1", 1228, None, &home.logs_dir())?
             };
 
             let prepared = ControlPlane::initialize_from_config(
@@ -528,6 +568,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if code != 0 {
                 std::process::exit(code);
             }
+        }
+        Commands::Daemon { home, command } => {
+            // The runtime prints a returned error through `Debug`; surface
+            // the operator-facing message instead of the struct dump.
+            daemon::run(home, command)
+                .await
+                .map_err(|error| error.to_string())?;
         }
     }
 
@@ -1666,5 +1713,51 @@ fn read_input(
             io::stdin().read_to_end(&mut buf)?;
             Ok(buf)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn fresh_home_toml_has_server_and_logging_and_no_providers() {
+        let source =
+            server_logging_toml("127.0.0.1", 1228, None, Path::new("/tmp/home/logs")).unwrap();
+        assert!(
+            source.starts_with("[server]\nhost = \"127.0.0.1\"\nport = 1228\n"),
+            "{source}"
+        );
+        assert!(source.contains("[logging]\ndir = \"/tmp/home/logs\"\nmax_disk_mb = 500\n"));
+        assert!(!source.contains("[[providers]]"));
+        assert!(!source.contains("[[model_routes]]"));
+    }
+
+    #[test]
+    fn fresh_home_toml_escapes_the_log_dir() {
+        let source =
+            server_logging_toml("127.0.0.1", 1228, None, Path::new("/tmp/a\"b\\c")).unwrap();
+        assert!(source.contains("dir = \"/tmp/a\\\"b\\\\c\""), "{source}");
+    }
+
+    #[test]
+    fn inline_config_toml_keeps_the_provider_tables() {
+        let source = inline_config_toml(
+            "127.0.0.1",
+            1228,
+            None,
+            "openai",
+            Format::OpenAIChat,
+            "https://api.example.com",
+            "upstream-key",
+            Path::new("/tmp/home/logs"),
+        )
+        .unwrap();
+        assert!(source.contains("[server]"));
+        assert!(source.contains("[logging]"));
+        assert!(source.contains("[[providers]]"));
+        assert!(source.contains("[[model_routes]]"));
     }
 }

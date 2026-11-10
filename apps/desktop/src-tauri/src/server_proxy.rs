@@ -75,6 +75,9 @@ pub fn dial_host(host: &str) -> String {
 /// remains responsible for semantic validation.
 pub fn validate_request(method: &str, path: &str) -> Result<(), ProxyError> {
     let method = method.to_ascii_uppercase();
+    // The query string is opaque and forwarded untouched; only the path
+    // segments participate in the allowlist.
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
     let segments = path
         .strip_prefix('/')
         .unwrap_or_default()
@@ -123,6 +126,10 @@ pub fn validate_request(method: &str, path: &str) -> Result<(), ProxyError> {
         ("GET", ["v1", "admin", "config"]) => true,
         ("PATCH", ["v1", "admin", "config"]) => true,
         ("GET", ["v1", "admin", "server", "status"]) => true,
+        ("GET", ["v1", "admin", "logs"]) => true,
+        ("GET", ["v1", "admin", "usage"]) => true,
+        ("GET", ["v1", "admin", "status"]) => true,
+        ("POST", ["v1", "admin", "convert"]) => true,
         ("PUT", ["v1", "admin", "secrets", "provider", provider]) => safe_segment(provider),
         ("DELETE", ["v1", "admin", "secrets", "provider", provider]) => safe_segment(provider),
         ("PUT", ["v1", "admin", "secrets", "inference"]) => true,
@@ -197,7 +204,13 @@ pub async fn forward(
     validate_request(&method, path)?;
 
     let status = manager.status().await;
-    if status.state != ServerRunState::Running {
+    // `Attached` is a gateway this process did not start but just proved
+    // alive at the metadata address — management traffic rides the same
+    // loopback dial either way.
+    if !matches!(
+        status.state,
+        ServerRunState::Running | ServerRunState::Attached
+    ) {
         return Err(ProxyError::NotRunning);
     }
 
@@ -235,6 +248,13 @@ pub async fn forward(
     };
 
     let status = response.status();
+    // Capture the content type before the body is consumed: a 2xx non-JSON
+    // body (the ledger CSV) must resolve to its raw text, not parse as JSON.
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let text = response
         .text()
         .await
@@ -249,15 +269,27 @@ pub async fn forward(
     if text.trim().is_empty() {
         return Ok(serde_json::Value::Null);
     }
-    serde_json::from_str(&text).map_err(|_| ProxyError::Http {
-        message: format!("HTTP {status}"),
-    })
+    let is_json = content_type
+        .as_deref()
+        .is_some_and(|content_type| content_type.starts_with("application/json"));
+    if is_json {
+        serde_json::from_str(&text).map_err(|_| ProxyError::Http {
+            message: format!("HTTP {status}"),
+        })
+    } else {
+        Ok(serde_json::Value::String(text))
+    }
 }
 
-/// Extract `error.message` / `error.hint` from a server error body, matching
-/// what the pages used to pull out of `fetch` responses.
+/// Extract the server's error text from an error body, matching what the
+/// pages used to pull out of `fetch` responses. The data API's string shape
+/// (`{"error": "..."}`) passes through verbatim; the object shape joins
+/// `message — hint`.
 fn error_message(body: &str, status: u16) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(message) = value["error"].as_str() {
+            return message.to_string();
+        }
         let error = &value["error"];
         let parts: Vec<&str> = [error["message"].as_str(), error["hint"].as_str()]
             .into_iter()
@@ -307,10 +339,31 @@ mod tests {
     }
 
     #[test]
+    fn validate_request_accepts_the_ui_data_routes() {
+        assert!(validate_request("GET", "/v1/admin/logs").is_ok());
+        assert!(validate_request("GET", "/v1/admin/usage?ledger=1&format=csv").is_ok());
+        assert!(validate_request("GET", "/v1/admin/status").is_ok());
+        assert!(validate_request("POST", "/v1/admin/convert").is_ok());
+
+        assert!(validate_request("GET", "/v1/admin/usage/../config").is_err());
+        assert!(validate_request("GET", "/health").is_err());
+        assert!(validate_request("POST", "/v1/admin/status").is_err());
+    }
+
+    #[test]
     fn error_message_joins_message_and_hint() {
         let body = r#"{"error":{"message":"nope","hint":"retry later"}}"#;
         assert_eq!(error_message(body, 400), "nope — retry later");
         assert_eq!(error_message("not json", 500), "HTTP 500");
         assert_eq!(error_message("{}", 404), "HTTP 404");
+    }
+
+    #[test]
+    fn error_message_passes_the_data_api_string_through_verbatim() {
+        let body = r#"{"error":"limit must be a non-negative integer","code":"invalid_limit"}"#;
+        assert_eq!(
+            error_message(body, 400),
+            "limit must be a non-negative integer"
+        );
     }
 }

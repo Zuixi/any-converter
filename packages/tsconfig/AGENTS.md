@@ -6,7 +6,7 @@
 
 ## Read This When
 
-- You are changing `base.json`, `nextjs.json`, or `react-library.json`
+- You are changing `base.json` or `react-library.json`
 - You are updating compiler defaults shared by multiple frontend packages
 
 ## Boundary Rules

@@ -123,6 +123,24 @@ jobs:
           H=$(curl -sf http://127.0.0.1:18931/health)
           echo "$H" | jq -e '.status == "ok"' >/dev/null || { echo "bad /health: $H"; exit 1; }
           curl -sf http://127.0.0.1:18931/v1/models | jq -e '.data and (.data | type == "array")' >/dev/null
+          # The release binary embeds the SPA (tauri build ran first): /
+          # must serve a non-empty HTML body, admin routes must fail closed
+          # without credentials, and unknown API paths must 404.
+          ROOT_CODE=$(curl -s -o /tmp/ac-root.html -w '%{http_code}' http://127.0.0.1:18931/)
+          ROOT_TYPE=$(curl -s -o /dev/null -w '%{content_type}' http://127.0.0.1:18931/)
+          if [ "$ROOT_CODE" != "200" ] || ! grep -q "text/html" <<<"$ROOT_TYPE"; then
+            echo "expected embedded SPA at /, got HTTP $ROOT_CODE ($ROOT_TYPE)"; exit 1
+          fi
+          [ -s /tmp/ac-root.html ] || { echo "/ served an empty body"; exit 1; }
+          for p in /v1/admin/status /v1/admin/logs; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18931$p")
+            case "$CODE" in
+              401|403) ;;
+              *) echo "$p must fail closed without credentials, got $CODE"; exit 1 ;;
+            esac
+          done
+          NOTFOUND=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18931/v1/definitely-not-a-route)
+          [ "$NOTFOUND" = "404" ] || { echo "unknown API route must 404, got $NOTFOUND"; exit 1; }
           CODE=$(curl -s -o /tmp/ac-err.json -w '%{http_code}' \
             -H 'Content-Type: application/json' \
             -d '{"model":"ci-unknown-model","messages":[{"role":"user","content":"hi"}]}' \
@@ -153,6 +171,26 @@ jobs:
             if ($h.status -ne 'ok') { throw "bad /health: $($h | ConvertTo-Json -Compress)" }
             $m = Invoke-RestMethod http://127.0.0.1:18931/v1/models -TimeoutSec 5
             if (-not ($m.data -is [array])) { throw '/v1/models returned no array' }
+            # Embedded SPA + fail-closed admin routes + unknown API 404.
+            $root = Invoke-WebRequest http://127.0.0.1:18931/ -TimeoutSec 5 -UseBasicParsing
+            if ($root.StatusCode -ne 200 -or $root.Headers['Content-Type'] -notmatch 'text/html' -or $root.Content.Length -eq 0) {
+              throw "expected embedded SPA at /, got HTTP $($root.StatusCode) ($($root.Headers['Content-Type']))"
+            }
+            foreach ($p in @('/v1/admin/status', '/v1/admin/logs')) {
+              try {
+                Invoke-WebRequest "http://127.0.0.1:18931$p" -TimeoutSec 5 -UseBasicParsing | Out-Null
+                throw "$p must fail closed without credentials"
+              } catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+                $code = [int]$_.Exception.Response.StatusCode
+                if ($code -ne 401 -and $code -ne 403) { throw "$p must 401/403, got $code" }
+              }
+            }
+            try {
+              Invoke-WebRequest http://127.0.0.1:18931/v1/definitely-not-a-route -TimeoutSec 5 -UseBasicParsing | Out-Null
+              throw 'unknown API route must 404'
+            } catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+              if ([int]$_.Exception.Response.StatusCode -ne 404) { throw 'unknown API route must 404' }
+            }
             try {
               Invoke-RestMethod http://127.0.0.1:18931/v1/chat/completions -TimeoutSec 10 -Method Post `
                 -ContentType 'application/json' `

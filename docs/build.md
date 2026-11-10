@@ -376,9 +376,11 @@ Add to `.claude/settings.json` or run with allowed lints:
 cargo clippy --all-targets --all-features
 ```
 
-## Web UI
+## UI (one build, browser and desktop)
 
-The web interface is a Next.js app located in `apps/web`. It runs **as a separate process** next to the Rust proxy server and provides:
+There is one frontend: the Vite SPA under `apps/desktop`. The Tauri desktop
+app loads it in its webview, and the Rust gateway embeds the same built
+`apps/desktop/dist` and serves it to any browser. It provides:
 
 - **Conversion Playground** (`/playground`) — interactive request/response conversion.
 - **Request Log Explorer** (`/logs`) — browse request logs, including structured message/tool/usage trace summaries when request logging is enabled.
@@ -389,114 +391,71 @@ The web interface is a Next.js app located in `apps/web`. It runs **as a separat
 ### Architecture at a glance
 
 ```
-┌─────────────┐      reads/logs      ┌──────────────────────┐
-│  Browser    │ ◄──────────────────► │  Next.js web (apps/web)
-└─────────────┘                      └──────────┬───────────┘
-                                                │ env vars
-                                                ▼
-                                       ┌──────────────────────┐
-                                       │ any-converter-server │
-                                       │ (Rust, port 8080)    │
-                                       └──────────────────────┘
+┌─────────────┐      embedded SPA + /v1/admin/*      ┌──────────────────────┐
+│  Browser    │ ◄──────────────────────────────────► │  any-converter (Rust │
+│             │   page auth via /v1/session          │  gateway, port 1228) │
+└─────────────┘                                      └──────────────────────┘
+
+┌─────────────┐      same SPA build in webview       ┌──────────────────────┐
+│  Desktop    │ ◄──────────────────────────────────► │  Tauri shell (attaches│
+│  app        │      data over Tauri IPC             │  to the gateway)     │
+└─────────────┘                                      └──────────────────────┘
 ```
 
-The web app does **not** start the Rust server for you. Start the server first, then start the web app and point it at the server. For `/logs` and `/usage`, the web API reads `{LOG_DIR}/any-converter.sqlite3` first and falls back to `requests.*.jsonl` / `usage.*.jsonl` when SQLite is missing, empty, or unreadable.
+All data pages read `/v1/admin/*` on the gateway (SQLite is the single
+source for logs and usage). The browser authenticates the page with a
+page-key session: `any-converter serve` prints a one-time URL
+(`http://127.0.0.1:1228/?k=…`) that exchanges the key for a session
+cookie over `GET/POST /v1/session`.
 
-### 1. (Optional) Build the Rust bridge
-
-For the fastest conversion playground experience, build the native `napi-rs` addon once:
+### 1. Build the SPA
 
 ```bash
-pnpm build:bridge
+pnpm install
+pnpm --filter @any-converter/desktop build
 ```
 
-This produces `packages/bridge/index.{platform}.node`. If you skip this step, the playground falls back to `cargo run -p any-converter -- convert ...`.
+This type-checks and bundles the SPA into `apps/desktop/dist`.
 
-### 2. Start the Rust proxy server
+### 2. Embed it in the Rust binary
 
-From the repository root:
+`crates/server/build.rs` embeds `apps/desktop/dist` at compile time whenever
+the directory exists (`has_ui_dist`), so build the SPA **before** the Rust
+binary:
 
 ```bash
+cargo build --release -p any-converter
 ./target/release/any-converter serve
 ```
 
-By default the server listens on `http://127.0.0.1:1228`. If you changed `host`/`port`, use that URL in the next step.
+Startup prints the one-time browser URL — open it and exchange the page key.
+A binary built without the SPA answers `GET /` with 503 build instructions.
 
-### 3. Start the web app
+### Development override: `ANY_CONVERTER_WEB_DIR`
 
-In a second terminal, run:
-
-```bash
-# Example: server on default port, logs written to ./logs at the repo root
-SERVER_URL=http://127.0.0.1:8080 \
-LOG_DIR=../../logs \
-ANY_CONVERTER_URL=http://127.0.0.1:1228 \
-ANY_CONVERTER_MANAGEMENT_KEY='<management-key-value>' \
-  pnpm --filter @any-converter/web dev
-```
-
-Then open [http://localhost:3000](http://localhost:3000) (Next.js may use 3001 if 3000 is busy).
-
-> **Important about paths:** when you run `pnpm --filter @any-converter/web dev`, the working directory is `apps/web`. Make `LOG_DIR` absolute, or relative to `apps/web`. If the server writes logs to `./logs` from the repo root, use `LOG_DIR=../../logs`.
-
-#### Run the web app on a different port
-
-Use the `PORT` environment variable, for example `9000`:
+When the binary has no embedded build (or you want to iterate without
+recompiling), point the server at a directory containing a built
+`index.html`:
 
 ```bash
-PORT=9000 \
-SERVER_URL=http://127.0.0.1:8080 \
-LOG_DIR=../../logs \
-ANY_CONVERTER_URL=http://127.0.0.1:1228 \
-ANY_CONVERTER_MANAGEMENT_KEY='<management-key-value>' \
-  pnpm --filter @any-converter/web dev
+pnpm --filter @any-converter/desktop build
+ANY_CONVERTER_WEB_DIR="$PWD/apps/desktop/dist" cargo run -p any-converter -- serve
 ```
 
-Or pass the port directly to Next.js:
-
-```bash
-pnpm --filter @any-converter/web dev -- -p 9000
-```
-
-### 4. Environment variables
-
-| Variable                       | Default                 | Purpose                                                                                                                                                                                                                                                                            |
-| ------------------------------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SERVER_URL`                   | `http://127.0.0.1:8080` | URL of the running `any-converter-server`. Required for `/status` and live config reloading.                                                                                                                                                                                       |
-| `LOG_DIR`                      | —                       | Directory containing `any-converter.sqlite3`, `requests.*.jsonl`, and `usage.*.jsonl`. Required for `/logs` and `/usage`; SQLite is read first, JSONL is the fallback. Request logs may include `trace` summaries for messages, tool calls, tool results, and token usage context. |
-| `ANY_CONVERTER_URL`            | `http://127.0.0.1:1228` | Gateway URL used by the config management proxy.                                                                                                                                                                                                                                   |
-| `ANY_CONVERTER_MANAGEMENT_KEY` | —                       | Server-side management credential supplied by the deployment secret; never exposed to the browser.                                                                                                                                                                                 |
-| `LOG_MAX_DISK_MB`              | —                       | Disk quota for the log directory. If set, the status page shows usage percentage. This should match `logging.max_disk_mb` in `config.toml`.                                                                                                                                        |
-| `PORT`                         | `3000`                  | Port for the Next.js dev server.                                                                                                                                                                                                                                                   |
-
-### 5. Build for production
-
-```bash
-pnpm build
-```
-
-This runs Turborepo across the monorepo and outputs the Next.js production build in `apps/web/.next`. Start it with:
-
-```bash
-PORT=9000 \
-SERVER_URL=http://127.0.0.1:8080 \
-LOG_DIR=../../logs \
-ANY_CONVERTER_URL=http://127.0.0.1:1228 \
-ANY_CONVERTER_MANAGEMENT_KEY='<management-key-value>' \
-  pnpm --filter @any-converter/web start
-```
+`ANY_CONVERTER_WEB_DIR` takes precedence over nothing and loses to the
+embedded copy: the embedded build wins whenever it exists at compile time,
+the environment variable only applies to binaries built without one.
 
 ### Monorepo structure
 
 ```
 any-converter/
-├── apps/web/          # Next.js app
+├── apps/desktop/      # Tauri app + the one Vite SPA
 ├── packages/
 │   ├── ui/            # shadcn/ui based atomic components
 │   ├── core/          # Business components and hooks
 │   ├── views/         # Page-level view components
 │   ├── shared/        # Types, constants, utilities
-│   ├── bridge/        # napi-rs native addon wrapper
 │   └── tsconfig/      # Shared TypeScript configs
 ```
 
@@ -536,13 +495,11 @@ cargo build --release
 GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and on pushes to `main`, in two jobs:
 
 - **rust**: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`.
-- **js**: `pnpm install --frozen-lockfile`, then `pnpm typecheck` (turbo runs `typecheck` across every workspace package).
+- **js**: `pnpm install --frozen-lockfile`, then `pnpm typecheck` (turbo runs `typecheck` across every workspace package) and `pnpm --filter @any-converter/desktop build` (the Vite build with its own `tsc --noEmit`).
 
 Local parity is the same two commands:
 
 ```bash
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace
-pnpm install --frozen-lockfile && pnpm typecheck
+pnpm install --frozen-lockfile && pnpm typecheck && pnpm --filter @any-converter/desktop build
 ```
-
-Planned: contract fixtures and a proxy smoke test will be added to CI by later tasks.

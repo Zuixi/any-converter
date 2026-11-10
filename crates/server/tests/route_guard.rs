@@ -25,10 +25,22 @@ use tower::ServiceExt;
 ///
 /// `(method, path, minimal body)` — GET routes carry an empty body.
 const ROUTES: &[(&str, &str, &str)] = &[
+    ("GET", "/", ""),
     ("GET", "/health", ""),
     ("GET", "/v1/models", ""),
     ("GET", "/models", ""),
+    ("GET", "/v1/session", ""),
+    ("POST", "/v1/session", r#"{"key":"x"}"#),
+    ("DELETE", "/v1/session", ""),
     ("GET", "/v1/usage", ""),
+    ("GET", "/v1/admin/logs", ""),
+    ("GET", "/v1/admin/usage", ""),
+    ("GET", "/v1/admin/status", ""),
+    (
+        "POST",
+        "/v1/admin/convert",
+        r#"{"input":"{}","from":"openai_chat","to":"claude","mode":"request"}"#,
+    ),
     ("GET", "/v1/admin/config", ""),
     ("PATCH", "/v1/admin/config", "{}"),
     ("GET", "/v1/admin/server/status", ""),
@@ -273,6 +285,12 @@ async fn every_route_answers_not_404() {
     }
 }
 
+/// `POST /v1/session` is deliberately public: the browser sends the page
+/// key in the body (it has no bearer to send), and the handler only sets a
+/// cookie when the key matches. This route_guard app has no web auth, so
+/// the route answers 503 rather than 401.
+const PUBLIC_POST_PATHS: &[&str] = &["/v1/session"];
+
 #[tokio::test]
 async fn post_routes_require_auth_and_never_reach_upstream() {
     let hits = Arc::new(AtomicUsize::new(0));
@@ -280,7 +298,7 @@ async fn post_routes_require_auth_and_never_reach_upstream() {
     let app = make_app(&base, Some("secret"));
 
     for (method, path, body) in ROUTES {
-        if *method != "POST" {
+        if *method != "POST" || PUBLIC_POST_PATHS.contains(path) {
             continue;
         }
         let status = send(app.clone(), method, path, body, None).await;
@@ -388,6 +406,269 @@ async fn usage_api_accepts_granularity_and_split_by() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["granularity"], "week");
+}
+
+#[tokio::test]
+async fn admin_data_routes_require_the_management_key() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
+
+    for (method, path, body) in [
+        ("GET", "/v1/admin/logs", ""),
+        ("GET", "/v1/admin/usage", ""),
+        ("GET", "/v1/admin/status", ""),
+        (
+            "POST",
+            "/v1/admin/convert",
+            r#"{"input":"{\"model\":\"m\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}","from":"openai_chat","to":"claude","mode":"request"}"#,
+        ),
+    ] {
+        let status = send(app.clone(), method, path, body, None).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path} without auth"
+        );
+
+        let status = send(app.clone(), method, path, body, Some("Bearer wrong")).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{method} {path} with a wrong key"
+        );
+
+        let status = send(app.clone(), method, path, body, Some("Bearer sk-secret")).await;
+        assert!(
+            status != StatusCode::UNAUTHORIZED && status != StatusCode::FORBIDDEN,
+            "{method} {path} with the management key: {status}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_logs_answers_empty_records_for_a_fresh_log_directory() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
+
+    let (status, json) =
+        send_json_with_auth(app.clone(), "/v1/admin/logs", Some("Bearer sk-secret")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["records"].as_array().unwrap().len(), 0);
+
+    let status = send(
+        app,
+        "GET",
+        "/v1/admin/logs?limit=abc",
+        "",
+        Some("Bearer sk-secret"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admin_logs_is_503_without_a_log_directory() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let app = make_app(&base, Some("sk-secret"));
+
+    let response = send_response(app, "GET", "/v1/admin/logs", "", Some("Bearer sk-secret")).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "logging_not_configured");
+}
+
+#[tokio::test]
+async fn admin_logs_falls_back_to_the_jsonl_mirror() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let record = |id: &str, timestamp: &str| {
+        format!(
+            r#"{{"request_id":"{id}","timestamp":"{timestamp}","client_format":"openai_chat","provider":"openai","client_model":"m","upstream_model":"m","streaming":false,"method":"POST","path":"/v1/chat/completions","request_body":null,"upstream_request_body":null,"response_status":200,"response_body":{{"text":"ok"}},"latency_ms":5,"usage":{{"input_tokens":1,"output_tokens":1}},"truncated":false}}"#
+        )
+    };
+    std::fs::write(
+        dir.path().join("requests.2026-01-01.jsonl"),
+        format!(
+            "{}\n{}\nnot-json\n",
+            record("older", "2026-01-01T00:00:00Z"),
+            record("newer", "2026-01-02T00:00:00Z"),
+        ),
+    )
+    .unwrap();
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
+
+    let (status, json) = send_json_with_auth(app, "/v1/admin/logs", Some("Bearer sk-secret")).await;
+    assert_eq!(status, StatusCode::OK);
+    let records = json["records"].as_array().unwrap();
+    assert_eq!(records.len(), 2, "the malformed line is skipped: {json}");
+    assert_eq!(records[0]["timestamp"], "2026-01-02T00:00:00Z");
+    assert_eq!(records[1]["timestamp"], "2026-01-01T00:00:00Z");
+}
+
+#[tokio::test]
+async fn admin_usage_answers_empty_shapes_for_a_fresh_log_directory() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
+
+    let (status, json) =
+        send_json_with_auth(app.clone(), "/v1/admin/usage", Some("Bearer sk-secret")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["summary"]["totals"]["calls"], 0);
+    assert_eq!(json["summary"]["series"].as_array().unwrap().len(), 0);
+
+    let (status, json) = send_json_with_auth(
+        app.clone(),
+        "/v1/admin/usage?ledger=1",
+        Some("Bearer sk-secret"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["page"]["rows"].as_array().unwrap().len(), 0);
+    assert_eq!(json["page"]["total"], 0);
+
+    let (status, json) = send_json_with_auth(
+        app.clone(),
+        "/v1/admin/usage?heatmap=1",
+        Some("Bearer sk-secret"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["heatmap"], serde_json::Value::Null);
+
+    for query in [
+        "/v1/admin/usage?from=bad&to=worse",
+        "/v1/admin/usage?preset=nonsense",
+        "/v1/admin/usage?ledger=1&cursor=abc",
+        "/v1/admin/usage?ledger=1&limit=-3",
+    ] {
+        let status = send(app.clone(), "GET", query, "", Some("Bearer sk-secret")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+    }
+}
+
+#[tokio::test]
+async fn admin_usage_csv_has_the_exact_header() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
+
+    let response = send_response(
+        app,
+        "GET",
+        "/v1/admin/usage?format=csv",
+        "",
+        Some("Bearer sk-secret"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(content_type.starts_with("text/csv"), "{content_type}");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(body.to_vec()).unwrap(),
+        "timestamp,provider,client_model,upstream_model,served_model,agent,account,\
+         session_id,status,streaming,latency_ms,ttft_ms,input_tokens,output_tokens,\
+         cache_read_tokens,cache_write_tokens,reasoning_tokens,cost_usd",
+    );
+}
+
+#[tokio::test]
+async fn admin_status_reports_the_gateway_process() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
+
+    let (status, json) =
+        send_json_with_auth(app, "/v1/admin/status", Some("Bearer sk-secret")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["health"]["status"], "ok");
+    assert!(json["recentErrors"].is_array());
+    assert!(!json["version"].as_str().unwrap().is_empty());
+    assert!(json["pid"].is_number());
+    assert_eq!(json["disk"]["used_bytes"], 0);
+    assert_eq!(json["disk"]["max_bytes"], 500 * 1024 * 1024);
+    assert_eq!(json["address"], "127.0.0.1:8080");
+    assert!(json["uptime_seconds"].as_u64().is_some());
+}
+
+#[tokio::test]
+async fn admin_status_answers_200_without_a_log_directory() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let app = make_app(&base, Some("sk-secret"));
+
+    let (status, json) =
+        send_json_with_auth(app, "/v1/admin/status", Some("Bearer sk-secret")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["disk"]["max_bytes"], serde_json::Value::Null);
+    assert_eq!(json["disk"]["percent"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn admin_convert_converts_an_openai_chat_body() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let base = spawn_upstream(hits).await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = make_app_with_log_dir(&base, Some("sk-secret"), Some(dir.path().to_str().unwrap()));
+
+    let body = r#"{"input":"{\"model\":\"m\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}","from":"openai_chat","to":"claude","mode":"request"}"#;
+    let response = send_response(
+        app.clone(),
+        "POST",
+        "/v1/admin/convert",
+        body,
+        Some("Bearer sk-secret"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(!json["output"].as_str().unwrap().is_empty());
+    assert!(json.get("error").is_none());
+
+    let unknown_mode = r#"{"input":"{}","from":"openai_chat","to":"claude","mode":"nonsense"}"#;
+    let status = send(
+        app.clone(),
+        "POST",
+        "/v1/admin/convert",
+        unknown_mode,
+        Some("Bearer sk-secret"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let status = send(
+        app,
+        "POST",
+        "/v1/admin/convert",
+        "not-json",
+        Some("Bearer sk-secret"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[test]

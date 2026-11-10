@@ -7,6 +7,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{OpenFlags, params};
 use thiserror::Error;
 
+use crate::logging::{repair_private_dir, repair_private_file};
 use crate::request_log::RequestLogRecord;
 
 mod ledger;
@@ -60,6 +61,8 @@ pub enum StorageError {
     Json(#[from] serde_json::Error),
     #[error("sqlite connection pool error: {0}")]
     Pool(#[from] r2d2::Error),
+    #[error("sqlite filesystem error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl StorageError {
@@ -83,10 +86,26 @@ pub struct SqliteStorage {
 
 impl SqliteStorage {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let path = path.as_ref();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+            repair_private_dir(parent)?;
+        }
         let pool = build_pool(SqliteConnectionManager::file(path), PoolMode::ReadWrite)?;
         let mut conn = pool.get()?;
         schema::migrate(&mut conn)?;
+        // WAL is a database property, not per-connection state, so it is switched
+        // once here instead of in `with_init`. r2d2 opens its initial connections
+        // concurrently, and SQLite answers concurrent journal-mode switches with
+        // SQLITE_BUSY without retrying — which surfaced as `ERROR r2d2: database is
+        // locked` on every fresh start. Setting it after migration also keeps
+        // `auto_vacuum` switchable: no page has been written in WAL mode before this.
+        let _: String = conn.query_row("pragma journal_mode = wal", [], |row| row.get(0))?;
         drop(conn);
+        repair_sqlite_modes(path)?;
         Ok(Self { pool })
     }
 
@@ -637,7 +656,8 @@ fn sorted_groups(groups: HashMap<String, GroupTotals>) -> Vec<Group> {
 /// Pragmas are per-connection state, not database state, so a pragma set once on
 /// the connection that ran the migrations does not reach the connections the pool
 /// opens later — and `foreign_keys = off` there silently disables the
-/// `request_bodies` cascade for every prune.
+/// `request_bodies` cascade for every prune. `journal_mode` is the exception: WAL
+/// is stored in the database header, so [`SqliteStorage::open`] switches it once.
 #[derive(Clone, Copy)]
 enum PoolMode {
     /// The single writer.
@@ -652,20 +672,32 @@ impl PoolMode {
         match self {
             Self::ReadWrite => {
                 r#"
-                pragma journal_mode = wal;
+                pragma busy_timeout = 5000;
                 pragma synchronous = normal;
                 pragma foreign_keys = on;
-                pragma busy_timeout = 5000;
                 "#
             }
             Self::ReadOnly => {
                 r#"
-                pragma foreign_keys = on;
                 pragma busy_timeout = 5000;
+                pragma foreign_keys = on;
                 "#
             }
         }
     }
+}
+
+fn repair_sqlite_modes(path: &Path) -> std::io::Result<()> {
+    for candidate in [
+        path.to_path_buf(),
+        PathBuf::from(format!("{}-wal", path.display())),
+        PathBuf::from(format!("{}-shm", path.display())),
+    ] {
+        if candidate.exists() {
+            repair_private_file(&candidate)?;
+        }
+    }
+    Ok(())
 }
 
 fn build_pool(

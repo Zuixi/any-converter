@@ -3,7 +3,9 @@ import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ApiClientProvider } from "@any-converter/core";
 
 import { AppShell } from "./components/layout/AppShell";
+import { SessionGate } from "./components/SessionGate";
 import { createDesktopApiClient } from "./lib/create-desktop-api-client";
+import { isDesktopApp } from "./lib/platform";
 import { AccountsPage } from "./pages/AccountsPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LogsPage } from "./pages/LogsPage";
@@ -17,7 +19,7 @@ import { UsagePage } from "./pages/UsagePage";
 export function App() {
   const apiClient = useMemo(() => createDesktopApiClient(), []);
 
-  return (
+  const app = (
     <ApiClientProvider client={apiClient}>
       <HashRouter>
         <Routes>
@@ -38,4 +40,5 @@ export function App() {
       </HashRouter>
     </ApiClientProvider>
   );
+  return isDesktopApp() ? app : <SessionGate>{app}</SessionGate>;
 }
