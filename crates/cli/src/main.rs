@@ -119,7 +119,7 @@ enum Commands {
         /// Canonical gateway home (defaults to the platform config directory)
         #[arg(long)]
         home: Option<PathBuf>,
-        #[arg(long, default_value_t = 1228)]
+        #[arg(long, default_value_t = 3028)]
         port: u16,
         #[arg(long, default_value = "default", conflicts_with = "config")]
         provider: String,
@@ -485,7 +485,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 || upstream_key.is_some()
                 || api_key.is_some()
                 || host != "127.0.0.1"
-                || port != 1228
+                || port != 3028
                 || provider != "default";
 
             if home.config_path().exists() {
@@ -544,7 +544,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // installed on a clean home starts and the browser can
                 // configure providers through the management API. Never
                 // writes a provider or a key.
-                server_logging_toml("127.0.0.1", 1228, None, &home.logs_dir())?
+                server_logging_toml("127.0.0.1", 3028, None, &home.logs_dir())?
             };
 
             let prepared = ControlPlane::initialize_from_config(
@@ -1669,7 +1669,7 @@ fn accounts_order(
 /// the CLI free of an HTTP dependency (the workspace adds none for P9).
 #[allow(clippy::print_stdout)]
 async fn accounts_quotas() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = std::env::var("ANY_CONVERTER_ADDR").unwrap_or_else(|_| "127.0.0.1:1228".to_string());
+    let addr = std::env::var("ANY_CONVERTER_ADDR").unwrap_or_else(|_| "127.0.0.1:3028".to_string());
     let management_key = match std::env::var("ANY_CONVERTER_MANAGEMENT_KEY") {
         Ok(key) if !key.trim().is_empty() => key.trim().to_owned(),
         _ => ApiKeyStore::for_home(&Home::discover()?).get_management()?,
@@ -1725,9 +1725,9 @@ mod tests {
     #[test]
     fn fresh_home_toml_has_server_and_logging_and_no_providers() {
         let source =
-            server_logging_toml("127.0.0.1", 1228, None, Path::new("/tmp/home/logs")).unwrap();
+            server_logging_toml("127.0.0.1", 3028, None, Path::new("/tmp/home/logs")).unwrap();
         assert!(
-            source.starts_with("[server]\nhost = \"127.0.0.1\"\nport = 1228\n"),
+            source.starts_with("[server]\nhost = \"127.0.0.1\"\nport = 3028\n"),
             "{source}"
         );
         assert!(source.contains("[logging]\ndir = \"/tmp/home/logs\"\nmax_disk_mb = 500\n"));
@@ -1738,7 +1738,7 @@ mod tests {
     #[test]
     fn fresh_home_toml_escapes_the_log_dir() {
         let source =
-            server_logging_toml("127.0.0.1", 1228, None, Path::new("/tmp/a\"b\\c")).unwrap();
+            server_logging_toml("127.0.0.1", 3028, None, Path::new("/tmp/a\"b\\c")).unwrap();
         assert!(source.contains("dir = \"/tmp/a\\\"b\\\\c\""), "{source}");
     }
 
@@ -1746,7 +1746,7 @@ mod tests {
     fn inline_config_toml_keeps_the_provider_tables() {
         let source = inline_config_toml(
             "127.0.0.1",
-            1228,
+            3028,
             None,
             "openai",
             Format::OpenAIChat,

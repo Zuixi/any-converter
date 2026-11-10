@@ -17,7 +17,7 @@ fn model_routes_patterns_enter_the_catalog() {
         r#"
 [server]
 host = "127.0.0.1"
-port = 1228
+port = 3028
 
 [[providers]]
 name = "deepseek"
@@ -47,7 +47,7 @@ fn wildcard_patterns_and_model_map_wildcards_are_excluded() {
         r#"
 [server]
 host = "127.0.0.1"
-port = 1228
+port = 3028
 
 [[providers]]
 name = "openai"
@@ -78,7 +78,7 @@ fn model_map_and_model_routes_merge_without_duplicates() {
         r#"
 [server]
 host = "127.0.0.1"
-port = 1228
+port = 3028
 
 [[providers]]
 name = "deepseek"
@@ -108,7 +108,7 @@ provider = "deepseek"
 }
 
 #[test]
-fn default_port_is_1228() {
+fn default_port_is_3028() {
     // The gateway's public default port; CLI, WebUI proxy, and Desktop all
     // hard-code the same number, so this pins the contract.
     let config = parse(
@@ -117,5 +117,5 @@ fn default_port_is_1228() {
 host = "127.0.0.1"
 "#,
     );
-    assert_eq!(config.server.port, 1228);
+    assert_eq!(config.server.port, 3028);
 }

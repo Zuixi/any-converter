@@ -12,11 +12,11 @@ set -euo pipefail
 DESKTOP_SRC="$(cd "$(dirname "$0")/.." && pwd)/apps/desktop/src"
 
 status=0
-# fetch( ... http://127.0.0.1 / localhost / :1228 — direct or template-literal.
+# fetch( ... http://127.0.0.1 / localhost / :3028 — direct or template-literal.
 while IFS= read -r line; do
   echo "guard: loopback fetch in desktop webview: ${line}" >&2
   status=1
-done < <(grep -rnE 'fetch\([^)]*(127\.0\.0\.1|localhost|:1228)' \
+done < <(grep -rnE 'fetch\([^)]*(127\.0\.0\.1|localhost|:3028)' \
     --include='*.ts' --include='*.tsx' "$DESKTOP_SRC" || true)
 
 if [ "$status" -ne 0 ]; then

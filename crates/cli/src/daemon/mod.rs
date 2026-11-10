@@ -415,7 +415,7 @@ pub(crate) async fn run(
                 Ok(base) => base,
                 Err(error) => {
                     push_advice(&mut advice, format!("config: {error}"));
-                    ("127.0.0.1".to_owned(), 1228)
+                    ("127.0.0.1".to_owned(), 3028)
                 }
             };
             match web_auth::read_key_file(&home) {
@@ -519,12 +519,12 @@ mod tests {
 
     #[test]
     fn display_host_port_maps_wildcards_and_brackets_ipv6() {
-        assert_eq!(display_host_port("0.0.0.0", 1228), "127.0.0.1:1228");
-        assert_eq!(display_host_port("::", 1228), "127.0.0.1:1228");
-        assert_eq!(display_host_port("[::]", 1228), "127.0.0.1:1228");
-        assert_eq!(display_host_port("::1", 1228), "[::1]:1228");
-        assert_eq!(display_host_port("[::1]", 1228), "[::1]:1228");
-        assert_eq!(display_host_port("127.0.0.1", 1228), "127.0.0.1:1228");
+        assert_eq!(display_host_port("0.0.0.0", 3028), "127.0.0.1:3028");
+        assert_eq!(display_host_port("::", 3028), "127.0.0.1:3028");
+        assert_eq!(display_host_port("[::]", 3028), "127.0.0.1:3028");
+        assert_eq!(display_host_port("::1", 3028), "[::1]:3028");
+        assert_eq!(display_host_port("[::1]", 3028), "[::1]:3028");
+        assert_eq!(display_host_port("127.0.0.1", 3028), "127.0.0.1:3028");
         assert_eq!(display_host_port("localhost", 80), "localhost:80");
     }
 
@@ -550,7 +550,7 @@ mod tests {
     fn gateway_base_defaults_without_a_config() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::from_root(dir.path());
-        assert_eq!(gateway_base(&home).unwrap(), ("127.0.0.1".to_owned(), 1228));
+        assert_eq!(gateway_base(&home).unwrap(), ("127.0.0.1".to_owned(), 3028));
     }
 
     #[test]

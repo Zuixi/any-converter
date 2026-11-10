@@ -20,7 +20,7 @@ use any_converter_server::secrets::ApiKeyStore;
 use crate::AgentsCommand;
 
 /// Default server port (`crates/server/src/config.rs::default_port`).
-const DEFAULT_PORT: u16 = 1228;
+const DEFAULT_PORT: u16 = 3028;
 /// Exit code for "the server is not running": scripts branch on it.
 const EXIT_UNREACHABLE: i32 = 2;
 /// Exit code for every other failure (API error, unexpected reply).

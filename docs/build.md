@@ -393,7 +393,7 @@ app loads it in its webview, and the Rust gateway embeds the same built
 ```
 ┌─────────────┐      embedded SPA + /v1/admin/*      ┌──────────────────────┐
 │  Browser    │ ◄──────────────────────────────────► │  any-converter (Rust │
-│             │   page auth via /v1/session          │  gateway, port 1228) │
+│             │   page auth via /v1/session          │  gateway, port 3028) │
 └─────────────┘                                      └──────────────────────┘
 
 ┌─────────────┐      same SPA build in webview       ┌──────────────────────┐
@@ -405,7 +405,7 @@ app loads it in its webview, and the Rust gateway embeds the same built
 All data pages read `/v1/admin/*` on the gateway (SQLite is the single
 source for logs and usage). The browser authenticates the page with a
 page-key session: `any-converter serve` prints a one-time URL
-(`http://127.0.0.1:1228/?k=…`) that exchanges the key for a session
+(`http://127.0.0.1:3028/?k=…`) that exchanges the key for a session
 cookie over `GET/POST /v1/session`.
 
 ### 1. Build the SPA

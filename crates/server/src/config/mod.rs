@@ -210,7 +210,7 @@ fn default_host() -> String {
 }
 
 fn default_port() -> u16 {
-    1228
+    3028
 }
 
 impl ServerConfig {

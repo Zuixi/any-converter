@@ -228,7 +228,7 @@ api_key = "keychain:any-converter:server:management"
 
 [server]
 host = "127.0.0.1"
-port = 1228
+port = 3028
 api_key = "keychain:any-converter:server:inference"
 
 [[providers]]
