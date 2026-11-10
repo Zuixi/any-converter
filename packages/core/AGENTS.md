@@ -21,7 +21,7 @@ src/
 
 ## Boundary Rules
 
-1. Put cross-app behavior here, not in `apps/web` or `apps/desktop`.
+1. Put cross-host behavior here (the SPA runs in the desktop webview and in the browser), not in `apps/desktop`.
 2. Keep presentational primitives in [`../ui/AGENTS.md`](../ui/AGENTS.md).
 3. Keep page composition in [`../views/AGENTS.md`](../views/AGENTS.md).
 4. Keep shared contract types in [`../shared/AGENTS.md`](../shared/AGENTS.md).

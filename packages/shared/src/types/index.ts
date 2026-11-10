@@ -293,4 +293,9 @@ export interface StatusData {
     percent: number | null;
   };
   recentErrors: string[];
+  /** Present when the gateway itself answers `GET /v1/admin/status`. */
+  version?: string;
+  pid?: number;
+  address?: string;
+  uptime_seconds?: number;
 }

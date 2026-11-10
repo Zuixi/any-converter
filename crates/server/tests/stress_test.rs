@@ -108,7 +108,7 @@ async fn concurrent_404_requests() {
             let resp = app
                 .oneshot(
                     Request::builder()
-                        .uri(format!("/nonexistent/{i}"))
+                        .uri(format!("/v1/nonexistent/{i}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -184,7 +184,7 @@ async fn mixed_concurrent_endpoints() {
             let (uri, expected_status) = match i % 3 {
                 0 => ("/health", StatusCode::OK),
                 1 => ("/v1/models", StatusCode::OK),
-                _ => ("/nonexistent", StatusCode::NOT_FOUND),
+                _ => ("/v1/nonexistent", StatusCode::NOT_FOUND),
             };
             let resp = app
                 .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())

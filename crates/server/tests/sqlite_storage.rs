@@ -506,6 +506,30 @@ async fn request_logger_writes_jsonl_and_sqlite() {
     assert_eq!(jsonl_files.len(), 1);
     let jsonl = std::fs::read_to_string(&jsonl_files[0]).unwrap();
     assert!(jsonl.contains("\"request_id\":\"req-logger\""));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&jsonl_files[0])
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&database_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(&log_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
 
     assert_eq!(count, 1);
 }
@@ -734,6 +758,13 @@ fn fresh_database_enables_incremental_auto_vacuum() {
         .unwrap();
     // 2 = incremental; without it `pragma incremental_vacuum` reclaims nothing.
     assert_eq!(auto_vacuum, 2, "auto_vacuum not incremental: {auto_vacuum}");
+
+    // `open` switches WAL once on the migration connection; reading the pragma
+    // does not switch it, so this observes the stored mode.
+    let journal_mode: String = conn
+        .query_row("pragma journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_mode, "wal", "open must enable WAL");
 }
 
 #[test]

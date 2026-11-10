@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 
+import { errorMessage } from "@any-converter/core";
+
 export function useAsyncState<T>(
   loader: () => Promise<T>,
   fallback?: T,
@@ -22,7 +24,8 @@ export function useAsyncState<T>(
       })
       .catch((cause) => {
         if (!cancelled) {
-          setError(String(cause));
+          // Transports reject with `{kind, message}` objects, not `Error`s.
+          setError(errorMessage(cause));
         }
       });
     return () => {

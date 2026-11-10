@@ -4,6 +4,7 @@
 
 pub mod accounts;
 pub mod chat;
+pub mod data;
 pub mod models;
 pub mod redact;
 pub mod respond;
@@ -19,8 +20,9 @@ pub use accounts::{
 pub use chat::{
     handle_claude, handle_count_tokens, handle_gemini, handle_openai_chat, handle_responses,
 };
+pub use data::{handle_admin_convert, handle_admin_logs, handle_admin_status};
 pub use models::{handle_model_retrieve, handle_models};
-pub use usage::handle_usage_api;
+pub use usage::{handle_admin_usage, handle_usage_api};
 
 // The family's own shared surface, reached by the sibling modules through
 // `use super::...` / `use super::super::...`. Nothing else is re-exported:
@@ -29,7 +31,7 @@ pub use usage::handle_usage_api;
 pub(crate) use redact::{sanitize_headers_for_log, truncated_body};
 pub(crate) use respond::{
     HandlerError, api_error_response, auth_error_response, conversion_error_response,
-    safe_convert_request, safe_convert_response, upstream_error_response,
+    data_error_response, safe_convert_request, safe_convert_response, upstream_error_response,
 };
 pub(crate) use stream::is_streaming_request;
 

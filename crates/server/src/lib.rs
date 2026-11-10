@@ -27,6 +27,8 @@ pub mod secrets;
 pub mod signin_task;
 pub mod storage;
 pub mod usage;
+pub mod web_auth;
+pub mod web_ui;
 pub mod wire;
 
 use log::info;
@@ -71,17 +73,7 @@ pub async fn run_from_home_with_shutdown_and_ready(
     let ownership = InstanceOwnership::acquire(&home).await?;
     let keys = ApiKeyStore::for_home(&home);
     let prepared = ControlPlane::prepare(home, keys)?;
-    ownership.write_metadata(
-        prepared
-            .control_plane
-            .config_store()
-            .load()?
-            .revision()
-            .clone(),
-    )?;
-    run_prepared_with_shutdown_and_ready(prepared, shutdown, ready).await?;
-    drop(ownership);
-    Ok(())
+    run_prepared_with_shutdown_and_ready(prepared, Some(ownership), shutdown, ready).await
 }
 
 /// Start the HTTP proxy server and shut it down when the given future resolves.
@@ -135,12 +127,17 @@ pub async fn run_prepared(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (ready_sender, _ready_receiver) = oneshot::channel();
-    run_prepared_with_shutdown_and_ready(prepared, shutdown, Some(ready_sender)).await
+    run_prepared_with_shutdown_and_ready(prepared, None, shutdown, Some(ready_sender)).await
 }
 
 /// Start a prepared managed router, reporting readiness only after bind.
+///
+/// When `ownership` is present the instance metadata (host, port, version)
+/// is written after the bind and before the ready signal, so readiness means
+/// the metadata is visible to attaching clients.
 pub async fn run_prepared_with_shutdown_and_ready(
     prepared: PreparedServer,
+    ownership: Option<InstanceOwnership>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     mut ready: Option<oneshot::Sender<std::net::SocketAddr>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -150,11 +147,36 @@ pub async fn run_prepared_with_shutdown_and_ready(
     );
     info!("starting managed any-converter server on {addr}");
 
+    let config_revision = prepared
+        .control_plane
+        .config_store()
+        .load()?
+        .revision()
+        .clone();
+    let web_auth = std::sync::Arc::clone(&prepared.web_auth);
     let control_plane = std::sync::Arc::clone(&prepared.control_plane);
     let app = crate::router::create_router_from_prepared(prepared);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound = listener.local_addr()?;
+    // Metadata before readiness: if the write fails the process exits with
+    // the listener dropped and the control plane never claimed ready for a
+    // dead instance.
+    if let Some(ownership) = &ownership {
+        ownership.write_metadata(config_revision, bound)?;
+    }
     control_plane.mark_ready(bound);
+    // A persistent key never appears in logs: the operator unlocks with
+    // `any-converter daemon status` or the `web-key` file. An ephemeral
+    // run's URL is the only way to learn that key, so it is printed with
+    // the key — and log files are 0600.
+    if web_auth.is_persistent() {
+        info!(
+            "UI: {} (unlock with the page key from `any-converter daemon status`)",
+            web_auth.base_url(bound)
+        );
+    } else {
+        info!("UI: {}", web_auth.url(bound));
+    }
     if let Some(ready) = ready.take() {
         let _ = ready.send(bound);
     }
@@ -172,9 +194,20 @@ struct InstanceMetadata {
     started_at_unix: u64,
     config_revision: crate::config_store::ConfigRevision,
     ownership_token: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: u16,
+    #[serde(default)]
+    version: String,
 }
 
-struct InstanceOwnership {
+/// Owns the canonical instance lock and the `instance.json` metadata file.
+///
+/// The fields are private on purpose: only acquisition and the post-bind
+/// metadata write are exposed, and dropping the value removes the metadata
+/// file while the ownership token still matches.
+pub struct InstanceOwnership {
     path: std::path::PathBuf,
     ownership_token: String,
     #[allow(dead_code)]
@@ -182,7 +215,7 @@ struct InstanceOwnership {
 }
 
 impl InstanceOwnership {
-    async fn acquire(home: &Home) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn acquire(home: &Home) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         std::fs::create_dir_all(home.root())?;
         let guard = InstanceLock::new(home.instance_lock_path())
             .acquire(DEFAULT_ACQUIRE_TIMEOUT)
@@ -194,9 +227,10 @@ impl InstanceOwnership {
         })
     }
 
-    fn write_metadata(
+    pub fn write_metadata(
         &self,
         config_revision: crate::config_store::ConfigRevision,
+        bound: std::net::SocketAddr,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let metadata = InstanceMetadata {
             pid: std::process::id(),
@@ -205,10 +239,24 @@ impl InstanceOwnership {
                 .as_secs(),
             config_revision,
             ownership_token: self.ownership_token.clone(),
+            host: dial_host(bound.ip()),
+            port: bound.port(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
         };
         let bytes = serde_json::to_vec(&metadata)?;
         atomic_replace(&self.path, &bytes)?;
         Ok(())
+    }
+}
+
+/// A bind IP rewritten to something a client can dial. Wildcard binds have
+/// no dialable address, so they report loopback; everything else is the
+/// bare IP (IPv6 stays unbracketed — the reader adds brackets).
+fn dial_host(ip: std::net::IpAddr) -> String {
+    if ip.is_unspecified() {
+        "127.0.0.1".to_string()
+    } else {
+        ip.to_string()
     }
 }
 

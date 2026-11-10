@@ -27,12 +27,15 @@ use crate::handlers::{
     AppState, handle_account_adopt, handle_account_models, handle_account_order,
     handle_account_plugins, handle_account_quotas, handle_account_release, handle_account_remove,
     handle_account_signin, handle_account_signin_cancel, handle_account_signin_status,
-    handle_account_signin_submit, handle_accounts, handle_claude, handle_count_tokens,
-    handle_gemini, handle_health, handle_model_retrieve, handle_models, handle_openai_chat,
-    handle_responses, handle_usage_api,
+    handle_account_signin_submit, handle_accounts, handle_admin_convert, handle_admin_logs,
+    handle_admin_status, handle_admin_usage, handle_claude, handle_count_tokens, handle_gemini,
+    handle_health, handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
+    handle_usage_api,
 };
 use crate::plugins::{ManagedHosts, PluginAuthStore};
 use crate::signin_task::SignInTasks;
+use crate::web_auth::{self, WebAuth};
+use crate::web_ui;
 
 /// Route metadata detected from the request path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,7 +170,7 @@ pub fn build_app_state(config: ServerConfig) -> Arc<AppState> {
         config.server.api_key.clone(),
     ));
     agents.set_catalog(catalog_from_config(&config));
-    let state = Arc::new(AppState {
+    Arc::new(AppState {
         config,
         client,
         accounts,
@@ -177,8 +180,7 @@ pub fn build_app_state(config: ServerConfig) -> Arc<AppState> {
         request_logger,
         hosts,
         agents,
-    });
-    state
+    })
 }
 
 /// Create a router with a pre-built `AppState`, enabling test injection of
@@ -188,10 +190,25 @@ pub fn build_app_state(config: ServerConfig) -> Arc<AppState> {
 /// seeded here with the server-level proxy so `run_with_shutdown` can
 /// cancel every outstanding task on exit.
 pub fn create_router_with_state(state: Arc<AppState>) -> Router {
-    let runtime = AdminRuntime {
+    let runtime = legacy_runtime(&state);
+    create_router_with_runtime(state, runtime)
+}
+
+fn legacy_runtime(state: &AppState) -> AdminRuntime {
+    AdminRuntime {
         authority: ManagementAuthority::from_legacy_key(state.config.server.api_key.as_deref()),
         control_plane: None,
-    };
+        web_auth: None,
+    }
+}
+
+/// Create a legacy router (fixed management authority) that also accepts
+/// browser page sessions. Test seam for the managed gateway's web auth.
+pub fn create_router_with_state_and_web_auth(
+    state: Arc<AppState>,
+    web_auth: Arc<WebAuth>,
+) -> Router {
+    let runtime = legacy_runtime(&state).with_web_auth(web_auth);
     create_router_with_runtime(state, runtime)
 }
 
@@ -207,26 +224,65 @@ pub fn create_router_with_control_plane(
     )
 }
 
+/// Create a control-plane router that also accepts browser page sessions.
+pub fn create_router_with_control_plane_and_web_auth(
+    state: Arc<AppState>,
+    control_plane: Arc<ControlPlane>,
+    web_auth: Arc<WebAuth>,
+) -> Router {
+    create_router_with_runtime(
+        state,
+        AdminRuntime::control_plane()
+            .with_control_plane(control_plane)
+            .with_web_auth(web_auth),
+    )
+}
+
 /// Build the managed router from a prepared, secret-resolved configuration.
 pub fn create_router_from_prepared(prepared: crate::control_plane::PreparedServer) -> Router {
     let crate::control_plane::PreparedServer {
         config,
         control_plane,
+        web_auth,
         ..
     } = prepared;
-    create_router_with_control_plane(build_app_state(config), control_plane)
+    create_router_with_control_plane_and_web_auth(build_app_state(config), control_plane, web_auth)
 }
 
 fn create_router_with_runtime(state: Arc<AppState>, runtime: AdminRuntime) -> Router {
+    // The first router build of the process is process start for the status
+    // uptime counter (see `handlers::data::note_start_time`).
+    crate::handlers::data::note_start_time();
     let sign_ins = SignInTasks::init(
         state.config.server.proxy.clone(),
         Some(Arc::clone(&state.hosts)),
     );
+    // Embedded when the frontend was built, `ANY_CONVERTER_WEB_DIR` when
+    // set, otherwise 503 with build instructions.
+    let web_ui = crate::web_ui::WebUi::discover();
+
+    // The page session exchange is public by key, not bearer-guarded, so
+    // it lives outside the management router. `/` lives here too: the
+    // `/?k=` link needs `web_auth` and the SPA needs the `WebUi`
+    // extension added on the outer router.
+    let session = Router::new()
+        .route("/", get(web_ui::handle_root))
+        .route(
+            "/v1/session",
+            get(web_auth::get_session)
+                .post(web_auth::post_session)
+                .delete(web_auth::delete_session),
+        )
+        .layer(Extension(runtime.clone()));
 
     // Accounts, agents, usage, and the admin API are one management surface:
     // they share the management key and reject agent/inference keys.
     let management = Router::new()
         .route("/v1/usage", get(handle_usage_api))
+        .route("/v1/admin/logs", get(handle_admin_logs))
+        .route("/v1/admin/usage", get(handle_admin_usage))
+        .route("/v1/admin/status", get(handle_admin_status))
+        .route("/v1/admin/convert", post(handle_admin_convert))
         .route("/v1/accounts", get(handle_accounts))
         .route("/v1/accounts/quotas", get(handle_account_quotas))
         .route("/v1/accounts/plugins", get(handle_account_plugins))
@@ -295,16 +351,13 @@ fn create_router_with_runtime(state: Arc<AppState>, runtime: AdminRuntime) -> Ro
         .route("/v1/models/{model_id}", get(handle_model_retrieve))
         .route("/models/{model_id}", get(handle_model_retrieve))
         .merge(management)
+        .merge(session)
         .merge(inference)
-        .fallback(handle_not_found)
+        .fallback(web_ui::handle_fallback)
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB
         .layer(Extension(sign_ins))
+        .layer(Extension(web_ui))
         .with_state(state)
-}
-
-async fn handle_not_found(uri: axum::http::Uri) -> (axum::http::StatusCode, &'static str) {
-    log::warn!("request to unknown path path={uri}");
-    (axum::http::StatusCode::NOT_FOUND, "not found")
 }
 
 #[cfg(test)]
@@ -419,7 +472,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unknown_path_returns_404() {
+    async fn test_unknown_api_path_returns_404() {
+        let app = create_router(test_config());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/does-not-exist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_unknown_non_api_path_serves_the_spa() {
         let app = create_router(test_config());
         let response = app
             .oneshot(
@@ -430,7 +498,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // The SPA fallback answers with the index (or the build-hint 503
+        // when no UI is available), never 404.
+        assert!(matches!(
+            response.status(),
+            StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+        ));
     }
 
     #[tokio::test]

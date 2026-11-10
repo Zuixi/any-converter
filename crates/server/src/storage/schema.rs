@@ -5,18 +5,19 @@ pub(super) const SCHEMA_VERSION: i64 = 11;
 
 /// Ensures incremental auto-vacuum, then every migration newer than `user_version`.
 ///
-/// Connection pragmas (WAL, `synchronous`, `foreign_keys`, `busy_timeout`) live in
+/// Connection pragmas (`busy_timeout`, `synchronous`, `foreign_keys`) live in
 /// `build_pool`'s `with_init`, so every pooled connection carries them, not just the
-/// one that happens to run this function.
+/// one that happens to run this function. `journal_mode` is set by `open` only after
+/// this returns, so the database is still in rollback-journal mode here.
 pub(super) fn migrate(conn: &mut rusqlite::Connection) -> Result<(), rusqlite::Error> {
     // Runs once per database, and is the ONLY `VACUUM` in this codebase. Without
     // `auto_vacuum = incremental`, `pragma incremental_vacuum` is a no-op and a pruned
     // log file never gives its space back. The rebuild cannot be skipped just because
-    // the file has no tables yet: `with_init` sets `journal_mode = wal` on the very
-    // connection this runs on, which already writes page 1, after which SQLite rejects
-    // the pragma and `auto_vacuum` stays 0 forever. On a new database that rebuild is
-    // one page — microseconds; on an existing multi-GB log file it can take tens of
-    // seconds, which `open` pays once, then never again.
+    // the file has no tables yet: `auto_vacuum` must be persisted while the file is
+    // still empty, and once WAL or user tables are in play SQLite may reject the
+    // switch. On a new database that rebuild is one page — microseconds; on an
+    // existing multi-GB log file it can take tens of seconds, which `open` pays once,
+    // then never again.
     let av: i64 = conn.query_row("pragma auto_vacuum", [], |row| row.get(0))?;
     if av == 0 {
         conn.execute_batch("pragma auto_vacuum = incremental;")?;

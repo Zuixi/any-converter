@@ -3,7 +3,9 @@
 SUMMARIZE global project status/system environment/user preferences/etc BY USING ONE SIMPLE SENTENCES.
 
 ## Memory Lists
-- Project uses Rust 2024 edition with a mixed workspace layout: Rust crates (`core`, `server`, `cli`, `web-bridge`), user-facing apps (`apps/web`, `apps/desktop`), and shared frontend packages (`packages/core`, `views`, `shared`, `ui`, `bridge`, `tsconfig`)
+- Project uses Rust 2024 edition with a mixed workspace layout: Rust crates (`core`, `server`, `cli`, `agent-wiring`), one user-facing app (`apps/desktop` — its Vite SPA is also the browser UI, served/embedded by the gateway), and shared frontend packages (`packages/core`, `views`, `shared`, `ui`, `tsconfig`); the Next.js app and napi bridge are removed
+- One-SPA model: the gateway serves the built `apps/desktop/dist` (embedded in release builds, `ANY_CONVERTER_WEB_DIR` dev override); desktop loads the same build and talks over Tauri IPC, browsers use `/v1/session` page-key cookie auth + `/v1/admin/*`
+- `any-converter daemon install|start|stop|status` manages a boot-autostart user service (launchd/systemd, no sudo); desktop attaches to a live gateway via `instance.json` + `/health` probe instead of starting a second instance
 - Desktop React shell uses `react-router-dom` `HashRouter` with pages under `apps/desktop/src/pages/` and typed Tauri IPC wrappers in `apps/desktop/src/lib/api.ts`
 - Core architecture: typed Canonical IR (CanonicalRequest/Response) with FormatAdapter + StreamAdapter traits per format
 - 4 formats supported: OpenAI Chat, Claude Messages, OpenAI Responses, Gemini — each under crates/core/src/formats/
@@ -13,7 +15,7 @@ SUMMARIZE global project status/system environment/user preferences/etc BY USING
 - Provider transport can override default format-derived endpoint paths via `[providers.endpoints] path` / `stream_path` and auth via `[providers.auth] scheme` / `headers`
 - Server route strategy supports priority failover and round_robin starting-provider rotation via `route_strategy::order_provider_names`
 - Server request pipeline helpers are split into `model.rs` (model/private fields), `namespace.rs` (Responses namespace patches), and `route_strategy.rs` (provider pool ordering)
-- CLI has 3 subcommands: convert (offline), stream (SSE pipe), serve (HTTP proxy)
+- CLI subcommands: convert (offline), stream (SSE pipe), serve (HTTP proxy), agents (connect/disconnect/sync), accounts (OAuth sign-ins), daemon (install/start/stop/restart/status/uninstall), stats
 - All format adapters support both non-streaming and streaming SSE conversion
 - Tool arguments: OpenAI uses JSON string, Claude/Gemini use JSON object — adapter handles stringify/parse
 - Claude max_tokens is required — default 4096 when source format doesn't specify

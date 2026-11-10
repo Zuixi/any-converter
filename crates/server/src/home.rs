@@ -108,6 +108,16 @@ impl Home {
     pub fn instance_lock_path(&self) -> PathBuf {
         self.root.join("instance.lock")
     }
+
+    /// The page key file for browser sessions, created by `daemon install`.
+    pub fn web_key_path(&self) -> PathBuf {
+        self.root.join("web-key")
+    }
+
+    /// Kernel-backed lock serializing first creation of the page key.
+    pub(crate) fn web_key_lock_path(&self) -> PathBuf {
+        self.root.join("web-key.lock")
+    }
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -161,5 +171,6 @@ mod tests {
         assert_eq!(home.logs_dir(), root.join("logs"));
         assert_eq!(home.instance_path(), root.join("instance.json"));
         assert_eq!(home.instance_lock_path(), root.join("instance.lock"));
+        assert_eq!(home.web_key_path(), root.join("web-key"));
     }
 }

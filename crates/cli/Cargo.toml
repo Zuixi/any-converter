@@ -15,6 +15,7 @@ any-converter-core = { workspace = true }
 any-converter-server = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 chrono = { workspace = true }

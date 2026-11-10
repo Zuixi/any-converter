@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::config::RequestLogConfig;
+use crate::logging::{open_private_append, repair_private_dir};
 use crate::observability::{RequestTraceSummary, summarize_request_trace, summarize_stream_trace};
 use crate::request_log::redactor::{SanitizedBody, sanitize_body};
 use crate::storage::{SqliteStorage, open_sqlite_storage_for_log_dir};
@@ -276,13 +277,11 @@ pub fn create_request_logger(
 
 fn write_record(log_dir: &Path, record: &RequestLogRecord) -> std::io::Result<()> {
     std::fs::create_dir_all(log_dir)?;
+    repair_private_dir(log_dir)?;
     let date = &record.timestamp[..10];
     let line = serde_json::to_string(record).unwrap_or_default();
     let path = request_log_path(log_dir, date, line.len() as u64 + 1)?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = open_private_append(&path)?;
     writeln!(file, "{line}")?;
     Ok(())
 }

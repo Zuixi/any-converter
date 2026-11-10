@@ -19,6 +19,7 @@ use crate::control_plane::{
     ManagementAuthority, SecretMutationResult,
 };
 use crate::secrets::SecretError;
+use crate::web_auth::{SessionCheck, WebAuth, check_session};
 
 /// Per-router management runtime. The legacy constructor has no control
 /// plane, so admin endpoints fail with 503 instead of mutating a real home.
@@ -26,11 +27,23 @@ use crate::secrets::SecretError;
 pub struct AdminRuntime {
     pub authority: ManagementAuthority,
     pub control_plane: Option<Arc<ControlPlane>>,
+    /// Browser page-session credential; `None` keeps the router
+    /// bearer-only (legacy constructor).
+    pub web_auth: Option<Arc<WebAuth>>,
 }
 
 impl AdminRuntime {
     pub fn control_plane() -> AdminRuntimeBuilder {
         AdminRuntimeBuilder
+    }
+
+    /// Attach the browser page-session credential. Only the managed
+    /// gateway has one; the legacy router stays bearer-only.
+    pub fn with_web_auth(self, web_auth: Arc<WebAuth>) -> Self {
+        Self {
+            web_auth: Some(web_auth),
+            ..self
+        }
     }
 }
 
@@ -41,6 +54,7 @@ impl AdminRuntimeBuilder {
         AdminRuntime {
             authority: ManagementAuthority::ControlPlane(Arc::clone(&control_plane)),
             control_plane: Some(control_plane),
+            web_auth: None,
         }
     }
 }
@@ -51,6 +65,46 @@ pub async fn require_management(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    // A supplied bearer never falls back to the page session: it passes on
+    // its own or the request fails closed.
+    if request.headers().contains_key(header::AUTHORIZATION) {
+        return authorize_bearer(runtime, request, next).await;
+    }
+    // No bearer: the session cookie is the browser credential. Cookie auth
+    // is loopback-only and same-origin-only.
+    if let Some(web_auth) = runtime.web_auth.as_deref() {
+        match check_session(request.headers(), request.method(), web_auth) {
+            SessionCheck::Valid => return next.run(request).await,
+            SessionCheck::Forbidden => {
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    "management_forbidden",
+                    "page session cannot manage this server",
+                    Some("page sessions work only from the loopback with a same-origin fetch"),
+                );
+            }
+            SessionCheck::Missing | SessionCheck::Invalid => {
+                return error_response(
+                    StatusCode::UNAUTHORIZED,
+                    "authentication_error",
+                    "missing management API key",
+                    Some("send the management key as `Authorization: Bearer <key>`"),
+                );
+            }
+        }
+    }
+    error_response(
+        StatusCode::UNAUTHORIZED,
+        "authentication_error",
+        "missing management API key",
+        Some("send the management key as `Authorization: Bearer <key>`"),
+    )
+}
+
+/// The bearer branch of [`require_management`], unchanged from the
+/// bearer-only behavior: malformed -> 401, disabled -> 503, valid -> pass,
+/// invalid -> 403.
+async fn authorize_bearer(runtime: AdminRuntime, request: Request<Body>, next: Next) -> Response {
     let Some(header_value) = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -125,7 +179,7 @@ pub async fn patch_config(
     };
     let expected = match if_match_revision(&headers) {
         Ok(revision) => revision,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match control_plane.patch_config(&expected, patch) {
         Ok(view) => with_config_etag(StatusCode::OK, &view),
@@ -167,7 +221,7 @@ pub async fn put_provider_secret(
     };
     let expected = match if_match_revision(&headers) {
         Ok(revision) => revision,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match control_plane.put_provider_key(&expected, &provider, &body.api_key) {
         Ok(result) => secret_result_response(result),
@@ -186,7 +240,7 @@ pub async fn delete_provider_secret(
     };
     let expected = match if_match_revision(&headers) {
         Ok(revision) => revision,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match control_plane.delete_provider_key(&expected, &provider) {
         Ok(result) => secret_result_response(result),
@@ -216,7 +270,7 @@ pub async fn put_inference_secret(
     };
     let expected = match if_match_revision(&headers) {
         Ok(revision) => revision,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match control_plane.put_inference_key(&expected, &body.api_key) {
         Ok(result) => secret_result_response(result),
@@ -234,7 +288,7 @@ pub async fn delete_inference_secret(
     };
     let expected = match if_match_revision(&headers) {
         Ok(revision) => revision,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match control_plane.delete_inference_key(&expected) {
         Ok(result) => secret_result_response(result),
@@ -306,20 +360,20 @@ fn secret_result_response(result: SecretMutationResult) -> Response {
     response
 }
 
-fn if_match_revision(headers: &HeaderMap) -> Result<ConfigRevision, Response> {
+fn if_match_revision(headers: &HeaderMap) -> Result<ConfigRevision, Box<Response>> {
     let Some(value) = headers.get(header::IF_MATCH) else {
-        return Err(error_response(
+        return Err(Box::new(error_response(
             StatusCode::PRECONDITION_REQUIRED,
             "precondition_required",
             "If-Match is required for management mutations",
             Some("read GET /v1/admin/config and send its ETag unchanged"),
-        ));
+        )));
     };
     let Ok(value) = value.to_str() else {
-        return Err(invalid_precondition());
+        return Err(Box::new(invalid_precondition()));
     };
     let value = value.trim().trim_matches('"');
-    value.parse().map_err(|_| invalid_precondition())
+    value.parse().map_err(|_| Box::new(invalid_precondition()))
 }
 
 fn invalid_precondition() -> Response {
@@ -402,6 +456,12 @@ fn control_plane_error(error: ControlPlaneError) -> Response {
             message,
             None,
         ),
+        ControlPlaneError::WebKey(message) => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "web_key_invalid",
+            message,
+            Some("fix ANY_CONVERTER_WEB_KEY or <home>/web-key and restart"),
+        ),
         ControlPlaneError::ManagementKeyMissing
         | ControlPlaneError::ManagementKeyInvalidReference(_) => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -452,6 +512,7 @@ mod tests {
         AdminRuntime {
             authority: ManagementAuthority::from_legacy_key(key),
             control_plane: None,
+            web_auth: None,
         }
     }
 

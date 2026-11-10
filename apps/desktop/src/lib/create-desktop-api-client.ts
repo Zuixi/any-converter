@@ -1,29 +1,78 @@
 import type { ApiClient } from "@any-converter/core";
-import type { StatusData } from "@any-converter/shared";
+import { ledgerParams, usageParams } from "@any-converter/core";
+import type {
+  ConvertApiResponse,
+  Heatmap,
+  LedgerPage,
+  RequestLogRecord,
+  StatusData,
+  UsageSummary,
+} from "@any-converter/shared";
 
-import { api } from "./api";
 import { management, type AdminConfigView } from "./management";
+import { requestServer } from "./transport";
 
+// The single `ApiClient` for both hosts; the transport decides the wire.
 export function createDesktopApiClient(): ApiClient {
   return {
     async convert(request) {
-      const result = await api.convertPayload(request);
-      return { output: result.output };
+      return requestServer<ConvertApiResponse>({
+        method: "POST",
+        path: "/v1/admin/convert",
+        body: JSON.stringify(request),
+      });
     },
-    async getLogs() {
-      return api.listRequestLogs(500);
+    async getLogs(limit?: number) {
+      // The server clamps limit to 1..=1000; only callers that need fewer
+      // rows (Settings reads exactly one record) should send one.
+      const suffix = limit !== undefined && limit > 0 ? `?limit=${limit}` : "";
+      const data = await requestServer<{ records: RequestLogRecord[] }>({
+        method: "GET",
+        path: `/v1/admin/logs${suffix}`,
+      });
+      return data.records;
     },
     async getUsage(query) {
-      return api.getUsageSummary("7d", query.granularity);
-    },
-    async getLedger(filter, cursor, limit) {
-      return api.getLedgerPage(filter, cursor, limit);
+      const data = await requestServer<{ summary: UsageSummary }>({
+        method: "GET",
+        path: `/v1/admin/usage?${usageParams(query)}`,
+      });
+      return data.summary;
     },
     async getHeatmap(filter) {
-      return api.getHeatmap(filter);
+      const params = ledgerParams(filter);
+      params.set("heatmap", "1");
+      const data = await requestServer<{ heatmap: Heatmap }>({
+        method: "GET",
+        path: `/v1/admin/usage?${params}`,
+      });
+      return data.heatmap;
     },
-    async getLedgerCsv() {
-      throw new Error("Ledger CSV export is not available in the desktop app");
+    async getLedger(filter, cursor, limit) {
+      const params = ledgerParams(filter);
+      params.set("ledger", "1");
+      if (cursor !== undefined) {
+        params.set("cursor", String(cursor));
+      }
+      if (limit !== undefined) {
+        params.set("limit", String(limit));
+      }
+      const data = await requestServer<{ page: LedgerPage }>({
+        method: "GET",
+        path: `/v1/admin/usage?${params}`,
+      });
+      return data.page;
+    },
+    async getLedgerCsv(filter) {
+      const params = ledgerParams(filter);
+      params.set("format", "csv");
+      return requestServer<string>({
+        method: "GET",
+        path: `/v1/admin/usage?${params}`,
+      });
+    },
+    async getStatus() {
+      return requestServer<StatusData>({ method: "GET", path: "/v1/admin/status" });
     },
     async getConfig() {
       const config = await management.getConfig();
@@ -47,18 +96,6 @@ export function createDesktopApiClient(): ApiClient {
           request_log_enabled: view.logging.request_log_enabled,
         },
       });
-    },
-    async getStatus() {
-      const status = await api.getServerStatus();
-      const data: StatusData = {
-        health: {
-          status: status.state === "running" ? "ok" : "error",
-          error: status.last_error ?? (status.state === "running" ? undefined : status.state),
-        },
-        disk: { used_bytes: 0, max_bytes: null, percent: null },
-        recentErrors: status.last_error ? [status.last_error] : [],
-      };
-      return data;
     },
   };
 }
