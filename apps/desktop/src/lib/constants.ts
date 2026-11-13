@@ -55,3 +55,6 @@ export const PROVIDER_PRESETS = [
 ] as const;
 
 export const SIDEBAR_COLLAPSED_KEY = "any-converter.desktop.sidebarCollapsed";
+
+/** Persisted theme preference; absent value means "system". */
+export const THEME_STORAGE_KEY = "any-converter.desktop.theme";

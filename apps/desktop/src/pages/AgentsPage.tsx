@@ -22,8 +22,10 @@ function shortKeyId(id?: string): string {
 }
 
 const STATUS_STYLE: Record<AgentStatus, string> = {
-  connected: "border-emerald-500/60 bg-emerald-500/10 text-emerald-600",
-  drifted: "border-amber-500/60 bg-amber-500/10 text-amber-600",
+  connected:
+    "border-emerald-500/60 bg-emerald-500/10 text-emerald-600 dark:border-emerald-500/40 dark:text-emerald-400",
+  drifted:
+    "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:border-amber-500/40 dark:text-amber-400",
   disconnected: "border-border bg-muted text-muted-foreground",
   absent: "border-dashed border-border bg-transparent text-muted-foreground",
 };
@@ -130,8 +132,8 @@ export function AgentsPage() {
         </Card>
       )}
       {agents.some((agent) => agent.status === "drifted") && (
-        <Card className="border-amber-500/60">
-          <CardContent className="text-sm text-amber-600">
+        <Card className="border-amber-500/60 dark:border-amber-500/40">
+          <CardContent className="text-sm text-amber-600 dark:text-amber-400">
             {t("agents.drift_banner") ||
               "Config changed externally — Reapply rewrites the wiring on top of your other changes."}
           </CardContent>

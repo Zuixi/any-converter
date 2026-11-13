@@ -6,6 +6,10 @@
 
 - **Default gateway port is now `3028`** (was `1228`). Fresh homes, CLI defaults, daemon fallbacks, and Desktop defaults agree. Existing `config.toml` files keep their explicit `port`, so old installs must change it themselves.
 
+### Added
+
+- **Light/dark theme with a System option.** The Desktop UI ships a dark palette (classic neutral shadcn/GitHub-style tokens) beside the existing light one; the sidebar footer cycles Light → Dark → System, and Settings offers an explicit picker. "System" tracks the OS scheme live, the choice persists in localStorage, and a synchronous `theme-init.js` applies it before first paint so a dark-mode launch never flashes white. Dark text tokens re-balance contrast rather than inverting (gray-500 muted text on white ≈ 4.7:1, gray-400 on near-black ≈ 7.9:1), `color-scheme` follows the mode so native scrollbars and form controls match, and status colors (amber/emerald/destructive) keep AA-contrast variants in both modes.
+
 ## v0.1.3 (2026-11-10) — One gateway, one UI
 
 ### Changed
