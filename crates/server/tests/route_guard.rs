@@ -45,6 +45,13 @@ const ROUTES: &[(&str, &str, &str)] = &[
     ("PATCH", "/v1/admin/config", "{}"),
     ("GET", "/v1/admin/server/status", ""),
     (
+        "POST",
+        "/v1/admin/providers/discover",
+        r#"{"format":"openai_chat","base_url":"https://example.invalid","api_key":"sk-test"}"#,
+    ),
+    ("GET", "/v1/admin/providers/guard-provider/models", ""),
+    ("GET", "/v1/admin/catalog", ""),
+    (
         "PUT",
         "/v1/admin/secrets/provider/guard-provider",
         r#"{"api_key":"sk-test"}"#,

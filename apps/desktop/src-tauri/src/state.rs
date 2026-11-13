@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager};
 
+use any_converter_server::config::{ConsoleConfig, DEFAULT_PORT, LoggingConfig};
 use any_converter_server::config_store::ConfigStore;
 use any_converter_server::home::Home;
 
@@ -32,13 +33,14 @@ impl AppState {
         if let Some(error) = &migration_error {
             log::error!("legacy configuration migration failed: {error}");
         }
-        let logging = ConfigStore::from_home(&home)
+        let mut logging = ConfigStore::from_home(&home)
             .load()
             .map(|document| document.config().logging.clone())
             .unwrap_or_else(|error| {
                 log::warn!("could not load canonical logging config; using defaults: {error}");
-                Default::default()
+                LoggingConfig::default()
             });
+        apply_desktop_logging_profile(&mut logging, cfg!(debug_assertions));
         let _ = any_converter_server::logging::init_logging(&logging)?;
         let server_manager = ServerManager::new();
         let startup_error = migration_error
@@ -93,10 +95,89 @@ pub fn seed_defaults(db: &DesktopDb) -> Result<(), DbError> {
         db.delete_setting("server.host.lan_default_applied")?;
     }
     if !settings.contains_key("server.port") {
-        db.upsert_setting("server.port", "3028")?;
+        db.upsert_setting("server.port", &DEFAULT_PORT.to_string())?;
     }
     if !settings.contains_key("logging.max_disk_mb") {
         db.upsert_setting("logging.max_disk_mb", "500")?;
     }
     Ok(())
+}
+
+/// Desktop logging profile, layered on top of the user's config.
+///
+/// `tauri dev` always runs from a terminal, so dev builds mirror the
+/// gateway's debug-level logs (including request conversion bodies) to
+/// stderr for live debugging. Release builds are windowed apps with no
+/// console attached — writing to a detached stdout is wasted work, so
+/// console output is off and only the configured file outputs remain.
+fn apply_desktop_logging_profile(logging: &mut LoggingConfig, dev: bool) {
+    if dev {
+        logging.console = ConsoleConfig {
+            enabled: true,
+            output: "stderr".to_owned(),
+            level: None,
+            format: "pretty".to_owned(),
+        };
+        logging.level = raise_to_debug(&logging.level);
+    } else {
+        logging.console.enabled = false;
+    }
+}
+
+/// `debug` when `level` is less verbose than debug; otherwise unchanged.
+fn raise_to_debug(level: &str) -> String {
+    match level.trim().to_lowercase().as_str() {
+        "off" | "error" | "warn" | "info" => "debug".to_owned(),
+        _ => level.trim().to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn dev_profile_forces_stderr_debug_logging() {
+        let mut logging = LoggingConfig {
+            level: "warn".to_owned(),
+            console: ConsoleConfig {
+                enabled: false,
+                output: "stdout".to_owned(),
+                level: Some("error".to_owned()),
+                format: "json".to_owned(),
+            },
+            ..Default::default()
+        };
+        apply_desktop_logging_profile(&mut logging, true);
+        assert!(logging.console.enabled);
+        assert_eq!(logging.console.output, "stderr");
+        assert_eq!(logging.console.level, None);
+        assert_eq!(logging.level, "debug");
+    }
+
+    #[test]
+    fn release_profile_turns_the_console_off_but_keeps_files() {
+        let mut logging = LoggingConfig {
+            console: ConsoleConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        apply_desktop_logging_profile(&mut logging, false);
+        assert!(!logging.console.enabled);
+        // File outputs (name/level/rotation) are the config's business.
+        assert!(logging.files.is_empty());
+    }
+
+    #[test]
+    fn raise_to_debug_never_lowers_a_more_verbose_level() {
+        assert_eq!(raise_to_debug("info"), "debug");
+        assert_eq!(raise_to_debug("WARN "), "debug");
+        assert_eq!(raise_to_debug("off"), "debug");
+        assert_eq!(raise_to_debug("debug"), "debug");
+        assert_eq!(raise_to_debug("trace"), "trace");
+    }
 }

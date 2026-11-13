@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use any_converter_core::convert::Format;
 use any_converter_server::config::{
-    ConsoleConfig, LogFileConfig, LoggingConfig, ModelRouteConfig, ProviderConfig, RouteStrategy,
-    ServerConfig, ServerSettings,
+    ConsoleConfig, DEFAULT_PORT, LogFileConfig, LoggingConfig, ModelRouteConfig, ProviderConfig,
+    RouteStrategy, ServerConfig, ServerSettings,
 };
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -268,7 +268,7 @@ impl DesktopDb {
                     .get("server.host")
                     .cloned()
                     .unwrap_or_else(|| "127.0.0.1".to_string()),
-                port: parse_u16_setting(&settings, "server.port", 3028)?,
+                port: parse_u16_setting(&settings, "server.port", DEFAULT_PORT)?,
                 api_key: settings.get("server.api_key").cloned(),
                 pass_through_headers: Default::default(),
                 proxy: settings.get("server.proxy").cloned(),

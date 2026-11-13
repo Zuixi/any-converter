@@ -26,6 +26,7 @@ use crate::credentials::copilot::CopilotSessions;
 use crate::handlers::{
     AppState, handle_account_adopt, handle_account_models, handle_account_order,
     handle_account_plugins, handle_account_quotas, handle_account_release, handle_account_remove,
+    handle_plugin_install, handle_plugin_uninstall,
     handle_account_signin, handle_account_signin_cancel, handle_account_signin_status,
     handle_account_signin_submit, handle_accounts, handle_admin_convert, handle_admin_logs,
     handle_admin_status, handle_admin_usage, handle_claude, handle_count_tokens, handle_gemini,
@@ -199,6 +200,7 @@ fn legacy_runtime(state: &AppState) -> AdminRuntime {
         authority: ManagementAuthority::from_legacy_key(state.config.server.api_key.as_deref()),
         control_plane: None,
         web_auth: None,
+        discoveries: std::sync::Arc::new(crate::model_discovery::DiscoveryCache::default()),
     }
 }
 
@@ -286,6 +288,14 @@ fn create_router_with_runtime(state: Arc<AppState>, runtime: AdminRuntime) -> Ro
         .route("/v1/accounts", get(handle_accounts))
         .route("/v1/accounts/quotas", get(handle_account_quotas))
         .route("/v1/accounts/plugins", get(handle_account_plugins))
+        .route(
+            "/v1/accounts/plugins/install",
+            post(handle_plugin_install),
+        )
+        .route(
+            "/v1/accounts/plugins/uninstall",
+            post(handle_plugin_uninstall),
+        )
         .route("/v1/accounts/{id}/models", get(handle_account_models))
         .route("/v1/accounts/order", post(handle_account_order))
         .route("/v1/accounts/{id}/adopt", post(handle_account_adopt))
@@ -315,6 +325,15 @@ fn create_router_with_runtime(state: Arc<AppState>, runtime: AdminRuntime) -> Ro
             get(admin::get_config).patch(admin::patch_config),
         )
         .route("/v1/admin/server/status", get(admin::get_status))
+        .route(
+            "/v1/admin/providers/discover",
+            post(admin::discover_provider),
+        )
+        .route(
+            "/v1/admin/providers/{name}/models",
+            get(admin::get_provider_models),
+        )
+        .route("/v1/admin/catalog", get(admin::get_catalog))
         .route(
             "/v1/admin/secrets/provider/{provider}",
             put(admin::put_provider_secret).delete(admin::delete_provider_secret),

@@ -758,6 +758,73 @@ pub async fn handle_account_plugins(State(state): State<Arc<AppState>>) -> Respo
     .into_response()
 }
 
+/// The shape both plugin mutation endpoints answer with: the installed
+/// plugin entry (`spec`, what it serves, why it may not load).
+fn installed_plugin_json(plugin: &crate::plugins::managed::InstalledPlugin) -> Value {
+    let providers: Vec<Value> = plugin
+        .providers
+        .iter()
+        .map(|provider| {
+            serde_json::json!({
+                "id": provider.id,
+                "name": provider.name,
+                "methods": provider.methods.iter().map(|method| serde_json::json!({
+                    "type": match method.kind {
+                        crate::plugins::AuthMethodKind::Oauth => "oauth",
+                        crate::plugins::AuthMethodKind::Api => "api",
+                    },
+                    "label": method.label,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "spec": plugin.spec,
+        "providers": providers,
+        "error": plugin.error,
+    })
+}
+
+/// `POST /v1/accounts/plugins/install` {spec} (P6.3): npm-install a plugin
+/// package into the plugins dir and answer with what it serves. The GUI's
+/// add-sheet calls this so subscribing to a plugin provider never needs
+/// the CLI. A package that installs but won't load is still an install
+/// success — the listing carries the load error.
+pub async fn handle_plugin_install(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(spec) = body.get("spec").and_then(|v| v.as_str()) else {
+        return api_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "spec is required",
+        );
+    };
+    match crate::plugins::installer::install(&state.hosts, spec).await {
+        Ok(plugin) => Json(installed_plugin_json(&plugin)).into_response(),
+        Err(err) => api_error_response(StatusCode::INTERNAL_SERVER_ERROR, "install_error", err),
+    }
+}
+
+/// `POST /v1/accounts/plugins/uninstall` {spec}: remove the package from
+/// the plugins dir. Removing a package a provider still references leaves
+/// that provider's host to fail at next use, exactly as deleting the dir
+/// by hand would.
+pub async fn handle_plugin_uninstall(Json(body): Json<Value>) -> Response {
+    let Some(spec) = body.get("spec").and_then(|v| v.as_str()) else {
+        return api_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "spec is required",
+        );
+    };
+    match crate::plugins::installer::uninstall(spec).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => api_error_response(StatusCode::INTERNAL_SERVER_ERROR, "uninstall_error", err),
+    }
+}
+
 /// `POST /v1/accounts/order` {provider, accounts:[id...]} (P17): the order
 /// routing tries an account provider's seats in. Fully-qualified account
 /// ids, saved to `<config>/account-order.json` beside the secrets file —

@@ -11,6 +11,7 @@
 
 pub mod authstore;
 pub mod host;
+pub mod installer;
 pub mod managed;
 
 use std::collections::BTreeMap;

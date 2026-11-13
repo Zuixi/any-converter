@@ -151,6 +151,7 @@ async fn admin_config_uses_management_auth_etag_and_typed_patches() {
             model_map: None,
             account: None,
             accounts: None,
+            auth_scheme: None,
             proxy: None,
         }],
         ..Default::default()
@@ -242,6 +243,7 @@ async fn secret_and_rotation_endpoints_use_separate_authorities() {
             model_map: None,
             account: None,
             accounts: None,
+            auth_scheme: None,
             proxy: None,
         }],
         ..Default::default()

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useI18n } from "@any-converter/core";
 import {
   Button,
@@ -18,7 +18,12 @@ import { Field } from "../components/layout/Field";
 import { Header } from "../components/layout/Header";
 import { Table } from "../components/layout/Table";
 import { useAsyncState } from "../hooks/useAsyncState";
-import { management, useServerRequest, type AdminConfigView } from "../lib/management";
+import {
+  management,
+  useServerRequest,
+  type AdminConfigView,
+  type CatalogView,
+} from "../lib/management";
 
 export function RoutesPage() {
   const { t } = useI18n();
@@ -28,9 +33,31 @@ export function RoutesPage() {
       throw new Error(describeError(cause));
     }),
   );
+  const [catalog] = useAsyncState<CatalogView>(() =>
+    management.getCatalog().catch(() => ({ revision: "", providers: [], models: [] })),
+  );
   const [form, setForm] = useState({ pattern: "*", upstream_model: "", strategy: "priority" });
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [actionError, setActionError] = useState<string>();
+
+  // Route patterns match the model ids clients send. Offer the ids the
+  // gateway already exposes, so a route is never typed blind.
+  const suggestions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const model of catalog?.models ?? []) {
+      if (model.exposed) {
+        ids.add(model.id);
+      }
+    }
+    for (const provider of config?.providers ?? []) {
+      for (const model of Object.keys(provider.model_map)) {
+        if (!model.includes("*") && !model.includes("?")) {
+          ids.add(model);
+        }
+      }
+    }
+    return [...ids].sort();
+  }, [catalog, config]);
 
   const toggleProvider = (name: string) => {
     setSelectedProviders((current) =>
@@ -40,7 +67,10 @@ export function RoutesPage() {
 
   const create = async () => {
     try {
-      const next = await management.patchConfig(config?.revision ?? "", {
+      // The mutation's precondition must be the revision observed right
+      // before the write, not one cached when the page first loaded.
+      const current = await management.getConfig();
+      const next = await management.patchConfig(current.revision, {
         upsert_model_routes: [
           {
             pattern: form.pattern,
@@ -69,8 +99,20 @@ export function RoutesPage() {
       <Card>
         <CardContent className="grid gap-4 pt-6">
           <div className="grid gap-4 md:grid-cols-3">
-            <Field label={t("desktop.routes.pattern")} help={t("desktop.routes.patternHelp")}>
-              <Input value={form.pattern} onChange={(event) => setForm({ ...form, pattern: event.target.value })} />
+            <Field
+              label={t("desktop.routes.pattern")}
+              help={`${t("desktop.routes.patternHelp")} ${t("desktop.routes.modelSuggestionsHelp")}`}
+            >
+              <Input
+                list="route-model-suggestions"
+                value={form.pattern}
+                onChange={(event) => setForm({ ...form, pattern: event.target.value })}
+              />
+              <datalist id="route-model-suggestions">
+                {suggestions.map((model) => (
+                  <option key={model} value={model} />
+                ))}
+              </datalist>
             </Field>
             <Field label={t("desktop.routes.upstream")} help={t("desktop.routes.upstreamHelp")}>
               <Input

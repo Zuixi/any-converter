@@ -105,16 +105,42 @@ pub fn build_upstream_auth_headers_for_provider(
 }
 
 pub(crate) fn default_auth_scheme(format: Format) -> AuthScheme {
-    match format {
-        Format::OpenAIChat | Format::OpenAIResponses => AuthScheme::Bearer,
-        Format::Claude => AuthScheme::Anthropic,
-        Format::Gemini => AuthScheme::GoogleApiKey,
+    AuthScheme::for_format(format)
+}
+
+/// Build a provider's complete upstream auth headers: the scheme's headers,
+/// the provider's extra headers, and the Claude Messages wire's
+/// `anthropic-version` — which compatible gateways keep requiring even after
+/// they switch the credential from `x-api-key` to `Authorization: Bearer`.
+///
+/// A pinned `anthropic-version` in `extra_headers` wins and is not duplicated.
+/// `wire_format` is the protocol the outbound request actually speaks (a
+/// provider's configured `format` may be overridden by its `api`).
+pub fn build_provider_upstream_headers(
+    wire_format: Format,
+    scheme: AuthScheme,
+    api_key: &str,
+    extra_headers: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut headers = build_headers_for_scheme(scheme, api_key);
+    headers.extend(extra_headers.iter().cloned());
+    if wire_format == Format::Claude
+        && !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("anthropic-version"))
+    {
+        headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
     }
+    headers
 }
 
 pub(crate) fn build_headers_for_scheme(scheme: AuthScheme, api_key: &str) -> Vec<(String, String)> {
     match scheme {
-        AuthScheme::Bearer => vec![("Authorization".to_string(), format!("Bearer {api_key}"))],
+        // `auto` is resolved against the format before reaching here; if a
+        // caller ever skips that, Bearer is the least-surprising fallback.
+        AuthScheme::Auto | AuthScheme::Bearer => {
+            vec![("Authorization".to_string(), format!("Bearer {api_key}"))]
+        }
         AuthScheme::ApiKeyHeader => vec![("api-key".to_string(), api_key.to_string())],
         AuthScheme::XApiKey => vec![("x-api-key".to_string(), api_key.to_string())],
         AuthScheme::GoogleApiKey => vec![("x-goog-api-key".to_string(), api_key.to_string())],

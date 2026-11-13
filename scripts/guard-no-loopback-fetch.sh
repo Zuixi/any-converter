@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Guard: the desktop webview must never dial the embedded server directly.
 #
-# A browser origin (http://localhost:1420 in dev, tauri://localhost or
+# A browser origin (http://localhost:8420 in dev, tauri://localhost or
 # http://tauri.localhost in production) crossing into the loopback server
 # needs a CORS preflight the server does not answer, so any such fetch fails
 # at runtime with "TypeError: Failed to fetch" (the Accounts/Agents bug this

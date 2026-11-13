@@ -46,7 +46,10 @@ export function SettingsPage() {
 
   const save = async () => {
     try {
-      let next = await management.patchConfig(configuration?.revision ?? "", {
+      // Fetch the current revision instead of trusting the cached view; a
+      // stale or empty If-Match turns a normal save into a 412/428.
+      const current = await management.getConfig();
+      let next = await management.patchConfig(current.revision, {
         // The browser cannot restart the gateway, so host/port stay
         // untouched there; only the desktop may edit them.
         ...(hostManaged ? { server: { host, port: Number(port) } } : {}),
@@ -75,7 +78,6 @@ export function SettingsPage() {
         <p className="text-sm text-muted-foreground">{t("desktop.config.restartRequired")}</p>
       )}
       <Card>
-      <Card>
         <CardContent className="grid gap-4 pt-6">
           <Field label={t("common.theme")} help={t("desktop.settings.appearanceHelp")}>
             <div className="flex flex-wrap gap-2" role="group" aria-label={t("common.theme")}>
@@ -93,6 +95,7 @@ export function SettingsPage() {
           </Field>
         </CardContent>
       </Card>
+      <Card>
         <CardContent className="grid gap-4 pt-6">
           <div className="flex w-full items-center gap-2 text-sm text-muted-foreground">
             <span>{t("desktop.settings.last_client")}</span>

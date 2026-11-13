@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use any_converter_server::config::DEFAULT_PORT;
 use any_converter_server::config_store::ConfigStore;
 use any_converter_server::home::Home;
 use serde::{Deserialize, Serialize};
@@ -132,7 +133,7 @@ impl ServerManager {
                 status: ServerStatus {
                     state: ServerRunState::Stopped,
                     host: "127.0.0.1".to_string(),
-                    port: 3028,
+                    port: DEFAULT_PORT,
                     last_error: None,
                 },
                 busy: false,
@@ -182,7 +183,7 @@ impl ServerManager {
             inner.status = ServerStatus {
                 state: ServerRunState::Starting,
                 host: "127.0.0.1".to_string(),
-                port: 3028,
+                port: DEFAULT_PORT,
                 last_error: None,
             };
         }

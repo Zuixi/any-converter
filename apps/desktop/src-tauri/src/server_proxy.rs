@@ -130,6 +130,12 @@ pub fn validate_request(method: &str, path: &str) -> Result<(), ProxyError> {
         ("GET", ["v1", "admin", "usage"]) => true,
         ("GET", ["v1", "admin", "status"]) => true,
         ("POST", ["v1", "admin", "convert"]) => true,
+        // Provider model discovery and the exposure catalog (the providers
+        // page's "fetch models" flows). Without these the page's calls die
+        // at this allowlist and surface as a bare "Invalid request".
+        ("POST", ["v1", "admin", "providers", "discover"]) => true,
+        ("GET", ["v1", "admin", "providers", id, "models"]) => safe_segment(id),
+        ("GET", ["v1", "admin", "catalog"]) => true,
         ("PUT", ["v1", "admin", "secrets", "provider", provider]) => safe_segment(provider),
         ("DELETE", ["v1", "admin", "secrets", "provider", provider]) => safe_segment(provider),
         ("PUT", ["v1", "admin", "secrets", "inference"]) => true,
@@ -348,6 +354,23 @@ mod tests {
         assert!(validate_request("GET", "/v1/admin/usage/../config").is_err());
         assert!(validate_request("GET", "/health").is_err());
         assert!(validate_request("POST", "/v1/admin/status").is_err());
+    }
+
+    /// The providers page's model flows: unsaved probe, saved refresh, and
+    /// the catalog. Each of these was once missing from the allowlist and
+    /// surfaced to users as a bare "Invalid request".
+    #[test]
+    fn validate_request_accepts_the_provider_model_routes() {
+        assert!(validate_request("POST", "/v1/admin/providers/discover").is_ok());
+        assert!(validate_request("GET", "/v1/admin/providers/mm/models").is_ok());
+        assert!(validate_request("GET", "/v1/admin/providers/mm/models?refresh=1").is_ok());
+        assert!(validate_request("GET", "/v1/admin/catalog").is_ok());
+
+        // Mutations and path tricks stay out.
+        assert!(validate_request("DELETE", "/v1/admin/providers/mm/models").is_err());
+        assert!(validate_request("GET", "/v1/admin/providers/../secrets").is_err());
+        assert!(validate_request("GET", "/v1/admin/providers/a%2Fb/models").is_err());
+        assert!(validate_request("POST", "/v1/admin/catalog").is_err());
     }
 
     #[test]

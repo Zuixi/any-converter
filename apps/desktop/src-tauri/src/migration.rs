@@ -8,6 +8,8 @@ use atomicwrites::{AllowOverwrite, AtomicFile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use any_converter_server::config::DEFAULT_PORT;
+use any_converter_server::config_store::ConfigStore;
 use any_converter_server::control_plane::{
     ConfigPatch, ControlPlane, LoggingPatch, ModelRoutePatch, ProviderPatch, ServerPatch,
 };
@@ -18,6 +20,25 @@ use crate::db::DesktopDb;
 use crate::secrets;
 
 const MIGRATION_VERSION: u8 = 1;
+
+/// Ports older releases used as their default.
+///
+/// A legacy Desktop database still storing one of these never recorded an
+/// explicit operator choice, so migration moves it to [`DEFAULT_PORT`]
+/// instead of carrying a retired default forward.
+const RETIRED_DEFAULT_PORTS: &[u16] = &[1228];
+
+fn is_retired_default_port(port: u16) -> bool {
+    RETIRED_DEFAULT_PORTS.contains(&port)
+}
+
+fn normalize_legacy_port(port: u16) -> u16 {
+    if is_retired_default_port(port) {
+        DEFAULT_PORT
+    } else {
+        port
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +57,8 @@ pub enum MigrationError {
     ServerSecret(#[from] any_converter_server::secrets::SecretError),
     #[error(transparent)]
     ControlPlane(#[from] any_converter_server::control_plane::ControlPlaneError),
+    #[error(transparent)]
+    ConfigStore(#[from] any_converter_server::config_store::ConfigStoreError),
     #[error("migration marker io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("migration marker serialization error: {0}")]
@@ -60,7 +83,12 @@ pub fn migrate_legacy_database(
     let config_existed = home.config_path().exists();
     match migration_start(&marker_path, config_existed)? {
         MigrationStart::Run => {}
-        MigrationStart::Completed => return Ok(MigrationOutcome::Completed),
+        MigrationStart::Completed => {
+            // Homes that completed the v1 import before the port default
+            // changed still carry the retired port in their canonical file.
+            repair_retired_default_port(home, ApiKeyStore::for_home(home))?;
+            return Ok(MigrationOutcome::Completed);
+        }
         MigrationStart::ExternalConfigPreserved => {
             return Ok(MigrationOutcome::ExternalConfigPreserved);
         }
@@ -80,6 +108,33 @@ pub fn migrate_legacy_database(
     write_marker(&marker_path, "complete")?;
 
     Ok(MigrationOutcome::Completed)
+}
+
+/// Move a canonical config off a retired default port.
+///
+/// This runs for homes whose v1 migration already completed, so the
+/// database-to-TOML import will not run again. It is a no-op once the file
+/// no longer carries a retired port, and it leaves explicitly chosen ports
+/// untouched.
+fn repair_retired_default_port(home: &Home, keys: ApiKeyStore) -> Result<(), MigrationError> {
+    let store = ConfigStore::from_home(home);
+    let document = store.load()?;
+    if !is_retired_default_port(document.config().server.port) {
+        return Ok(());
+    }
+
+    let prepared = ControlPlane::prepare(home.clone(), keys)?;
+    let control_plane = Arc::clone(&prepared.control_plane);
+    let view = control_plane.config_view()?;
+    let patch = ConfigPatch {
+        server: Some(ServerPatch {
+            port: Some(DEFAULT_PORT),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    control_plane.patch_config(&view.revision, patch)?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -185,7 +240,7 @@ fn legacy_patch(home: &Home, legacy: &any_converter_server::config::ServerConfig
     ConfigPatch {
         server: Some(ServerPatch {
             host: Some(legacy.server.host.clone()),
-            port: Some(legacy.server.port),
+            port: Some(normalize_legacy_port(legacy.server.port)),
             proxy: legacy.server.proxy.clone().map(Some),
         }),
         logging: Some(LoggingPatch {
@@ -208,6 +263,7 @@ fn legacy_patch(home: &Home, legacy: &any_converter_server::config::ServerConfig
                 account: provider.account.clone().map(Some),
                 accounts: Some(provider.accounts.clone()),
                 proxy: provider.proxy.clone().map(Some),
+                auth_scheme: None,
             })
             .collect(),
         remove_providers: Vec::new(),
@@ -361,6 +417,80 @@ api_key = "sk-legacy"
 
         keys.set_provider("openai", "sk-legacy").unwrap();
         migrate_provider_keys(&legacy, &keys).unwrap();
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retired_default_port_moves_to_current_default() {
+        assert_eq!(normalize_legacy_port(1228), DEFAULT_PORT);
+        assert_eq!(normalize_legacy_port(9090), 9090);
+    }
+
+    #[test]
+    fn legacy_patch_remaps_retired_default_but_keeps_explicit_ports() {
+        let root = std::env::temp_dir().join(format!(
+            "any-converter-migration-{}-port-patch",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let home = Home::from_root(&root);
+
+        let retired = any_converter_server::config::ServerConfig::from_toml(
+            "[server]\nhost = \"127.0.0.1\"\nport = 1228\n",
+        )
+        .unwrap();
+        assert_eq!(
+            legacy_patch(&home, &retired).server.unwrap().port,
+            Some(DEFAULT_PORT)
+        );
+
+        let explicit = any_converter_server::config::ServerConfig::from_toml(
+            "[server]\nhost = \"127.0.0.1\"\nport = 9090\n",
+        )
+        .unwrap();
+        assert_eq!(
+            legacy_patch(&home, &explicit).server.unwrap().port,
+            Some(9090)
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn completed_migration_repairs_a_retired_port_and_is_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "any-converter-migration-{}-port-repair",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("config.toml"),
+            "[server]\nhost = \"127.0.0.1\"\nport = 1228\n",
+        )
+        .unwrap();
+        let home = Home::from_root(&root);
+
+        let keys = ApiKeyStore::for_home_with_backend(
+            &home,
+            Arc::new(any_converter_server::secrets::MemoryKeychain::new()),
+        );
+        repair_retired_default_port(&home, keys).unwrap();
+        let repaired = ConfigStore::from_home(&home).load().unwrap();
+        assert_eq!(repaired.config().server.port, DEFAULT_PORT);
+
+        // The second pass reads the repaired file and must not rewrite it.
+        let revisions = repaired.revision().clone();
+        let keys = ApiKeyStore::for_home_with_backend(
+            &home,
+            Arc::new(any_converter_server::secrets::MemoryKeychain::new()),
+        );
+        repair_retired_default_port(&home, keys).unwrap();
+        let unchanged = ConfigStore::from_home(&home).load().unwrap();
+        assert_eq!(unchanged.revision(), &revisions);
+        assert_eq!(unchanged.config().server.port, DEFAULT_PORT);
 
         let _ = std::fs::remove_dir_all(root);
     }

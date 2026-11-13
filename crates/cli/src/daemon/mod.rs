@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use any_converter_server::config::ServerConfig;
+use any_converter_server::config::{DEFAULT_PORT, ServerConfig};
 use any_converter_server::config_store::ConfigStore;
 use any_converter_server::home::Home;
 use any_converter_server::web_auth;
@@ -415,7 +415,7 @@ pub(crate) async fn run(
                 Ok(base) => base,
                 Err(error) => {
                     push_advice(&mut advice, format!("config: {error}"));
-                    ("127.0.0.1".to_owned(), 3028)
+                    ("127.0.0.1".to_owned(), DEFAULT_PORT)
                 }
             };
             match web_auth::read_key_file(&home) {

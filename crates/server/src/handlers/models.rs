@@ -90,7 +90,7 @@ pub async fn handle_models(
         .map(|m| {
             build_model_object(
                 m,
-                "any-converter",
+                model_owner(&state.config, m),
                 state.config.model_metadata.get(m.as_str()),
             )
         })
@@ -106,15 +106,21 @@ pub async fn handle_model_retrieve(
     State(state): State<Arc<AppState>>,
     Path(model_id): Path<String>,
 ) -> Response {
-    for provider in &state.config.providers {
-        if provider.model_map.contains_key(&model_id) {
-            return Json(build_model_object(
-                &model_id,
-                &provider.name,
-                state.config.model_metadata.get(&model_id),
-            ))
-            .into_response();
-        }
+    // The retrieve endpoint answers for exactly the ids the list endpoint
+    // exposes, plus models a route resolves (a wildcard route covers ids
+    // that cannot be enumerated). Neither is narrower than the other.
+    let listed = state
+        .config
+        .available_models()
+        .iter()
+        .any(|model| model == &model_id);
+    if listed || state.config.resolve_provider(&model_id).is_some() {
+        return Json(build_model_object(
+            &model_id,
+            model_owner(&state.config, &model_id),
+            state.config.model_metadata.get(&model_id),
+        ))
+        .into_response();
     }
 
     api_error_response(
@@ -122,6 +128,26 @@ pub async fn handle_model_retrieve(
         "model_not_found",
         format!("The model '{}' does not exist", model_id),
     )
+}
+
+/// Which provider serves a catalog id. Explicit `model_map` entries win;
+/// otherwise the first provider on the resolved route.
+fn model_owner<'a>(config: &'a crate::config::ServerConfig, model: &str) -> &'a str {
+    if let Some(provider) = config
+        .providers
+        .iter()
+        .find(|provider| provider.model_map.contains_key(model))
+    {
+        return provider.name.as_str();
+    }
+    if let Some(route) = config.resolve_provider(model) {
+        if let Some(name) = route.provider_names.first() {
+            if let Some(provider) = config.find_provider(name) {
+                return provider.name.as_str();
+            }
+        }
+    }
+    "any-converter"
 }
 
 fn build_model_object(

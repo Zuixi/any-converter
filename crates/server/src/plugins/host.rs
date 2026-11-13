@@ -60,6 +60,18 @@ const PLUGIN_ARG: &str = "--plugins";
 /// Environment override for the node executable used by [`default_launch`].
 const NODE_ENV: &str = "ANY_CONVERTER_NODE";
 
+/// Programmatic override for the node executable, ahead of [`NODE_ENV`]:
+/// an embedding app (the desktop, which cannot `set_var` — it forbids
+/// unsafe code) points plugin hosts at the Node runtime it bundles.
+static NODE_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Pin the node executable every plugin host is launched with (the
+/// desktop's bundled runtime). Ignored after the first launch; `None`
+/// keeps [`NODE_ENV`] and then the system `node`.
+pub fn set_node_override(path: impl Into<String>) {
+    let _ = NODE_OVERRIDE.set(path.into());
+}
+
 /// Waiters for in-flight requests, keyed by request id.
 type PendingReplies = HashMap<u64, oneshot::Sender<Result<Value, String>>>;
 
@@ -113,7 +125,11 @@ pub fn default_launch(plugins: Vec<PluginSpec>) -> PluginLaunch {
         }
     }
     PluginLaunch {
-        program: std::env::var(NODE_ENV).unwrap_or_else(|_| "node".to_string()),
+        program: NODE_OVERRIDE
+            .get()
+            .cloned()
+            .or_else(|| std::env::var(NODE_ENV).ok())
+            .unwrap_or_else(|| "node".to_string()),
         args,
         env: vec![],
     }

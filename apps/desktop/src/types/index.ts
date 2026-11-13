@@ -1,5 +1,5 @@
 export type AppPath =
-  "/dashboard" | "/providers" | "/routes" | "/accounts" | "/agents" | "/playground" | "/logs" | "/usage" | "/settings";
+  "/dashboard" | "/providers" | "/routes" | "/agents" | "/playground" | "/logs" | "/usage" | "/settings";
 
 export interface ServerStatus {
   state: "stopped" | "starting" | "running" | "stopping" | "failed" | "attached";
