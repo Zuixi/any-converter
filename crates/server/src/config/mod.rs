@@ -205,12 +205,17 @@ impl Default for ConsoleConfig {
     }
 }
 
+/// Default gateway port, shared by the server, CLI, and Desktop defaults.
+///
+/// Keep every default surface pointing here instead of repeating the literal.
+pub const DEFAULT_PORT: u16 = 3028;
+
 fn default_host() -> String {
     "127.0.0.1".to_string()
 }
 
 fn default_port() -> u16 {
-    3028
+    DEFAULT_PORT
 }
 
 impl ServerConfig {

@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
+use any_converter_core::convert::Format;
 use axum::{
     Extension, Json,
     body::Body,
-    extract::{Path, rejection::JsonRejection},
+    extract::{Path, Query, rejection::JsonRejection},
     http::{HeaderMap, Request, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -13,10 +14,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::config::ServerConfig;
 use crate::config_store::{ConfigRevision, ConfigStoreError};
 use crate::control_plane::{
     AdminConfigView, ConfigPatch, ControlPlane, ControlPlaneError, ControlPlaneStatus,
     ManagementAuthority, SecretMutationResult,
+};
+use crate::model_discovery::{
+    DiscoveryCache, DiscoveryError, DiscoveryErrorKind, DiscoveryReport, DiscoveryStatus,
+    cache_key, discover,
 };
 use crate::secrets::SecretError;
 use crate::web_auth::{SessionCheck, WebAuth, check_session};
@@ -30,6 +36,8 @@ pub struct AdminRuntime {
     /// Browser page-session credential; `None` keeps the router
     /// bearer-only (legacy constructor).
     pub web_auth: Option<Arc<WebAuth>>,
+    /// Last upstream model lists. Derived data only; never persisted.
+    pub discoveries: Arc<DiscoveryCache>,
 }
 
 impl AdminRuntime {
@@ -55,6 +63,7 @@ impl AdminRuntimeBuilder {
             authority: ManagementAuthority::ControlPlane(Arc::clone(&control_plane)),
             control_plane: Some(control_plane),
             web_auth: None,
+            discoveries: Arc::new(DiscoveryCache::default()),
         }
     }
 }
@@ -195,6 +204,321 @@ pub async fn get_status(Extension(runtime): Extension<AdminRuntime>) -> Response
     match control_plane.status() {
         Ok(status) => Json(AdminStatusResponse::from(status)).into_response(),
         Err(error) => control_plane_error(error),
+    }
+}
+
+/// `POST /v1/admin/providers/discover`
+///
+/// Ask an upstream which models it offers. Body either names a saved
+/// provider or carries a not-yet-saved `format` + `base_url` + `api_key`.
+/// This is read-only, so no `If-Match` applies.
+pub async fn discover_provider(
+    Extension(runtime): Extension<AdminRuntime>,
+    body: Result<Json<DiscoverProviderBody>, JsonRejection>,
+) -> Response {
+    let Some(control_plane) = runtime.control_plane else {
+        return control_plane_unavailable();
+    };
+    let Json(body) = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                rejection.body_text(),
+                None,
+            );
+        }
+    };
+
+    let saved = match body.name.as_deref().filter(|name| !name.is_empty()) {
+        Some(name) => match control_plane.provider_connection(name) {
+            Ok(Some(connection)) => Some(connection),
+            Ok(None) => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    "provider_not_found",
+                    format!("provider `{name}` does not exist"),
+                    Some("save the provider first, or omit `name` to test unsaved settings"),
+                );
+            }
+            Err(error) => return control_plane_error(error),
+        },
+        None => None,
+    };
+
+    if let Some(connection) = saved {
+        if connection.plugin {
+            return Json(DiscoveryReport::unsupported_now(
+                DiscoveryErrorKind::UnsupportedFormat,
+                "this provider is served by a plugin, which owns its model catalog",
+                Some("open the account's model list instead"),
+            ))
+            .into_response();
+        }
+        if connection.account_based {
+            return Json(DiscoveryReport::unsupported_now(
+                DiscoveryErrorKind::UnsupportedFormat,
+                "this provider signs in per account and has no key-based model list",
+                Some("models come from the signed-in account; add them manually if needed"),
+            ))
+            .into_response();
+        }
+        let key = cache_key(
+            &connection.name,
+            connection.format,
+            &connection.base_url,
+            connection.auth_scheme,
+        );
+        if body.refresh {
+            runtime.discoveries.invalidate(&key);
+        } else if let Some(report) = runtime.discoveries.get(&key) {
+            return Json(report).into_response();
+        }
+        let report = discover(
+            connection.format,
+            &connection.base_url,
+            connection.api_key.as_deref().unwrap_or_default(),
+            Some(&connection.auth_headers),
+            connection.proxy.as_deref(),
+        )
+        .await;
+        runtime.discoveries.put(key, report.clone());
+        return Json(report).into_response();
+    }
+
+    let (Some(format), Some(base_url)) = (body.format, body.base_url) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "discovery needs either `name` or `format` and `base_url`",
+            Some("send a saved provider's name, or the settings you are about to save"),
+        );
+    };
+    let api_key = body.api_key.as_deref().unwrap_or_default();
+    // Sign the probe exactly like generation will: the chosen scheme, or the
+    // endpoint's default when the form has not picked one.
+    let auth_headers = (!api_key.is_empty()).then(|| {
+        let scheme = body
+            .auth_scheme
+            .unwrap_or(crate::config::AuthScheme::Auto)
+            .resolve(format, &base_url);
+        crate::auth::build_provider_upstream_headers(format, scheme, api_key, &[])
+    });
+    let report = discover(format, &base_url, api_key, auth_headers.as_deref(), None).await;
+    Json(report).into_response()
+}
+
+/// `GET /v1/admin/providers/{name}/models?refresh=1`
+pub async fn get_provider_models(
+    Extension(runtime): Extension<AdminRuntime>,
+    Path(name): Path<String>,
+    Query(query): Query<RefreshQuery>,
+) -> Response {
+    let Some(control_plane) = runtime.control_plane else {
+        return control_plane_unavailable();
+    };
+    let connection = match control_plane.provider_connection(&name) {
+        Ok(Some(connection)) => connection,
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "provider_not_found",
+                format!("provider `{name}` does not exist"),
+                None,
+            );
+        }
+        Err(error) => return control_plane_error(error),
+    };
+    if connection.plugin || connection.account_based {
+        return Json(DiscoveryReport::unsupported_now(
+            DiscoveryErrorKind::UnsupportedFormat,
+            "this provider's model catalog is managed by its plugin or signed-in account",
+            Some("open the account's model list instead"),
+        ))
+        .into_response();
+    }
+
+    let key = cache_key(
+        &connection.name,
+        connection.format,
+        &connection.base_url,
+        connection.auth_scheme,
+    );
+    if query.wants_refresh() {
+        runtime.discoveries.invalidate(&key);
+    } else if let Some(report) = runtime.discoveries.get(&key) {
+        return Json(report).into_response();
+    }
+    let report = discover(
+        connection.format,
+        &connection.base_url,
+        connection.api_key.as_deref().unwrap_or_default(),
+        Some(&connection.auth_headers),
+        connection.proxy.as_deref(),
+    )
+    .await;
+    runtime.discoveries.put(key, report.clone());
+    Json(report).into_response()
+}
+
+/// `GET /v1/admin/catalog`
+///
+/// One view of what each provider offers upstream, what the gateway
+/// exposes, and whether the exposed ids resolve to a route.
+pub async fn get_catalog(Extension(runtime): Extension<AdminRuntime>) -> Response {
+    let Some(control_plane) = runtime.control_plane else {
+        return control_plane_unavailable();
+    };
+    match control_plane.config_snapshot() {
+        Ok((revision, config)) => {
+            Json(build_catalog(&runtime.discoveries, &revision, &config)).into_response()
+        }
+        Err(error) => control_plane_error(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoverProviderBody {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub format: Option<Format>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Signing scheme for an unsaved provider; omit for the format default.
+    #[serde(default)]
+    pub auth_scheme: Option<crate::config::AuthScheme>,
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct RefreshQuery {
+    #[serde(default)]
+    refresh: Option<String>,
+}
+
+impl RefreshQuery {
+    fn wants_refresh(&self) -> bool {
+        self.refresh
+            .as_deref()
+            .is_some_and(|value| matches!(value, "1" | "true" | "yes"))
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct CatalogView {
+    pub revision: ConfigRevision,
+    pub providers: Vec<CatalogProvider>,
+    pub models: Vec<CatalogModel>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CatalogProvider {
+    pub name: String,
+    pub format: String,
+    pub base_url: String,
+    pub plugin: bool,
+    pub account_based: bool,
+    pub exposed_count: usize,
+    pub discovered_count: usize,
+    pub checked_at_unix: Option<u64>,
+    pub status: Option<DiscoveryStatus>,
+    pub error: Option<DiscoveryError>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CatalogModel {
+    pub id: String,
+    pub provider: String,
+    pub upstream: String,
+    pub exposed: bool,
+    pub routed: bool,
+    pub source: &'static str,
+    pub capabilities: Vec<String>,
+}
+
+fn build_catalog(
+    cache: &DiscoveryCache,
+    revision: &ConfigRevision,
+    config: &ServerConfig,
+) -> CatalogView {
+    let mut providers = Vec::with_capacity(config.providers.len());
+    let mut models = Vec::new();
+
+    for provider in &config.providers {
+        let format = provider.effective_api().to_format();
+        let scheme = crate::credentials::effective_auth_scheme(provider);
+        let report = cache.get(&cache_key(
+            &provider.name,
+            format,
+            &provider.base_url,
+            scheme,
+        ));
+        let mut exposed_count = 0;
+
+        for (model, upstream) in &provider.model_map {
+            if model == "*" {
+                continue;
+            }
+            exposed_count += 1;
+            let routed = config.resolve_provider(model).is_some_and(|route| {
+                route
+                    .provider_names
+                    .iter()
+                    .any(|name| name == &provider.name)
+            });
+            models.push(CatalogModel {
+                id: model.clone(),
+                provider: provider.name.clone(),
+                upstream: upstream.clone(),
+                exposed: true,
+                routed,
+                source: "configured",
+                capabilities: vec!["chat".to_owned()],
+            });
+        }
+
+        let discovered_count = report.as_ref().map_or(0, |report| report.count);
+        if let Some(report) = &report {
+            for discovered in &report.models {
+                if provider.model_map.contains_key(&discovered.id) {
+                    continue;
+                }
+                models.push(CatalogModel {
+                    id: discovered.id.clone(),
+                    provider: provider.name.clone(),
+                    upstream: discovered.id.clone(),
+                    exposed: false,
+                    routed: false,
+                    source: "upstream",
+                    capabilities: discovered.capabilities.clone(),
+                });
+            }
+        }
+
+        providers.push(CatalogProvider {
+            name: provider.name.clone(),
+            format: format.as_str().to_owned(),
+            base_url: provider.base_url.clone(),
+            plugin: provider.plugin.is_some(),
+            account_based: !provider.account_ids().is_empty(),
+            exposed_count,
+            discovered_count,
+            checked_at_unix: report.as_ref().map(|report| report.checked_at_unix),
+            status: report.as_ref().map(|report| report.status),
+            error: report.and_then(|report| report.error),
+        });
+    }
+
+    CatalogView {
+        revision: revision.clone(),
+        providers,
+        models,
     }
 }
 
@@ -513,7 +837,105 @@ mod tests {
             authority: ManagementAuthority::from_legacy_key(key),
             control_plane: None,
             web_auth: None,
+            discoveries: Arc::new(DiscoveryCache::default()),
         }
+    }
+
+    fn catalog_fixture() -> CatalogView {
+        let document = crate::config_store::ConfigDocument::parse(
+            r#"
+[server]
+host = "127.0.0.1"
+port = 3028
+
+[[providers]]
+name = "deepseek"
+format = "openai_chat"
+base_url = "https://api.deepseek.com"
+api_key = "keychain:provider:deepseek"
+model_map = { "deepseek-chat" = "deepseek-chat" }
+
+[[providers]]
+name = "local"
+format = "openai_chat"
+base_url = "http://127.0.0.1:11434"
+api_key = "ollama"
+model_map = { "qwen2.5" = "qwen2.5" }
+
+[[model_routes]]
+pattern = "deepseek-chat"
+providers = ["deepseek"]
+"#,
+        )
+        .unwrap();
+        let cache = DiscoveryCache::default();
+        let provider = &document.config().providers[0];
+        cache.put(
+            cache_key(
+                &provider.name,
+                provider.effective_api().to_format(),
+                &provider.base_url,
+                crate::credentials::effective_auth_scheme(provider),
+            ),
+            DiscoveryReport {
+                status: DiscoveryStatus::Ok,
+                source: "upstream".to_owned(),
+                checked_at_unix: 42,
+                latency_ms: 3,
+                count: 2,
+                models: vec![
+                    crate::model_discovery::DiscoveredModel {
+                        id: "deepseek-chat".to_owned(),
+                        display_name: None,
+                        capabilities: vec!["chat".to_owned()],
+                    },
+                    crate::model_discovery::DiscoveredModel {
+                        id: "deepseek-reasoner".to_owned(),
+                        display_name: None,
+                        capabilities: vec!["chat".to_owned()],
+                    },
+                ],
+                error: None,
+            },
+        );
+        build_catalog(&cache, document.revision(), document.config())
+    }
+
+    #[test]
+    fn catalog_separates_exposed_from_discovered_and_reports_routing() {
+        let catalog = catalog_fixture();
+        let deepseek = &catalog.providers[0];
+        assert_eq!(deepseek.exposed_count, 1);
+        assert_eq!(deepseek.discovered_count, 2);
+        assert_eq!(deepseek.status, Some(DiscoveryStatus::Ok));
+
+        let exposed = catalog
+            .models
+            .iter()
+            .find(|model| model.id == "deepseek-chat")
+            .unwrap();
+        assert!(exposed.exposed);
+        assert!(exposed.routed, "the explicit route must resolve");
+
+        let discovered = catalog
+            .models
+            .iter()
+            .find(|model| model.id == "deepseek-reasoner")
+            .unwrap();
+        assert!(!discovered.exposed);
+        assert!(!discovered.routed);
+        assert_eq!(discovered.source, "upstream");
+
+        let unrouted = catalog
+            .models
+            .iter()
+            .find(|model| model.id == "qwen2.5")
+            .unwrap();
+        assert!(unrouted.exposed);
+        assert!(
+            !unrouted.routed,
+            "no route means the model cannot be served"
+        );
     }
 
     #[test]

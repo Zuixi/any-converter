@@ -6,8 +6,34 @@
 
 use std::future::Future;
 
-use crate::auth::{AuthError, build_headers_for_scheme, default_auth_scheme};
+use any_converter_core::convert::Format;
+
+use crate::auth::AuthError;
 use crate::config::{AuthScheme, ProviderConfig};
+
+/// The scheme actually used for a provider: an explicit non-`auto` scheme
+/// wins; otherwise the endpoint default applies (compatible Claude gateways
+/// sign with Bearer), and Anthropic OAuth tokens sign with Bearer on any
+/// host because that is the credential kind they are.
+pub fn effective_auth_scheme(provider: &ProviderConfig) -> AuthScheme {
+    if provider.auth.scheme.is_none()
+        && provider.format == Format::Claude
+        && is_anthropic_oauth_token(&provider.api_key)
+    {
+        return AuthScheme::Bearer;
+    }
+    provider
+        .auth
+        .scheme
+        .unwrap_or(AuthScheme::Auto)
+        .resolve(provider.format, &provider.base_url)
+}
+
+/// Anthropic OAuth tokens (`sk-ant-oat…`, issued by Claude subscription
+/// sign-ins) authenticate as `Authorization: Bearer`, never `x-api-key`.
+pub(crate) fn is_anthropic_oauth_token(api_key: &str) -> bool {
+    api_key.contains("sk-ant-oat")
+}
 
 /// A typed provider credential.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -38,6 +64,9 @@ pub enum Credential {
 /// headers) into upstream auth headers.
 #[derive(Debug, Clone)]
 pub struct ApiKeySource {
+    /// The protocol the outbound request speaks; drives wire-required
+    /// headers such as Claude's `anthropic-version`.
+    wire_format: Format,
     scheme: AuthScheme,
     api_key: String,
     extra_headers: Vec<(String, String)>,
@@ -46,15 +75,12 @@ pub struct ApiKeySource {
 impl ApiKeySource {
     /// Build a source from provider-level config.
     ///
-    /// Mirrors the legacy `build_upstream_auth_headers_for_provider` logic:
-    /// the scheme defaults to the provider format's default scheme, and
+    /// The scheme defaults to the endpoint's default scheme, and
     /// provider-level extra headers are appended after the scheme headers.
     pub fn for_provider(provider: &ProviderConfig) -> Self {
         Self {
-            scheme: provider
-                .auth
-                .scheme
-                .unwrap_or_else(|| default_auth_scheme(provider.format)),
+            wire_format: provider.effective_api().to_format(),
+            scheme: effective_auth_scheme(provider),
             api_key: provider.api_key.clone(),
             extra_headers: provider
                 .auth
@@ -65,12 +91,19 @@ impl ApiKeySource {
         }
     }
 
+    fn build_headers(&self) -> Vec<(String, String)> {
+        crate::auth::build_provider_upstream_headers(
+            self.wire_format,
+            self.scheme,
+            &self.api_key,
+            &self.extra_headers,
+        )
+    }
+
     /// Synchronous materialization (used by the legacy compat shim in
     /// `auth::build_upstream_auth_headers_for_provider`).
     pub(crate) fn materialize_headers(&self) -> Vec<(String, String)> {
-        let mut headers = build_headers_for_scheme(self.scheme, &self.api_key);
-        headers.extend(self.extra_headers.iter().cloned());
-        headers
+        self.build_headers()
     }
 }
 
@@ -87,9 +120,7 @@ pub trait TokenSource: Send + Sync {
 
 impl TokenSource for ApiKeySource {
     async fn auth_headers(&self) -> Result<Vec<(String, String)>, AuthError> {
-        let mut headers = build_headers_for_scheme(self.scheme, &self.api_key);
-        headers.extend(self.extra_headers.iter().cloned());
-        Ok(headers)
+        Ok(self.build_headers())
     }
 }
 
@@ -160,10 +191,19 @@ mod tests {
         scheme: Option<AuthScheme>,
         auth_headers: &[(&str, &str)],
     ) -> ProviderConfig {
+        sample_provider_at(format, scheme, auth_headers, "https://example.com")
+    }
+
+    fn sample_provider_at(
+        format: Format,
+        scheme: Option<AuthScheme>,
+        auth_headers: &[(&str, &str)],
+        base_url: &str,
+    ) -> ProviderConfig {
         ProviderConfig {
             name: "test".into(),
             format,
-            base_url: "https://example.com".into(),
+            base_url: base_url.into(),
             api_key: "sk-test".into(),
             account: None,
             accounts: Vec::new(),
@@ -225,14 +265,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_parity_anthropic_default_for_claude() {
-        let provider = sample_provider(Format::Claude, None, &[]);
+    async fn test_parity_anthropic_default_on_official_host() {
+        let provider = sample_provider_at(Format::Claude, None, &[], "https://api.anthropic.com");
         let headers = assert_parity(&provider).await;
         assert_eq!(
             headers,
             vec![
                 ("x-api-key".to_string(), "sk-test".to_string()),
                 ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ]
+        );
+    }
+
+    /// Compatible Claude gateways (MiniMax and friends) sign with Bearer but
+    /// still speak the versioned Messages wire, so the version header rides
+    /// along instead of being dropped with the `x-api-key` default.
+    #[tokio::test]
+    async fn test_bearer_default_on_compatible_claude_gateway_keeps_version() {
+        let provider = sample_provider_at(
+            Format::Claude,
+            None,
+            &[],
+            "https://api.minimax.cn/anthropic",
+        );
+        let headers = assert_parity(&provider).await;
+        assert_eq!(
+            headers,
+            vec![
+                ("Authorization".to_string(), "Bearer sk-test".to_string()),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ]
+        );
+    }
+
+    /// Claude subscription OAuth tokens are Bearer credentials no matter
+    /// which host they are pointed at.
+    #[tokio::test]
+    async fn test_oauth_token_signs_bearer_even_on_official_host() {
+        let provider = ProviderConfig {
+            api_key: "sk-ant-oat12-test".into(),
+            ..sample_provider_at(Format::Claude, None, &[], "https://api.anthropic.com")
+        };
+        let headers = assert_parity(&provider).await;
+        assert_eq!(
+            headers,
+            vec![
+                (
+                    "Authorization".to_string(),
+                    "Bearer sk-ant-oat12-test".to_string()
+                ),
+                ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            ]
+        );
+    }
+
+    /// A user-pinned extra header wins over the injected version default.
+    #[tokio::test]
+    async fn test_custom_anthropic_version_is_not_duplicated() {
+        let provider = sample_provider_at(
+            Format::Claude,
+            None,
+            &[("anthropic-version", "2023-01-01")],
+            "https://api.minimax.cn/anthropic",
+        );
+        let headers = assert_parity(&provider).await;
+        assert_eq!(
+            headers,
+            vec![
+                ("Authorization".to_string(), "Bearer sk-test".to_string()),
+                ("anthropic-version".to_string(), "2023-01-01".to_string()),
             ]
         );
     }

@@ -10,7 +10,8 @@ use any_converter_core::convert::{
 use any_converter_core::ir::StreamState;
 use any_converter_core::sse::{parse_sse_block, split_sse_blocks};
 use any_converter_server::config::{
-    LoggingConfig, PluginRef, ProviderConfig, ServerConfig, secrets_path, warn_if_world_readable,
+    DEFAULT_PORT, LoggingConfig, PluginRef, ProviderConfig, ServerConfig, secrets_path,
+    warn_if_world_readable,
 };
 use any_converter_server::config_store::ConfigStore;
 use any_converter_server::control_plane::ControlPlane;
@@ -119,7 +120,7 @@ enum Commands {
         /// Canonical gateway home (defaults to the platform config directory)
         #[arg(long)]
         home: Option<PathBuf>,
-        #[arg(long, default_value_t = 3028)]
+        #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
         #[arg(long, default_value = "default", conflicts_with = "config")]
         provider: String,
@@ -485,7 +486,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 || upstream_key.is_some()
                 || api_key.is_some()
                 || host != "127.0.0.1"
-                || port != 3028
+                || port != DEFAULT_PORT
                 || provider != "default";
 
             if home.config_path().exists() {
@@ -544,7 +545,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // installed on a clean home starts and the browser can
                 // configure providers through the management API. Never
                 // writes a provider or a key.
-                server_logging_toml("127.0.0.1", 3028, None, &home.logs_dir())?
+                server_logging_toml("127.0.0.1", DEFAULT_PORT, None, &home.logs_dir())?
             };
 
             let prepared = ControlPlane::initialize_from_config(
@@ -1669,7 +1670,8 @@ fn accounts_order(
 /// the CLI free of an HTTP dependency (the workspace adds none for P9).
 #[allow(clippy::print_stdout)]
 async fn accounts_quotas() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = std::env::var("ANY_CONVERTER_ADDR").unwrap_or_else(|_| "127.0.0.1:3028".to_string());
+    let addr =
+        std::env::var("ANY_CONVERTER_ADDR").unwrap_or_else(|_| format!("127.0.0.1:{DEFAULT_PORT}"));
     let management_key = match std::env::var("ANY_CONVERTER_MANAGEMENT_KEY") {
         Ok(key) if !key.trim().is_empty() => key.trim().to_owned(),
         _ => ApiKeyStore::for_home(&Home::discover()?).get_management()?,

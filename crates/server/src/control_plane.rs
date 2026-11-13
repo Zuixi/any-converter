@@ -12,9 +12,9 @@ use any_converter_core::convert::Format;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use toml_edit::{Array, ArrayOfTables, Document, Item, Table, Value};
+use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value};
 
-use crate::config::{ModelRouteConfig, RouteStrategy, ServerConfig};
+use crate::config::{AuthScheme, DEFAULT_PORT, ModelRouteConfig, RouteStrategy, ServerConfig};
 use crate::config_store::{ConfigDocument, ConfigRevision, ConfigStore, ConfigStoreError};
 use crate::home::Home;
 use crate::secrets::{
@@ -164,6 +164,65 @@ impl ControlPlane {
 
     pub fn api_keys(&self) -> &ApiKeyStore {
         &self.keys
+    }
+
+    /// The current document revision and parsed configuration.
+    ///
+    /// Read-only helpers (model catalog, discovery) use this so their view
+    /// is always one consistent snapshot.
+    pub fn config_snapshot(&self) -> Result<(ConfigRevision, ServerConfig), ControlPlaneError> {
+        let document = self.store.load()?;
+        Ok((document.revision().clone(), document.config().clone()))
+    }
+
+    /// Resolve one provider's connection details for an upstream call.
+    ///
+    /// `api_key` is resolved from the keychain when the config carries a
+    /// reference; a missing entry yields `None` rather than an error so the
+    /// UI can tell "no key configured" from "keychain unavailable".
+    pub fn provider_connection(
+        &self,
+        name: &str,
+    ) -> Result<Option<ProviderConnection>, ControlPlaneError> {
+        let document = self.store.load()?;
+        let config = document.config();
+        let Some(provider) = config.find_provider(name) else {
+            return Ok(None);
+        };
+        let api_key = if provider.api_key.trim().is_empty() {
+            None
+        } else {
+            self.keys.resolve(&provider.api_key)?
+        };
+        let auth_scheme = crate::credentials::effective_auth_scheme(provider);
+        let wire_format = provider.effective_api().to_format();
+        let auth_headers = api_key
+            .as_deref()
+            .map(|key| {
+                let extras: Vec<(String, String)> = provider
+                    .auth
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect();
+                crate::auth::build_provider_upstream_headers(wire_format, auth_scheme, key, &extras)
+            })
+            .unwrap_or_default();
+        Ok(Some(ProviderConnection {
+            name: provider.name.clone(),
+            format: wire_format,
+            base_url: provider.base_url.clone(),
+            api_key,
+            auth_scheme,
+            auth_headers,
+            proxy: provider
+                .proxy
+                .clone()
+                .filter(|proxy| !proxy.trim().is_empty())
+                .or_else(|| config.server.proxy.clone()),
+            account_based: !provider.account_ids().is_empty(),
+            plugin: provider.plugin.is_some(),
+        }))
     }
 
     pub fn management_key(&self) -> String {
@@ -534,6 +593,28 @@ impl Serialize for SecretRef {
     }
 }
 
+/// One provider as an upstream HTTP client sees it.
+///
+/// The resolved `api_key` never reaches serialization: this value is for
+/// server-side discovery calls only.
+#[derive(Clone)]
+pub struct ProviderConnection {
+    pub name: String,
+    pub format: Format,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    /// The signing scheme in force after `auto` is resolved, so discovery
+    /// signs exactly like generation requests do.
+    pub auth_scheme: AuthScheme,
+    /// Auth headers materialized with the resolved key.
+    pub auth_headers: Vec<(String, String)>,
+    pub proxy: Option<String>,
+    /// Providers signed in per account cannot be discovered with one key.
+    pub account_based: bool,
+    /// Plugin providers expose their own model catalog.
+    pub plugin: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AdminConfigView {
     pub revision: ConfigRevision,
@@ -562,6 +643,10 @@ pub struct AdminProviderView {
     pub account: Option<String>,
     pub accounts: Vec<String>,
     pub model_map: BTreeMap<String, String>,
+    /// The configured scheme (`auto` when the config leaves it unset).
+    pub auth_scheme: String,
+    /// What `auth_scheme` resolves to for this provider's format.
+    pub auth_scheme_effective: String,
     pub proxy_configured: bool,
     pub plugin: bool,
 }
@@ -604,6 +689,18 @@ fn config_view(document: &ConfigDocument, restart_required: bool) -> AdminConfig
                 account: provider.account.clone(),
                 accounts: provider.accounts.clone(),
                 model_map: provider.model_map.clone().into_iter().collect(),
+                auth_scheme: provider
+                    .auth
+                    .scheme
+                    .unwrap_or(AuthScheme::Auto)
+                    .as_str()
+                    .to_owned(),
+                // The scheme generation actually signs with: endpoint-aware
+                // (OAuth tokens, compatible Claude gateways) rather than the
+                // bare format default.
+                auth_scheme_effective: crate::credentials::effective_auth_scheme(provider)
+                    .as_str()
+                    .to_owned(),
                 proxy_configured: provider.proxy.as_deref().is_some_and(non_empty),
                 plugin: provider.plugin.is_some(),
             })
@@ -669,6 +766,9 @@ pub struct ProviderPatch {
     pub model_map: Option<BTreeMap<String, String>>,
     pub account: Option<Option<String>>,
     pub accounts: Option<Vec<String>>,
+    /// Signing scheme for this provider's key. `auto` restores the format
+    /// default; extra `auth.headers` are preserved either way.
+    pub auth_scheme: Option<AuthScheme>,
     pub proxy: Option<Option<String>>,
 }
 
@@ -813,6 +913,9 @@ fn upsert_provider(
         }
         table["accounts"] = toml_edit::value(Value::Array(values));
     }
+    if let Some(scheme) = provider.auth_scheme {
+        set_provider_auth_scheme(table, scheme);
+    }
     if let Some(proxy) = provider.proxy {
         match proxy {
             Some(proxy) => table["proxy"] = toml_edit::value(proxy),
@@ -834,6 +937,35 @@ fn upsert_provider(
         )));
     }
     Ok(())
+}
+
+/// Set or clear `auth.scheme` without disturbing the `auth.headers` map
+/// beside it. Preserves the table's inline/regular form so a patch does not
+/// reformat unrelated provider config.
+fn set_provider_auth_scheme(table: &mut Table, scheme: AuthScheme) {
+    let (mut auth, was_inline) = match table.get("auth") {
+        Some(Item::Table(auth)) => (auth.clone(), false),
+        Some(Item::Value(Value::InlineTable(auth))) => (auth.clone().into_table(), true),
+        _ => (Table::new(), true),
+    };
+    if scheme == AuthScheme::Auto {
+        auth.remove("scheme");
+    } else {
+        auth["scheme"] = toml_edit::value(scheme.as_str());
+    }
+    if auth.is_empty() {
+        table.remove("auth");
+    } else if was_inline {
+        let mut inline = InlineTable::new();
+        for (key, item) in auth.iter() {
+            if let Some(value) = item.as_value() {
+                inline.insert(key, value.clone());
+            }
+        }
+        table["auth"] = toml_edit::value(inline);
+    } else {
+        table["auth"] = Item::Table(auth);
+    }
 }
 
 fn providers_array(document: &mut Document) -> Result<&mut ArrayOfTables, ConfigStoreError> {
@@ -1127,7 +1259,7 @@ fn initialize_document(
 ) -> Result<(), ConfigStoreError> {
     let mut server = Table::new();
     server["host"] = toml_edit::value("127.0.0.1");
-    server["port"] = toml_edit::value(3028_i64);
+    server["port"] = toml_edit::value(i64::from(DEFAULT_PORT));
     document["server"] = Item::Table(server);
     set_management_key_ref(document, management_reference)
 }
@@ -1549,6 +1681,7 @@ api_key = "sk-upstream"
                         model_map: Some(BTreeMap::from([("*".into(), "gpt-4.1".into())])),
                         account: None,
                         accounts: None,
+                        auth_scheme: None,
                         proxy: None,
                     }],
                     remove_providers: vec![],
@@ -1576,6 +1709,87 @@ api_key = "sk-upstream"
     }
 
     #[test]
+    fn auth_scheme_patch_preserves_headers_and_auto_clears_the_key() {
+        let (home, root) = temp_home("auth-scheme");
+        let (keys, _) = keys();
+        let prepared = ControlPlane::prepare(home, keys).unwrap();
+        let mut source = std::fs::read_to_string(root.join("config.toml")).unwrap();
+        source.push_str(
+            r#"
+[[providers]]
+name = "mm"
+format = "claude"
+base_url = "https://api.example.test/anthropic"
+api_key = "keychain:any-converter:provider:mm"
+auth = { headers = { X-Extra = "1" } }
+"#,
+        );
+        std::fs::write(root.join("config.toml"), source).unwrap();
+
+        let view = prepared.control_plane.config_view().unwrap();
+        let mm = view.providers.iter().find(|p| p.name == "mm").unwrap();
+        assert_eq!(mm.auth_scheme, "auto");
+        // A compatible Claude gateway (not api.anthropic.com) signs Bearer.
+        assert_eq!(mm.auth_scheme_effective, "bearer");
+
+        let view = prepared
+            .control_plane
+            .patch_config(
+                &view.revision,
+                ConfigPatch {
+                    upsert_providers: vec![ProviderPatch {
+                        name: "mm".into(),
+                        format: None,
+                        base_url: None,
+                        api_key_ref: None,
+                        model_map: None,
+                        account: None,
+                        accounts: None,
+                        auth_scheme: Some(AuthScheme::Bearer),
+                        proxy: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mm = view.providers.iter().find(|p| p.name == "mm").unwrap();
+        assert_eq!(mm.auth_scheme, "bearer");
+        assert_eq!(mm.auth_scheme_effective, "bearer");
+        let source = std::fs::read_to_string(root.join("config.toml")).unwrap();
+        assert!(source.contains(r#"scheme = "bearer""#));
+        assert!(
+            source.contains(r#"X-Extra = "1""#),
+            "extra auth headers must survive a scheme patch: {source}"
+        );
+
+        let view = prepared
+            .control_plane
+            .patch_config(
+                &view.revision,
+                ConfigPatch {
+                    upsert_providers: vec![ProviderPatch {
+                        name: "mm".into(),
+                        format: None,
+                        base_url: None,
+                        api_key_ref: None,
+                        model_map: None,
+                        account: None,
+                        accounts: None,
+                        auth_scheme: Some(AuthScheme::Auto),
+                        proxy: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mm = view.providers.iter().find(|p| p.name == "mm").unwrap();
+        assert_eq!(mm.auth_scheme, "auto");
+        let source = std::fs::read_to_string(root.join("config.toml")).unwrap();
+        assert!(!source.contains(r#"scheme = "bearer""#));
+        assert!(source.contains(r#"X-Extra = "1""#));
+    }
+
+    #[test]
     fn provider_secret_write_is_compensated_when_config_write_fails() {
         let (home, root) = temp_home("compensation");
         let (keys, backend) = keys();
@@ -1596,6 +1810,7 @@ api_key = "sk-upstream"
                         model_map: None,
                         account: None,
                         accounts: None,
+                        auth_scheme: None,
                         proxy: None,
                     }],
                     remove_providers: vec![],

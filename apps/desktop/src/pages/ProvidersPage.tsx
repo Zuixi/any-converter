@@ -1,168 +1,138 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useI18n } from "@any-converter/core";
-import {
-  Button,
-  Card,
-  CardContent,
-  Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@any-converter/ui";
 
+import { Input } from "@any-converter/ui";
+
+import { AddProviderSheet } from "../components/providers/AddProviderSheet";
+import { ProviderCard } from "../components/providers/ProviderCard";
+import { ProviderDetailDialog } from "../components/providers/ProviderDetailDialog";
+import { UnboundSection } from "../components/providers/UnboundSection";
+import { useProvidersStrings } from "../components/providers/strings";
 import { ErrorBanner } from "../components/layout/ErrorBanner";
-import { Field } from "../components/layout/Field";
 import { Header } from "../components/layout/Header";
-import { Table } from "../components/layout/Table";
-import { useAsyncState } from "../hooks/useAsyncState";
-import { PROVIDER_FORMATS, PROVIDER_PRESETS } from "../lib/constants";
-import { management, useServerRequest, type AdminConfigView, type ConfigFormat } from "../lib/management";
+import { useProvidersOverview } from "../hooks/useProvidersOverview";
+import { management, useServerRequest } from "../lib/management";
 
+/**
+ * The one providers page (design: docs/design/2026-11-12-providers-page-ia.md):
+ * a card per provider (Zone 1), accounts not yet attached (Zone 2), and
+ * everything onboarding in one sheet (Zone 3). Accounts are managed inside
+ * the provider they belong to; routing lives on the Routes page.
+ */
 export function ProvidersPage() {
   const { t } = useI18n();
+  const s = useProvidersStrings();
   const { describeError } = useServerRequest();
-  const [config, setConfig, loadError] = useAsyncState<AdminConfigView>(() =>
-    management.getConfig().catch((cause) => {
-      throw new Error(describeError(cause));
-    }),
-  );
-  const [form, setForm] = useState({ name: "", format: "openai_responses", base_url: "", api_key: "" });
-  const [preset, setPreset] = useState("custom");
+  const overview = useProvidersOverview(describeError);
+  const [filter, setFilter] = useState("");
+  const [openProvider, setOpenProvider] = useState<string>();
   const [actionError, setActionError] = useState<string>();
 
-  const applyPreset = (id: string) => {
-    setPreset(id);
-    const next = PROVIDER_PRESETS.find((item) => item.id === id);
-    if (!next || next.id === "custom") {
-      return;
+  const cards = useMemo(() => {
+    const words = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      return overview.cards;
     }
-    setForm((current) => ({
-      ...current,
-      name: next.name,
-      format: next.format,
-      base_url: next.base_url,
-    }));
-  };
+    return overview.cards.filter((card) => {
+      const text = [
+        card.provider.name,
+        card.provider.format,
+        card.provider.base_url,
+        ...card.provider.accounts,
+        ...card.exposed,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return words.every((word) => text.includes(word));
+    });
+  }, [overview.cards, filter]);
 
-  const create = async () => {
+  const open = overview.cards.find((card) => card.provider.name === openProvider);
+
+  const removeProvider = async (name: string) => {
+    setActionError(undefined);
     try {
+      // Revision read at click time: a cached view may predate another
+      // mutation, and an empty If-Match is rejected by the gateway.
       const current = await management.getConfig();
-      let next = await management.patchConfig(current.revision, {
-        upsert_providers: [
-          {
-            name: form.name,
-            format: form.format as ConfigFormat,
-            base_url: form.base_url,
-          },
-        ],
-      });
-      if (form.api_key) {
-        const result = await management.putProviderSecret(next.revision, form.name, form.api_key);
-        next = await management.getConfig();
-        if (next.revision !== result.revision) {
-          throw new Error("Configuration changed while saving the provider secret");
-        }
+      const next = await management.patchConfig(current.revision, { remove_providers: [name] });
+      await management.deleteProviderSecret(next.revision, name).catch(() => undefined);
+      if (openProvider === name) {
+        setOpenProvider(undefined);
       }
-      setConfig(next);
-      setForm({ name: "", format: "openai_responses", base_url: "", api_key: "" });
-      setPreset("custom");
-      setActionError(undefined);
+      await overview.refresh();
     } catch (cause) {
       setActionError(describeError(cause));
     }
   };
 
-  const remove = async (name: string) => {
-    try {
-      const next = await management.patchConfig(config?.revision ?? "", {
-        remove_providers: [name],
-      });
-      await management.deleteProviderSecret(next.revision, name);
-      setConfig(await management.getConfig());
-      setActionError(undefined);
-    } catch (cause) {
-      setActionError(describeError(cause));
-    }
-  };
+  const totalExposed = overview.cards.reduce((total, card) => total + card.exposed.length, 0);
+  const totalRouted = overview.cards.reduce((total, card) => total + card.routed, 0);
+  const totalUnrouted = overview.cards.reduce((total, card) => total + card.unrouted, 0);
 
   return (
     <section className="grid gap-6">
-      <Header title={t("nav.providers")} subtitle={t("desktop.providers.subtitle")} />
-      {(loadError || actionError) && <ErrorBanner message={loadError ?? actionError ?? ""} />}
-      {config?.restart_required && (
-        <p className="text-sm text-muted-foreground">{t("desktop.config.restartRequired")}</p>
+      <Header title={t("nav.providers")} subtitle={s.subtitle} />
+      {(overview.error || actionError) && <ErrorBanner message={overview.error ?? actionError ?? ""} />}
+      {overview.config?.restart_required && (
+        <p className="text-sm text-muted-foreground">{s.restartRequired}</p>
       )}
-      <Card>
-        <CardContent className="grid gap-4 pt-6">
-          <Field label={t("desktop.providers.preset")} help={t("desktop.providers.empty")}>
-            <Select value={preset} onValueChange={applyPreset}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PROVIDER_PRESETS.map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
-                    {item.id === "custom" ? t("desktop.providers.custom") : item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label={t("desktop.providers.name")} help={t("desktop.providers.nameHelp")}>
-              <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-            </Field>
-            <Field label={t("desktop.providers.format")} help={t("desktop.providers.formatHelp")}>
-              <Select value={form.format} onValueChange={(format) => setForm({ ...form, format })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROVIDER_FORMATS.map((format) => (
-                    <SelectItem key={format.value} value={format.value}>
-                      {format.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label={t("desktop.providers.baseUrl")} help={t("desktop.providers.baseUrlHelp")}>
-              <Input value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} />
-            </Field>
-            <Field label={t("desktop.providers.apiKey")} help={t("desktop.providers.apiKeyHelp")}>
-              <Input
-                type="password"
-                value={form.api_key}
-                onChange={(event) => setForm({ ...form, api_key: event.target.value })}
-              />
-            </Field>
-          </div>
-          <Button className="w-fit" onClick={() => void create()} disabled={!form.name || !form.base_url}>
-            {t("desktop.providers.add")}
-          </Button>
-        </CardContent>
-      </Card>
-      <Table
-        emptyText={t("desktop.providers.empty")}
-        headers={[
-          t("desktop.providers.name"),
-          t("desktop.providers.format"),
-          t("desktop.providers.baseUrl"),
-          t("desktop.providers.secret"),
-          "",
-        ]}
-        rows={(config?.providers ?? []).map((provider) => [
-          provider.name,
-          provider.format,
-          provider.base_url,
-          provider.api_key_configured ? t("desktop.config.configured") : t("desktop.config.notConfigured"),
-          <Button key={provider.name} size="sm" variant="destructive" onClick={() => void remove(provider.name)}>
-            {t("desktop.providers.delete")}
-          </Button>,
-        ])}
-      />
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+        <span>
+          {overview.cards.length} {s.summaryProviders} · {totalExposed} {s.summaryExposed} ·{" "}
+          {totalRouted} {s.summaryRouted}
+        </span>
+        {totalUnrouted > 0 && (
+          <span className="text-amber-600 dark:text-amber-400">
+            {totalUnrouted} {s.unroutedWarning}
+          </span>
+        )}
+        <span className="grow" />
+        <Input
+          className="w-64"
+          value={filter}
+          placeholder={s.filter}
+          onChange={(event) => setFilter(event.target.value)}
+          data-testid="provider-filter"
+        />
+      </div>
+
+      {/* Zone 1 */}
+      {overview.cards.length === 0 && overview.error === undefined ? (
+        <p className="rounded-md border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+          {s.empty}
+        </p>
+      ) : (
+        <div className="grid gap-3" data-testid="provider-cards">
+          {cards.map((card) => (
+            <ProviderCard
+              key={card.provider.name}
+              card={card}
+              quotaOf={(id) => overview.quotas[id]}
+              onOpen={() => setOpenProvider(card.provider.name)}
+              onDelete={() => void removeProvider(card.provider.name)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Zone 2 */}
+      <UnboundSection unbound={overview.unbound} onChanged={overview.refresh} />
+
+      {/* Zone 3 */}
+      <AddProviderSheet accounts={overview.accounts} onChanged={overview.refresh} />
+
+      {open && (
+        <ProviderDetailDialog
+          card={open}
+          allAccounts={overview.accounts}
+          quotaOf={(id) => overview.quotas[id]}
+          plugins={overview.plugins}
+          onClose={() => setOpenProvider(undefined)}
+          onChanged={overview.refresh}
+        />
+      )}
     </section>
   );
 }

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use any_converter_core::convert::Format;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::glob_match;
 use super::upstream_api::{UpstreamApi, WireCompat, copilot_api};
@@ -97,15 +97,77 @@ pub struct ProviderAuthConfig {
     pub headers: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthScheme {
+    /// Use the provider format's default scheme. Lets a config opt out of
+    /// an explicit scheme without deleting the table.
+    Auto,
     Bearer,
     ApiKeyHeader,
     XApiKey,
     GoogleApiKey,
     Anthropic,
     None,
+}
+
+impl AuthScheme {
+    /// The scheme a provider format uses when config has not chosen one and
+    /// the endpoint host is unknown. Callers that know the base URL should
+    /// prefer [`Self::for_endpoint`].
+    pub fn for_format(format: Format) -> AuthScheme {
+        match format {
+            Format::OpenAIChat | Format::OpenAIResponses => AuthScheme::Bearer,
+            Format::Claude => AuthScheme::Anthropic,
+            Format::Gemini => AuthScheme::GoogleApiKey,
+        }
+    }
+
+    /// The scheme an endpoint uses when config has not chosen one.
+    ///
+    /// Format alone is not enough for Claude: only the official
+    /// `api.anthropic.com` signs with `x-api-key` — every compatible gateway
+    /// (MiniMax, Cloudflare, enterprise proxies) expects `Authorization:
+    /// Bearer` on the same Messages wire.
+    pub fn for_endpoint(format: Format, base_url: &str) -> AuthScheme {
+        match format {
+            Format::Claude if !is_official_anthropic_base_url(base_url) => AuthScheme::Bearer,
+            format => AuthScheme::for_format(format),
+        }
+    }
+
+    /// Resolve `auto` against the endpoint default; other schemes win as-is.
+    pub fn resolve(self, format: Format, base_url: &str) -> AuthScheme {
+        match self {
+            AuthScheme::Auto => AuthScheme::for_endpoint(format, base_url),
+            scheme => scheme,
+        }
+    }
+
+    /// The TOML/JSON spelling of this variant.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthScheme::Auto => "auto",
+            AuthScheme::Bearer => "bearer",
+            AuthScheme::ApiKeyHeader => "api_key_header",
+            AuthScheme::XApiKey => "x_api_key",
+            AuthScheme::GoogleApiKey => "google_api_key",
+            AuthScheme::Anthropic => "anthropic",
+            AuthScheme::None => "none",
+        }
+    }
+}
+
+/// Whether `base_url` is the official first-party Anthropic API.
+///
+/// Requires the exact origin or a path boundary after it; a bare prefix
+/// check would accept lookalikes such as `https://api.anthropic.com.evil`.
+/// An empty base URL counts as official: request dispatch falls back to
+/// `api.anthropic.com` anyway.
+fn is_official_anthropic_base_url(base_url: &str) -> bool {
+    const OFFICIAL: &str = "https://api.anthropic.com";
+    let trimmed = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    trimmed.is_empty() || trimmed == OFFICIAL || trimmed.starts_with(&format!("{OFFICIAL}/"))
 }
 
 impl ProviderConfig {
@@ -263,3 +325,60 @@ pub const GEMINI_CODE_ASSIST_BASE: &str = "https://cloudcode-pa.googleapis.com";
 /// `loadCodeAssist` discovery stays on the regular host (magpie
 /// `LoadBase`).
 pub const ANTIGRAVITY_CODE_ASSIST_BASE: &str = "https://daily-cloudcode-pa.googleapis.com";
+
+#[cfg(test)]
+mod auth_scheme_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::config::AuthScheme;
+
+    #[test]
+    fn claude_defaults_follow_the_endpoint_host() {
+        // Official Anthropic signs with x-api-key…
+        assert_eq!(
+            AuthScheme::for_endpoint(Format::Claude, "https://api.anthropic.com"),
+            AuthScheme::Anthropic
+        );
+        assert_eq!(
+            AuthScheme::for_endpoint(Format::Claude, "https://api.anthropic.com/"),
+            AuthScheme::Anthropic
+        );
+        // …but every compatible gateway expects Bearer on the same wire.
+        assert_eq!(
+            AuthScheme::for_endpoint(Format::Claude, "https://api.minimax.cn/anthropic"),
+            AuthScheme::Bearer
+        );
+        assert_eq!(
+            AuthScheme::for_endpoint(Format::Claude, "http://127.0.0.1:8082"),
+            AuthScheme::Bearer
+        );
+        // A lookalike host must not count as official.
+        assert_eq!(
+            AuthScheme::for_endpoint(Format::Claude, "https://api.anthropic.com.evil.com"),
+            AuthScheme::Bearer
+        );
+    }
+
+    #[test]
+    fn resolve_honors_explicit_schemes_and_other_formats() {
+        let minimax = "https://api.minimax.cn/anthropic";
+        assert_eq!(
+            AuthScheme::Auto.resolve(Format::Claude, minimax),
+            AuthScheme::Bearer
+        );
+        // An explicit scheme always wins over the endpoint default.
+        assert_eq!(
+            AuthScheme::Anthropic.resolve(Format::Claude, minimax),
+            AuthScheme::Anthropic
+        );
+        assert_eq!(
+            AuthScheme::Auto.resolve(Format::Gemini, minimax),
+            AuthScheme::GoogleApiKey
+        );
+        assert_eq!(
+            AuthScheme::Auto.resolve(Format::OpenAIChat, minimax),
+            AuthScheme::Bearer
+        );
+    }
+}

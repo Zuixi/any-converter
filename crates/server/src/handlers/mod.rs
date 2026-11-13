@@ -15,7 +15,7 @@ pub use accounts::{
     handle_account_adopt, handle_account_models, handle_account_order, handle_account_plugins,
     handle_account_quotas, handle_account_release, handle_account_remove, handle_account_signin,
     handle_account_signin_cancel, handle_account_signin_status, handle_account_signin_submit,
-    handle_accounts, handle_health,
+    handle_accounts, handle_health, handle_plugin_install, handle_plugin_uninstall,
 };
 pub use chat::{
     handle_claude, handle_count_tokens, handle_gemini, handle_openai_chat, handle_responses,

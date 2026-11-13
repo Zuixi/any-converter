@@ -399,6 +399,7 @@ fn expand_tilde(path: &str) -> String {
 mod permission_tests {
     #![allow(clippy::unwrap_used)]
 
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]

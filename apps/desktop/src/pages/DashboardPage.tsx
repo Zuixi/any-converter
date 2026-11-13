@@ -6,6 +6,7 @@ import { Header } from "../components/layout/Header";
 import { useAsyncState } from "../hooks/useAsyncState";
 import { api } from "../lib/api";
 import { isDesktopApp } from "../lib/platform";
+import { management, type CatalogView } from "../lib/management";
 import type { ServerStatus } from "../types";
 
 const statusBadgeVariant: Record<ServerStatus["state"], "default" | "secondary" | "destructive" | "outline"> = {
@@ -20,7 +21,16 @@ const statusBadgeVariant: Record<ServerStatus["state"], "default" | "secondary" 
 export function DashboardPage() {
   const { t } = useI18n();
   const [status, setStatus, error, setError] = useAsyncState<ServerStatus>(api.getServerStatus);
+  // The catalog is optional here: a stopped or legacy gateway must not turn
+  // the dashboard into an error page.
+  const [catalog] = useAsyncState<CatalogView | undefined>(() =>
+    management.getCatalog().catch(() => undefined),
+  );
   const canManageLifecycle = isDesktopApp() && status?.state !== "attached";
+
+  const exposed = catalog?.models.filter((model) => model.exposed).length ?? 0;
+  const routable = catalog?.models.filter((model) => model.exposed && model.routed).length ?? 0;
+  const unrouted = exposed - routable;
 
   const run = async (action: () => Promise<ServerStatus>) => {
     try {
@@ -84,6 +94,41 @@ export function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+      {catalog && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">{t("desktop.dashboard.catalog")}</CardTitle>
+            <CardDescription>{t("desktop.dashboard.catalogDescription")}</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+              <div>
+                <p className="text-sm text-muted-foreground">{t("desktop.dashboard.providerCount")}</p>
+                <p className="text-2xl font-semibold">{catalog.providers.length}</p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">{t("desktop.dashboard.exposedCount")}</p>
+                <p className="text-2xl font-semibold">{exposed}</p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">{t("desktop.dashboard.routableCount")}</p>
+                <p className="text-2xl font-semibold">{routable}</p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">{t("desktop.dashboard.unroutedCount")}</p>
+                <p
+                  className={
+                    unrouted > 0 ? "text-2xl font-semibold text-amber-600 dark:text-amber-400" : "text-2xl font-semibold"
+                  }
+                >
+                  {unrouted}
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">{t("desktop.dashboard.catalogHint")}</p>
+          </CardContent>
+        </Card>
+      )}
     </section>
   );
 }

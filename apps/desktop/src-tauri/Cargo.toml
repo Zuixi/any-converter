@@ -29,7 +29,7 @@ chrono = { workspace = true }
 log = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tauri = { version = "=2.11.5", features = ["tray-icon"] }
-tauri-plugin-single-instance = "=2.2.1"
+tauri-plugin-single-instance = "=2.4.3"
 keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 dirs = "6"
 atomicwrites = "0.4"

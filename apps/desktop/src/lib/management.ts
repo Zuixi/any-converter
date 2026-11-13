@@ -80,6 +80,13 @@ export interface PluginEntry {
   error: string;
 }
 
+/** `POST /v1/accounts/plugins/install` — what the installed package serves. */
+export interface InstalledPlugin {
+  spec: string;
+  providers: PluginEntry["providers"];
+  error: string;
+}
+
 export type AgentStatus = "connected" | "drifted" | "disconnected" | "absent";
 
 export interface AgentSummary {
@@ -96,6 +103,21 @@ export interface ConnectReport {
 }
 
 export type ConfigFormat = "openai_chat" | "openai_responses" | "claude" | "gemini";
+
+/**
+ * How a provider's key is sent upstream. `auto` uses the format's default
+ * (bearer for OpenAI, x-api-key + version for Claude, x-goog-api-key for
+ * Gemini); the other values override it for vendors that differ from the
+ * wire format, such as Anthropic-compatible gateways that want Bearer.
+ */
+export type AuthSchemeOption =
+  | "auto"
+  | "bearer"
+  | "api_key_header"
+  | "x_api_key"
+  | "google_api_key"
+  | "anthropic"
+  | "none";
 
 export interface AdminConfigView {
   revision: string;
@@ -115,6 +137,8 @@ export interface AdminConfigView {
     account?: string | null;
     accounts: string[];
     model_map: Record<string, string>;
+    auth_scheme: AuthSchemeOption;
+    auth_scheme_effective: AuthSchemeOption;
     proxy_configured: boolean;
     plugin: boolean;
   }>;
@@ -146,6 +170,7 @@ export interface ConfigPatch {
     model_map?: Record<string, string>;
     account?: string | null;
     accounts?: string[];
+    auth_scheme?: AuthSchemeOption;
     proxy?: string | null;
   }>;
   remove_providers?: string[];
@@ -156,6 +181,87 @@ export interface ConfigPatch {
     strategy?: "priority" | "round_robin";
   }>;
   remove_model_routes?: string[];
+}
+
+export type DiscoveryStatus = "ok" | "unsupported" | "error";
+
+export type DiscoveryErrorKind =
+  | "missing_api_key"
+  | "blocked_address"
+  | "invalid_base_url"
+  | "invalid_credentials"
+  | "endpoint_not_found"
+  | "unsupported_format"
+  | "timeout"
+  | "network"
+  | "rate_limited"
+  | "malformed_response"
+  | "response_too_large"
+  | "http_error";
+
+export interface DiscoveredModel {
+  id: string;
+  display_name?: string | null;
+  capabilities: string[];
+}
+
+export interface DiscoveryError {
+  kind: DiscoveryErrorKind;
+  message: string;
+  hint?: string | null;
+}
+
+/** `POST /v1/admin/providers/discover` and `GET .../{name}/models`. */
+export interface DiscoveryReport {
+  status: DiscoveryStatus;
+  source: string;
+  checked_at_unix: number;
+  latency_ms: number;
+  models: DiscoveredModel[];
+  count: number;
+  error?: DiscoveryError | null;
+}
+
+export interface DiscoverProviderRequest {
+  /** A saved provider name; omit to test unsaved settings. */
+  name?: string;
+  format?: ConfigFormat;
+  base_url?: string;
+  /** Never echoed back by the server; used only for this one request. */
+  api_key?: string;
+  /** Sign the probe like generation will; omit for the format default. */
+  auth_scheme?: AuthSchemeOption;
+  refresh?: boolean;
+}
+
+/** `GET /v1/admin/catalog` — what is offered, exposed, and routable. */
+export interface CatalogModel {
+  id: string;
+  provider: string;
+  upstream: string;
+  exposed: boolean;
+  routed: boolean;
+  source: "configured" | "upstream";
+  capabilities: string[];
+}
+
+export interface CatalogProvider {
+  name: string;
+  format: ConfigFormat;
+  base_url: string;
+  plugin: boolean;
+  account_based: boolean;
+  exposed_count: number;
+  discovered_count: number;
+  checked_at_unix?: number | null;
+  status?: DiscoveryStatus | null;
+  error?: DiscoveryError | null;
+}
+
+export interface CatalogView {
+  revision: string;
+  providers: CatalogProvider[];
+  models: CatalogModel[];
 }
 
 export interface SecretMutationResult {
@@ -194,6 +300,20 @@ export const management = {
 
   getServerStatus(): Promise<ServerControlStatus> {
     return call("/v1/admin/server/status");
+  },
+
+  /** Ask an upstream which models it offers; read-only, no If-Match. */
+  discoverProvider(body: DiscoverProviderRequest): Promise<DiscoveryReport> {
+    return call("/v1/admin/providers/discover", "POST", JSON.stringify(body));
+  },
+
+  getProviderModels(name: string, refresh = false): Promise<DiscoveryReport> {
+    const query = refresh ? "?refresh=1" : "";
+    return call(`/v1/admin/providers/${encodeURIComponent(name)}/models${query}`);
+  },
+
+  getCatalog(): Promise<CatalogView> {
+    return call("/v1/admin/catalog");
   },
 
   putProviderSecret(ifMatch: string, provider: string, apiKey: string): Promise<SecretMutationResult> {
@@ -265,6 +385,16 @@ export const management = {
 
   removeAccount(id: string): Promise<{ outcome: string }> {
     return call(`/v1/accounts/${encodeURIComponent(id)}/remove`, "POST", "{}");
+  },
+
+  /** npm-install a plugin package and report what it serves (P6.3). */
+  installPlugin(spec: string): Promise<InstalledPlugin> {
+    return call("/v1/accounts/plugins/install", "POST", JSON.stringify({ spec }));
+  },
+
+  /** Remove a plugin package from the plugins dir. */
+  uninstallPlugin(spec: string): Promise<void> {
+    return call("/v1/accounts/plugins/uninstall", "POST", JSON.stringify({ spec }));
   },
 
   /** Agents plus the configured model catalog for the default-model picker. */

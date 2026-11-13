@@ -40,3 +40,9 @@ build/
 *.dylib
 *.dll
 .worktrees/
+
+# Tauri sidecar fetched by scripts/fetch-node.mjs (80MB build artifact)
+apps/desktop/src-tauri/binaries/
+
+# Playwright MCP session artifacts (screenshots/console logs)
+.playwright-mcp/

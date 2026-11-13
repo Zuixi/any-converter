@@ -13,6 +13,7 @@ pub mod home;
 pub mod lockfile;
 pub mod logging;
 pub(crate) mod model;
+pub mod model_discovery;
 pub(crate) mod namespace;
 pub mod observability;
 pub mod period;
