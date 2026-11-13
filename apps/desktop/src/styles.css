@@ -4,6 +4,7 @@
 
 @layer base {
   :root {
+    color-scheme: light;
     --background: 0 0% 100%;
     --foreground: 0 0% 3.9%;
     --card: 0 0% 100%;
@@ -26,6 +27,36 @@
     --radius: 0.5rem;
     --sidebar-width: 230px;
     --sidebar-collapsed-width: 72px;
+  }
+
+  /*
+   * Classic neutral dark palette (shadcn/GitHub style). Text tokens shift
+   * more than surfaces: gray-500 for muted text on white vs gray-400 on
+   * near-black keeps both modes at WCAG AA+ (4.7:1 / 7.9:1). Destructive
+   * intentionally stays at the 500-level red — this app renders it as text
+   * (ErrorBanner), and the common dark-mode dimmed red drops to ~2:1.
+   */
+  .dark {
+    color-scheme: dark;
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 7.1%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 0 0% 14.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 14.9%;
+    --muted-foreground: 0 0% 63.9%;
+    --accent: 0 0% 14.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 14.9%;
+    --input: 0 0% 14.9%;
+    --ring: 0 0% 83.1%;
   }
 }
 

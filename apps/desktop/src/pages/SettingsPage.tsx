@@ -8,12 +8,14 @@ import { Header } from "../components/layout/Header";
 import { useAsyncState } from "../hooks/useAsyncState";
 import { management, useServerRequest, type AdminConfigView } from "../lib/management";
 import { isDesktopApp } from "../lib/platform";
+import { THEME_OPTIONS, useTheme } from "../lib/theme";
 
 export function SettingsPage() {
   const { t } = useI18n();
   const { describeError } = useServerRequest();
   const apiClient = useApiClient();
   const hostManaged = isDesktopApp();
+  const { preference, setTheme } = useTheme();
   const [config, setConfig, loadError] = useAsyncState<AdminConfigView>(() =>
     management.getConfig().catch((cause) => {
       throw new Error(describeError(cause));
@@ -73,6 +75,24 @@ export function SettingsPage() {
         <p className="text-sm text-muted-foreground">{t("desktop.config.restartRequired")}</p>
       )}
       <Card>
+      <Card>
+        <CardContent className="grid gap-4 pt-6">
+          <Field label={t("common.theme")} help={t("desktop.settings.appearanceHelp")}>
+            <div className="flex flex-wrap gap-2" role="group" aria-label={t("common.theme")}>
+              {THEME_OPTIONS.map(({ value, labelKey }) => (
+                <Button
+                  key={value}
+                  variant={preference === value ? "default" : "outline"}
+                  aria-pressed={preference === value}
+                  onClick={() => setTheme(value)}
+                >
+                  {t(labelKey)}
+                </Button>
+              ))}
+            </div>
+          </Field>
+        </CardContent>
+      </Card>
         <CardContent className="grid gap-4 pt-6">
           <div className="flex w-full items-center gap-2 text-sm text-muted-foreground">
             <span>{t("desktop.settings.last_client")}</span>

@@ -155,3 +155,43 @@ export function AgentsIcon(props: IconProps) {
     </NavIcon>
   );
 }
+
+/** Theme: sun — a disc with rays (light mode). */
+export function SunIcon(props: IconProps) {
+  return (
+    <NavIcon {...props}>
+      <circle cx="24" cy="24" r="8" stroke="currentColor" strokeWidth="4" />
+      <path
+        d="M24 4V10M24 38V44M4 24H10M38 24H44M10 10L14 14M34 34L38 38M10 38L14 34M34 14L38 10"
+        stroke="currentColor"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+    </NavIcon>
+  );
+}
+
+/** Theme: moon — a crescent (dark mode). */
+export function MoonIcon(props: IconProps) {
+  return (
+    <NavIcon {...props}>
+      <path
+        d="M40 28.5273C37.5892 29.4971 34.9566 30.0345 32.2029 30.0345C20.5014 30.0345 10.9655 20.4986 10.9655 8.79711C10.9655 6.04338 11.4765 3.41079 12.4463 1C6.6609 3.32847 2.31885 8.87993 2.31885 15.6605C2.31885 24.6326 9.83774 32 19.1592 32C25.9398 32 31.6728 27.9214 34.2674 21.911C35.2372 21.3742 36.5894 19.9419 37.1299 18.9721L40 28.5273Z"
+        stroke="currentColor"
+        strokeWidth="4"
+        strokeLinejoin="round"
+        transform="translate(2 6)"
+      />
+    </NavIcon>
+  );
+}
+
+/** Theme: monitor — a screen on a stand (follow the system). */
+export function SystemThemeIcon(props: IconProps) {
+  return (
+    <NavIcon {...props}>
+      <rect x="6" y="8" width="36" height="24" rx="3" stroke="currentColor" strokeWidth="4" />
+      <path d="M18 40H30M24 32V40" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+    </NavIcon>
+  );
+}
