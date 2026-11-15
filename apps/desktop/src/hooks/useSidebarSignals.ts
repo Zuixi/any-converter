@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 
 import { api } from "../lib/api";
 import { management, type AgentSummary } from "../lib/management";
 import type { ServerStatus } from "../types";
+import { usePolling } from "./usePolling";
 
 /** Status/agents refresh cadence; loopback-only traffic. */
 const POLL_INTERVAL_MS = 8000;
@@ -73,56 +74,21 @@ async function fetchSignals(
 
 /**
  * The gateway facts the sidebar always shows: process state plus the counts
- * behind the nav badges. Polls on an interval — skipping rounds while the
- * window is hidden or a probe is still in flight, catching up on focus — and
- * a stopped/unreachable gateway dims the sidebar (undefined counts) rather
- * than erroring it.
+ * behind the nav badges. A stopped/unreachable gateway dims the sidebar
+ * (undefined counts) rather than erroring it.
  */
 export function useSidebarSignals(): SidebarSignals {
-  const [signals, setSignals] = useState<SidebarSignals>(EMPTY_SIGNALS);
-  const signalsRef = useRef<SidebarSignals>(EMPTY_SIGNALS);
+  const tickCount = useRef(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    let inFlight = false;
-    let tickCount = 0;
+  const { data } = usePolling(
+    (previous) => {
+      const withCatalog = tickCount.current % CATALOG_EVERY_N_TICKS === 0;
+      tickCount.current += 1;
+      return fetchSignals(previous ?? EMPTY_SIGNALS, withCatalog);
+    },
+    signalsEqual,
+    POLL_INTERVAL_MS,
+  );
 
-    const tick = () => {
-      if (document.hidden || inFlight) {
-        return;
-      }
-      const withCatalog = tickCount % CATALOG_EVERY_N_TICKS === 0;
-      tickCount += 1;
-      inFlight = true;
-      void fetchSignals(signalsRef.current, withCatalog)
-        .then((next) => {
-          if (cancelled || signalsEqual(signalsRef.current, next)) {
-            return;
-          }
-          signalsRef.current = next;
-          setSignals(next);
-        })
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-
-    tick();
-    const timer = window.setInterval(tick, POLL_INTERVAL_MS);
-
-    const onVisibility = () => {
-      if (!document.hidden) {
-        tick();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, []);
-
-  return signals;
+  return data ?? EMPTY_SIGNALS;
 }

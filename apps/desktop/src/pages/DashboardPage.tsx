@@ -1,12 +1,15 @@
+import { useState } from "react";
 import { errorMessage, useI18n } from "@any-converter/core";
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "@any-converter/ui";
 
+import { AgentUsageList, StatsTiles } from "../components/dashboard/StatsTiles";
+import { HealthStrip } from "../components/dashboard/HealthStrip";
+import { OnboardingChecklist } from "../components/dashboard/OnboardingChecklist";
 import { ErrorBanner } from "../components/layout/ErrorBanner";
 import { Header } from "../components/layout/Header";
-import { useAsyncState } from "../hooks/useAsyncState";
+import { useDashboardOverview } from "../hooks/useDashboardOverview";
 import { api } from "../lib/api";
 import { isDesktopApp } from "../lib/platform";
-import { management, type CatalogView } from "../lib/management";
 import type { ServerStatus } from "../types";
 
 const statusBadgeVariant: Record<ServerStatus["state"], "default" | "secondary" | "destructive" | "outline"> = {
@@ -18,34 +21,36 @@ const statusBadgeVariant: Record<ServerStatus["state"], "default" | "secondary" 
   attached: "secondary",
 };
 
+/**
+ * The control tower: what needs attention, how far setup has come, how the
+ * gateway is being used — then the lifecycle and catalog detail underneath.
+ */
 export function DashboardPage() {
   const { t } = useI18n();
-  const [status, setStatus, error, setError] = useAsyncState<ServerStatus>(api.getServerStatus);
-  // The catalog is optional here: a stopped or legacy gateway must not turn
-  // the dashboard into an error page.
-  const [catalog] = useAsyncState<CatalogView | undefined>(() =>
-    management.getCatalog().catch(() => undefined),
-  );
+  const overview = useDashboardOverview();
+  const [actionError, setActionError] = useState<string>();
+  const status = overview.status;
   const canManageLifecycle = isDesktopApp() && status?.state !== "attached";
-
-  const exposed = catalog?.models.filter((model) => model.exposed).length ?? 0;
-  const routable = catalog?.models.filter((model) => model.exposed && model.routed).length ?? 0;
-  const unrouted = exposed - routable;
 
   const run = async (action: () => Promise<ServerStatus>) => {
     try {
-      setStatus(await action());
-      setError(undefined);
+      await action();
+      setActionError(undefined);
+      overview.refresh();
     } catch (cause) {
-      setError(errorMessage(cause));
+      setActionError(errorMessage(cause));
     }
   };
 
   return (
     <section className="grid gap-6">
       <Header title={t("nav.dashboard")} subtitle={t("desktop.dashboard.subtitle")} />
-      {error && <ErrorBanner message={error} />}
+      {actionError && <ErrorBanner message={actionError} />}
+      <HealthStrip stats={overview} />
+      <OnboardingChecklist stats={overview} />
+      <StatsTiles stats={overview} />
       <div className="grid gap-4 md:grid-cols-2">
+        <AgentUsageList stats={overview} />
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">{t("desktop.dashboard.server")}</CardTitle>
@@ -79,22 +84,14 @@ export function DashboardPage() {
                   </Button>
                 </>
               )}
-              <Button size="sm" variant="outline" onClick={() => void run(api.getServerStatus)}>
+              <Button size="sm" variant="outline" onClick={() => overview.refresh()}>
                 {t("desktop.dashboard.refresh")}
               </Button>
             </div>
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">{t("desktop.dashboard.nextSteps")}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">{t("desktop.dashboard.nextStepsBody")}</p>
-          </CardContent>
-        </Card>
       </div>
-      {catalog && (
+      {overview.providerCount !== undefined && (
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">{t("desktop.dashboard.catalog")}</CardTitle>
@@ -104,24 +101,26 @@ export function DashboardPage() {
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
               <div>
                 <p className="text-sm text-muted-foreground">{t("desktop.dashboard.providerCount")}</p>
-                <p className="text-2xl font-semibold">{catalog.providers.length}</p>
+                <p className="text-2xl font-semibold">{overview.providerCount}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">{t("desktop.dashboard.exposedCount")}</p>
-                <p className="text-2xl font-semibold">{exposed}</p>
+                <p className="text-2xl font-semibold">{overview.exposedModels ?? 0}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">{t("desktop.dashboard.routableCount")}</p>
-                <p className="text-2xl font-semibold">{routable}</p>
+                <p className="text-2xl font-semibold">{overview.routableModels ?? 0}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">{t("desktop.dashboard.unroutedCount")}</p>
                 <p
                   className={
-                    unrouted > 0 ? "text-2xl font-semibold text-amber-600 dark:text-amber-400" : "text-2xl font-semibold"
+                    (overview.unroutedModels ?? 0) > 0
+                      ? "text-2xl font-semibold text-amber-600 dark:text-amber-400"
+                      : "text-2xl font-semibold"
                   }
                 >
-                  {unrouted}
+                  {overview.unroutedModels ?? 0}
                 </p>
               </div>
             </div>

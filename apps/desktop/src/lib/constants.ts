@@ -173,5 +173,8 @@ export const PLUGIN_CATALOG: PluginCatalogEntry[] = [
 
 export const SIDEBAR_COLLAPSED_KEY = "any-converter.desktop.sidebarCollapsed";
 
+/** Set once the user dismisses the dashboard's onboarding checklist. */
+export const ONBOARDING_DISMISSED_KEY = "any-converter.desktop.onboardingDismissed";
+
 /** Persisted theme preference; absent value means "system". */
 export const THEME_STORAGE_KEY = "any-converter.desktop.theme";
