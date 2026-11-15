@@ -105,7 +105,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    margin-bottom: 16px;
+    margin-bottom: 12px;
     min-height: 36px;
   }
 
@@ -115,9 +115,23 @@
   }
 
   .brand {
-    padding: 0 8px;
-    font-size: 18px;
-    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 0 2px;
+  }
+
+  .brand-mark {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+
+  .brand-name {
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
     line-height: 1.2;
     white-space: nowrap;
     overflow: hidden;
@@ -125,9 +139,85 @@
   }
 
   .sidebar.collapsed .brand {
-    text-align: center;
-    font-size: 14px;
+    justify-content: center;
     padding: 0;
+  }
+
+  .gateway-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .gateway-status:hover {
+    @apply bg-accent text-accent-foreground;
+  }
+
+  .gateway-status-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .gateway-status-label {
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .gateway-status-detail {
+    font-size: 11px;
+    line-height: 1.3;
+    color: hsl(var(--muted-foreground));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sidebar.collapsed .gateway-status {
+    justify-content: center;
+    padding: 10px 0;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 9999px;
+    background: hsl(var(--muted-foreground) / 0.45);
+  }
+
+  .status-dot.ok {
+    background: hsl(142 71% 40%);
+  }
+
+  .status-dot.warn {
+    background: hsl(38 92% 50%);
+  }
+
+  .status-dot.error {
+    background: hsl(var(--destructive));
+  }
+
+  .dark .status-dot.ok {
+    background: hsl(142 69% 58%);
+  }
+
+  .dark .status-dot.warn {
+    background: hsl(46 96% 62%);
   }
 
   .sidebar-toggle {
@@ -157,14 +247,95 @@
     overflow-y: auto;
   }
 
+  .nav-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .nav-group + .nav-group {
+    margin-top: 14px;
+  }
+
+  .nav-group-label {
+    padding: 0 10px;
+    margin-bottom: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground) / 0.85);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Collapsed: visually hidden but still in the a11y tree for group labels. */
+  .sidebar.collapsed .nav-group-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .sidebar.collapsed .nav-group + .nav-group {
+    margin-top: 8px;
+    padding-top: 12px;
+    border-top: 1px solid hsl(var(--border));
+  }
+
   .sidebar-footer {
+    display: flex;
+    align-items: center;
+    gap: 2px;
     margin-top: 12px;
     padding-top: 12px;
     border-top: 1px solid hsl(var(--border));
   }
 
+  /* Collapsed rail is only 72px wide — stack the buttons instead of a row. */
+  .sidebar.collapsed .sidebar-footer {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* Compact icon button for the bottom bar (settings, theme, language). */
+  .sidebar-footer-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .sidebar-footer-button:hover {
+    @apply bg-accent text-accent-foreground;
+  }
+
+  .sidebar-footer-button.active {
+    background: hsl(var(--accent));
+    color: hsl(var(--accent-foreground));
+  }
+
   .nav-item {
     @apply text-muted-foreground;
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -203,12 +374,255 @@
     white-space: nowrap;
   }
 
+  .nav-item-badge {
+    margin-left: auto;
+    padding: 2px 7px;
+    border-radius: 9999px;
+    background: hsl(var(--muted));
+    color: hsl(var(--muted-foreground));
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.4;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .nav-item-badge.warn {
+    background: hsl(38 92% 50% / 0.16);
+    color: hsl(29 80% 34%);
+  }
+
+  .dark .nav-item-badge.warn {
+    background: hsl(38 92% 50% / 0.18);
+    color: hsl(46 96% 64%);
+  }
+
+  /* Collapsed sidebar keeps only the "needs a look" signal: an amber dot. */
+  .nav-item-badge-dot {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 7px;
+    height: 7px;
+    border-radius: 9999px;
+    background: hsl(38 92% 50%);
+    box-shadow: 0 0 0 2px hsl(var(--card));
+  }
+
   .nav-item:hover {
     @apply bg-accent text-accent-foreground;
   }
 
   .nav-item.active {
     @apply bg-primary text-primary-foreground;
+  }
+
+  /* Settings dialog (rendered to <body> by SettingsDialog via portal). */
+  .settings-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: hsl(0 0% 0% / 0.5);
+    animation: ac-fade-in 140ms ease-out;
+  }
+
+  .settings-dialog {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(720px, 100%);
+    height: min(480px, 100%);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    border: 1px solid hsl(var(--border));
+    border-radius: calc(var(--radius) + 4px);
+    box-shadow: 0 24px 64px hsl(0 0% 0% / 0.3);
+    overflow: hidden;
+    animation: ac-pop-in 140ms ease-out;
+  }
+
+  .settings-dialog:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: -2px;
+  }
+
+  .settings-dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 13px 14px 13px 20px;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+
+  .settings-dialog-title {
+    font-size: 15px;
+    font-weight: 650;
+  }
+
+  .settings-dialog-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font-size: 14px;
+    cursor: pointer;
+  }
+
+  .settings-dialog-close:hover {
+    @apply bg-accent text-accent-foreground;
+  }
+
+  /* The dialog's own navigation: a section rail beside the content pane. */
+  .settings-dialog-body {
+    display: grid;
+    grid-template-columns: 190px minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .settings-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 10px;
+    border-right: 1px solid hsl(var(--border));
+    background: hsl(var(--muted) / 0.4);
+  }
+
+  .settings-rail-item {
+    padding: 8px 10px;
+    border: 0;
+    border-radius: var(--radius);
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .settings-rail-item:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .settings-rail-item.active {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-weight: 600;
+    box-shadow: 0 0 0 1px hsl(var(--border));
+  }
+
+  .settings-pane {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 20px 24px;
+  }
+
+  .settings-section {
+    display: grid;
+    gap: 12px;
+  }
+
+  .settings-section-title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  /* Appearance: theme tiles. */
+  .theme-tiles {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+
+  .theme-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 18px 10px 14px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    color: hsl(var(--muted-foreground));
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+
+  .theme-tile:hover {
+    color: hsl(var(--foreground));
+  }
+
+  .theme-tile.selected {
+    border-color: hsl(var(--primary));
+    color: hsl(var(--foreground));
+    box-shadow: inset 0 0 0 1px hsl(var(--primary));
+  }
+
+  .theme-tile svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* Language: option rows. */
+  .settings-option-list {
+    display: grid;
+    gap: 6px;
+    max-width: 320px;
+  }
+
+  .settings-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    color: hsl(var(--foreground));
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .settings-option:hover {
+    border-color: hsl(var(--primary));
+  }
+
+  .settings-option.selected {
+    border-color: hsl(var(--primary));
+    box-shadow: inset 0 0 0 1px hsl(var(--primary));
+  }
+
+  .settings-option-check {
+    font-weight: 700;
+  }
+
+  @keyframes ac-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  @keyframes ac-pop-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-overlay,
+    .settings-dialog {
+      animation: none;
+    }
   }
 
   .main-panel {

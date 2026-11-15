@@ -12,7 +12,6 @@ import { PlaygroundPage } from "./pages/PlaygroundPage";
 import { ProvidersPage } from "./pages/ProvidersPage";
 import { RoutesPage } from "./pages/RoutesPage";
 import { AgentsPage } from "./pages/AgentsPage";
-import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
 
 export function App() {
@@ -31,7 +30,6 @@ export function App() {
             <Route path="playground" element={<PlaygroundPage />} />
             <Route path="logs" element={<LogsPage />} />
             <Route path="usage" element={<UsagePage />} />
-            <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Route>
         </Routes>

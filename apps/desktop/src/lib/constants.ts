@@ -8,7 +8,6 @@ import {
   PlaygroundIcon,
   ProvidersIcon,
   RoutesIcon,
-  SettingsIcon,
   UsageIcon,
 } from "../components/layout/nav-icons";
 import type { AppPath } from "../types";
@@ -42,21 +41,56 @@ export const AUTH_SCHEME_OPTIONS: ReadonlyArray<{
 
 type NavIcon = ComponentType<SVGProps<SVGSVGElement>>;
 
-export const navItems: Array<{
+export interface NavItem {
   path: AppPath;
   label: TranslationKey;
   /** Rendered when the i18n catalog has no entry for `label`. */
   fallback?: string;
   Icon: NavIcon;
+}
+
+/**
+ * Sidebar sections. The grouping mirrors the product story — overview, who
+ * consumes the gateway (connections), what serves it (gateway), what
+ * happened (insights) — so future entries (MCP under connections, budgets
+ * under insights) land without reshuffling the nav. Settings lives in the
+ * sidebar footer, not a group.
+ */
+export const navGroups: ReadonlyArray<{
+  labelKey: TranslationKey;
+  /** Rendered when the i18n catalog has no entry for `labelKey`. */
+  fallback: string;
+  items: readonly NavItem[];
 }> = [
-  { path: "/dashboard", label: "nav.dashboard", Icon: DashboardIcon },
-  { path: "/providers", label: "nav.providers", Icon: ProvidersIcon },
-  { path: "/routes", label: "nav.routes", Icon: RoutesIcon },
-  { path: "/agents", label: "nav.agents", Icon: AgentsIcon },
-  { path: "/playground", label: "nav.playground", Icon: PlaygroundIcon },
-  { path: "/logs", label: "nav.logs", Icon: LogsIcon },
-  { path: "/usage", label: "nav.usage", Icon: UsageIcon },
-  { path: "/settings", label: "nav.settings", Icon: SettingsIcon },
+  {
+    labelKey: "nav.group.overview",
+    fallback: "Overview",
+    items: [{ path: "/dashboard", label: "nav.dashboard", Icon: DashboardIcon }],
+  },
+  {
+    labelKey: "nav.group.connections",
+    fallback: "Connections",
+    items: [
+      { path: "/agents", label: "nav.agents", Icon: AgentsIcon },
+      { path: "/providers", label: "nav.providers", Icon: ProvidersIcon },
+    ],
+  },
+  {
+    labelKey: "nav.group.gateway",
+    fallback: "Gateway",
+    items: [
+      { path: "/routes", label: "nav.routes", Icon: RoutesIcon },
+      { path: "/playground", label: "nav.playground", Icon: PlaygroundIcon },
+    ],
+  },
+  {
+    labelKey: "nav.group.insights",
+    fallback: "Insights",
+    items: [
+      { path: "/logs", label: "nav.logs", Icon: LogsIcon },
+      { path: "/usage", label: "nav.usage", Icon: UsageIcon },
+    ],
+  },
 ];
 
 /** Where a preset sits in the add sheet; also its credential story. */

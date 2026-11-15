@@ -10,6 +10,10 @@ export interface ServerRequestFailure {
   message: string;
 }
 
+/** True once a 401 has started a reload; concurrent 401s (parallel probes)
+ * must not each queue another navigation into the dying page. */
+let reloadingAfterAuthLoss = false;
+
 /**
  * The one dispatch point for every management/data call the SPA makes.
  *
@@ -68,7 +72,10 @@ export async function requestServer<T>(request: ServerProxyRequest): Promise<T> 
       // key). Reload so the gate asks for the key again instead of every
       // page surfacing its own auth error. This branch is browser-only:
       // the desktop rides IPC and never loses its session.
-      window.location.reload();
+      if (!reloadingAfterAuthLoss) {
+        reloadingAfterAuthLoss = true;
+        window.location.reload();
+      }
       // The page is unloading; a never-settling promise beats a brief
       // flash of an auth error nobody can read.
       return new Promise<T>(() => {});

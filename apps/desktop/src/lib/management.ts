@@ -397,6 +397,12 @@ export const management = {
     return call("/v1/accounts/plugins/uninstall", "POST", JSON.stringify({ spec }));
   },
 
+  /** Agent wiring summary only — the sidebar's badge/status poll. */
+  async listAgents(): Promise<AgentSummary[]> {
+    const body = await call<{ agents: AgentSummary[] }>("/v1/agents");
+    return body.agents ?? [];
+  },
+
   /** Agents plus the configured model catalog for the default-model picker. */
   async agentsWithModels(): Promise<{ agents: AgentSummary[]; models: string[] }> {
     const [list, config] = await Promise.all([

@@ -96,12 +96,6 @@ export function setThemePreference(preference: ThemePreference): void {
   emitChange();
 }
 
-/** light -> dark -> system -> light, the order shown in the UI. */
-export function cycleThemePreference(current: ThemePreference): ThemePreference {
-  const index = PREFERENCES.indexOf(current);
-  return PREFERENCES[(index + 1) % PREFERENCES.length] ?? "light";
-}
-
 // Keep "system" live: react to OS scheme changes while unpinned.
 if (typeof window.matchMedia === "function") {
   const media = window.matchMedia(DARK_MEDIA_QUERY);

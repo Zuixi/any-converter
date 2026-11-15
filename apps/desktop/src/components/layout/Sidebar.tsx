@@ -1,72 +1,44 @@
+import { useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { useI18n, type TranslationKey } from "@any-converter/core";
+import { useI18n } from "@any-converter/core";
 
-import { navItems } from "../../lib/constants";
-import { cycleThemePreference, useTheme, type ThemePreference } from "../../lib/theme";
-import { CollapseIcon, ExpandIcon, MoonIcon, SunIcon, SystemThemeIcon } from "./nav-icons";
+import { useSidebarSignals, type SidebarSignals } from "../../hooks/useSidebarSignals";
+import { navGroups, type NavItem } from "../../lib/constants";
+import { GatewayStatus } from "./GatewayStatus";
+import { BrandMark, CollapseIcon, ExpandIcon, SettingsIcon } from "./nav-icons";
+import { SettingsDialog } from "../settings/SettingsDialog";
 
-const THEME_LABEL_KEYS: Record<ThemePreference, TranslationKey> = {
-  light: "common.theme.light",
-  dark: "common.theme.dark",
-  system: "common.theme.system",
-};
-
-const THEME_ICONS = {
-  light: SunIcon,
-  dark: MoonIcon,
-  system: SystemThemeIcon,
-} as const;
-
-function LanguageToggle({ collapsed }: { collapsed: boolean }) {
-  const { language, setLanguage, t } = useI18n();
-  const next = language === "en" ? "zh-CN" : "en";
-  const label = language === "en" ? t("common.chinese") : t("common.english");
-
-  return (
-    <button
-      type="button"
-      className="nav-item"
-      title={`${t("common.language")}: ${label}`}
-      aria-label={`${t("common.language")}: ${label}`}
-      onClick={() => setLanguage(next)}
-    >
-      <span className="nav-item-icon" aria-hidden="true">
-        {language === "en" ? "中" : "EN"}
-      </span>
-      {!collapsed && (
-        <span className="nav-item-label">
-          {t("common.language")}: {label}
-        </span>
-      )}
-    </button>
-  );
+interface NavBadge {
+  count: number;
+  /** Amber styling + a corner dot when collapsed: something needs a look. */
+  warn?: boolean;
+  title?: string;
 }
 
-/** Cycles light -> dark -> system; the icon shows where the cycle is. */
-function ThemeToggle({ collapsed }: { collapsed: boolean }) {
-  const { t } = useI18n();
-  const { preference, setTheme } = useTheme();
-  const label = t(THEME_LABEL_KEYS[preference]);
-  const Icon = THEME_ICONS[preference];
-
-  return (
-    <button
-      type="button"
-      className="nav-item"
-      title={`${t("common.theme")}: ${label}`}
-      aria-label={`${t("common.theme")}: ${label}`}
-      onClick={() => setTheme(cycleThemePreference(preference))}
-    >
-      <span className="nav-item-icon" aria-hidden="true">
-        <Icon />
-      </span>
-      {!collapsed && (
-        <span className="nav-item-label">
-          {t("common.theme")}: {label}
-        </span>
-      )}
-    </button>
-  );
+/** Counts worth seeing without visiting the page: connections and drift. */
+function badgeForItem(
+  item: NavItem,
+  label: string,
+  signals: SidebarSignals,
+  agentsSummary: string,
+): NavBadge | undefined {
+  if (item.path === "/agents") {
+    const { connectedAgents, driftedAgents } = signals;
+    if (connectedAgents === undefined || driftedAgents === undefined) {
+      return undefined;
+    }
+    if (driftedAgents > 0) {
+      return { count: driftedAgents, warn: true, title: agentsSummary };
+    }
+    if (connectedAgents > 0) {
+      return { count: connectedAgents, title: agentsSummary };
+    }
+    return undefined;
+  }
+  if (item.path === "/providers" && signals.providerCount !== undefined && signals.providerCount > 0) {
+    return { count: signals.providerCount, title: `${label}: ${signals.providerCount}` };
+  }
+  return undefined;
 }
 
 export function Sidebar({
@@ -77,47 +49,95 @@ export function Sidebar({
   onToggleCollapsed: () => void;
 }) {
   const { t } = useI18n();
+  const signals = useSidebarSignals();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsLabel = t("nav.settings");
+
+  const agentsSummary = t("desktop.sidebar.agentsSummary")
+    .replace("{connected}", String(signals.connectedAgents ?? 0))
+    .replace("{drifted}", String(signals.driftedAgents ?? 0));
+
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    settingsButtonRef.current?.focus();
+  };
 
   return (
-    <aside className={collapsed ? "sidebar collapsed" : "sidebar"}>
-      <div className="sidebar-header">
-        <div className="brand" title="any-converter">
-          {collapsed ? "ac" : "any-converter"}
+    <>
+      <aside className={collapsed ? "sidebar collapsed" : "sidebar"}>
+        <div className="sidebar-header">
+          <div className="brand" title="any-converter">
+            <BrandMark className="brand-mark" />
+            {!collapsed && <span className="brand-name">any-converter</span>}
+          </div>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={onToggleCollapsed}
+            title={collapsed ? t("desktop.sidebar.expand") : t("desktop.sidebar.collapse")}
+            aria-label={collapsed ? t("desktop.sidebar.expand") : t("desktop.sidebar.collapse")}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? <ExpandIcon /> : <CollapseIcon />}
+          </button>
         </div>
-        <button
-          type="button"
-          className="sidebar-toggle"
-          onClick={onToggleCollapsed}
-          title={collapsed ? t("desktop.sidebar.expand") : t("desktop.sidebar.collapse")}
-          aria-label={collapsed ? t("desktop.sidebar.expand") : t("desktop.sidebar.collapse")}
-          aria-expanded={!collapsed}
-        >
-          {collapsed ? <ExpandIcon /> : <CollapseIcon />}
-        </button>
-      </div>
-      <nav className="sidebar-nav">
-        {navItems.map((item) => {
-          const { Icon } = item;
-          const label = t(item.label) || item.fallback || item.label;
-          return (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              end={item.path === "/dashboard"}
-              title={label}
-              aria-label={label}
-              className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
-            >
-              <Icon className="nav-item-icon" />
-              {!collapsed && <span className="nav-item-label">{label}</span>}
-            </NavLink>
-          );
-        })}
-      </nav>
-      <div className="sidebar-footer">
-        <ThemeToggle collapsed={collapsed} />
-        <LanguageToggle collapsed={collapsed} />
-      </div>
-    </aside>
+        <GatewayStatus collapsed={collapsed} signals={signals} />
+        <nav className="sidebar-nav">
+          {navGroups.map((group) => (
+            <div className="nav-group" role="group" aria-labelledby={group.labelKey} key={group.labelKey}>
+              {/* Always rendered: visually hidden (not removed) when collapsed,
+                  so screen readers keep the section structure in both modes. */}
+              <div className="nav-group-label" id={group.labelKey}>
+                {t(group.labelKey) || group.fallback}
+              </div>
+              {group.items.map((item) => {
+                const { Icon } = item;
+                const label = t(item.label) || item.fallback || item.label;
+                const badge = badgeForItem(item, label, signals, agentsSummary);
+                const title = badge?.title ?? label;
+                return (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    end={item.path === "/dashboard"}
+                    title={title}
+                    aria-label={title}
+                    className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+                  >
+                    <Icon className="nav-item-icon" />
+                    {!collapsed && <span className="nav-item-label">{label}</span>}
+                    {!collapsed && badge && (
+                      <span className={badge.warn ? "nav-item-badge warn" : "nav-item-badge"}>
+                        {badge.count}
+                      </span>
+                    )}
+                    {collapsed && badge?.warn && (
+                      <span className="nav-item-badge-dot" aria-hidden="true" />
+                    )}
+                  </NavLink>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
+        {/* Bottom bar: the gear opens the settings dialog (theme, language,
+            gateway config) — no settings page, no inline toggles. */}
+        <div className="sidebar-footer">
+          <button
+            ref={settingsButtonRef}
+            type="button"
+            className="sidebar-footer-button"
+            aria-haspopup="dialog"
+            title={settingsLabel}
+            aria-label={settingsLabel}
+            onClick={() => setSettingsOpen(true)}
+          >
+            <SettingsIcon />
+          </button>
+        </div>
+      </aside>
+      <SettingsDialog open={settingsOpen} onClose={closeSettings} />
+    </>
   );
 }
