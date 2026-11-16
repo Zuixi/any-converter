@@ -5,61 +5,113 @@ import type { DashboardStats } from "../../hooks/useDashboardOverview";
 const compact = new Intl.NumberFormat(undefined, { notation: "compact" });
 const plain = new Intl.NumberFormat();
 
-/** "823 ms" / "1.4 s"; null means the window had no timed calls. */
-function formatLatency(ms: number | null | undefined): string {
-  if (ms === undefined || ms === null) {
-    return "—";
-  }
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
-}
-
-function formatCost(usd: number | undefined): string {
-  if (usd === undefined) {
-    return "—";
-  }
-  return usd >= 1 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(4)}`;
-}
-
 /**
- * The live overview: five numbers over the last 7 days. Em-dash is the
- * honest value for "no data" — a stopped gateway shows dashes, not zeros.
+ * The magpie KPI strip: ONE card, four hairline-divided cells — a 20px
+ * number, an 11px uppercase label, and a quiet sub-line each. Cells follow
+ * magpie's usage page: tokens, cache read, reasoning, calls last.
+ * Em-dash is the honest value for "no data": a stopped gateway shows
+ * dashes, not zeros.
  */
 export function StatsTiles({ stats }: { stats: DashboardStats }) {
   const { t } = useI18n();
 
-  const calls = stats.calls;
-  const errorRate =
-    calls !== undefined && calls > 0 && stats.errors !== undefined
-      ? `${((stats.errors / calls) * 100).toFixed(1)}%`
+  const tokens =
+    stats.inputTokens !== undefined || stats.outputTokens !== undefined
+      ? compact.format((stats.inputTokens ?? 0) + (stats.outputTokens ?? 0))
       : "—";
+  const inOut =
+    stats.inputTokens !== undefined && stats.outputTokens !== undefined
+      ? t("desktop.dashboard.kpi.inOut")
+          .replace("{in}", compact.format(stats.inputTokens))
+          .replace("{out}", compact.format(stats.outputTokens))
+      : "";
+  const errorsSub =
+    stats.errors === undefined
+      ? ""
+      : stats.errors > 0
+        ? t("desktop.dashboard.kpi.errors").replace("{count}", plain.format(stats.errors))
+        : t("desktop.dashboard.kpi.noErrors");
+  const cacheSub =
+    stats.hitRatePct === undefined || stats.hitRatePct === null
+      ? ""
+      : t("desktop.dashboard.kpi.hitRate").replace("{rate}", stats.hitRatePct.toFixed(0));
 
-  const tiles = [
-    { key: "calls", label: t("usage.requests"), value: calls !== undefined ? plain.format(calls) : "—" },
-    { key: "errors", label: t("desktop.dashboard.stats.errorRate"), value: errorRate },
-    { key: "latency", label: t("usage.avgLatency"), value: formatLatency(stats.meanLatencyMs) },
-    { key: "cost", label: t("desktop.dashboard.stats.cost"), value: formatCost(stats.costUsd) },
+  const cells = [
     {
-      key: "agents",
-      label: t("desktop.dashboard.stats.activeAgents"),
-      value:
-        stats.activeAgentCount !== undefined ? plain.format(stats.activeAgentCount) : "—",
+      key: "tokens",
+      label: t("desktop.dashboard.kpi.tokens"),
+      value: tokens,
+      sub: inOut,
+      subAttn: false,
+    },
+    {
+      key: "cache",
+      label: t("desktop.dashboard.kpi.cache"),
+      value: stats.cacheReadTokens !== undefined ? compact.format(stats.cacheReadTokens) : "—",
+      sub: cacheSub,
+      subAttn: false,
+    },
+    {
+      key: "reasoning",
+      label: t("desktop.dashboard.kpi.reasoning"),
+      value: stats.reasoningTokens !== undefined ? compact.format(stats.reasoningTokens) : "—",
+      sub: "",
+      subAttn: false,
+    },
+    {
+      key: "calls",
+      label: t("desktop.dashboard.kpi.calls"),
+      value: stats.calls !== undefined ? plain.format(stats.calls) : "—",
+      sub: errorsSub,
+      subAttn: (stats.errors ?? 0) > 0,
     },
   ];
 
   return (
-    <section aria-label={t("desktop.dashboard.stats.window")}>
-      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        {t("desktop.dashboard.stats.window")}
+    <div className="stats">
+      {cells.map((cell) => (
+        <div key={cell.key} className="kpi">
+          <b>{cell.value}</b>
+          <span>{cell.label}</span>
+          {cell.sub && <small className={cell.subAttn ? "attn" : undefined}>{cell.sub}</small>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Daily calls over the window, magpie's bar chart: one flat-accent bar per
+ * day, the y-max as a quiet label. Hidden when the window has no days with
+ * traffic — an empty chart reads as broken, missing reads as calm.
+ */
+export function TrendChart({ stats }: { stats: DashboardStats }) {
+  const { t } = useI18n();
+  const points = (stats.series ?? []).filter((point) => point.calls > 0);
+  if (points.length === 0) {
+    return null;
+  }
+  const max = Math.max(...points.map((point) => point.calls));
+
+  return (
+    <div className="chart-card">
+      <div className="chart-top">
+        <span className="section-label" style={{ marginBottom: 0 }}>
+          {t("desktop.dashboard.chart.calls")}
+        </span>
+        <span className="max">{compact.format(max)}</span>
       </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        {tiles.map((tile) => (
-          <div key={tile.key} className="rounded-lg border bg-card p-4">
-            <div className="truncate text-xs text-muted-foreground">{tile.label}</div>
-            <div className="mt-1 text-2xl font-semibold tabular-nums">{tile.value}</div>
-          </div>
+      <div className="chart" role="img" aria-label={t("desktop.dashboard.chart.calls")}>
+        {(stats.series ?? []).map((point, index) => (
+          <div
+            key={`${point.day}-${index}`}
+            className="bar"
+            style={{ height: `${Math.max(2, (point.calls / max) * 100)}%` }}
+            title={`${point.day}: ${plain.format(point.calls)}`}
+          />
         ))}
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -69,20 +121,28 @@ export function AgentUsageList({ stats }: { stats: DashboardStats }) {
   const agents = stats.activeAgents ?? [];
 
   return (
-    <div className="rounded-lg border bg-card">
-      <div className="border-b px-4 py-3 text-sm font-semibold">
+    <div className="list-card">
+      <div className="lc-head">
         {t("desktop.dashboard.byAgent")}
+        {stats.activeAgentCount !== undefined && (
+          <span className="count">
+            {t("desktop.dashboard.byAgentCount").replace(
+              "{count}",
+              plain.format(stats.activeAgentCount),
+            )}
+          </span>
+        )}
       </div>
       {agents.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-muted-foreground">
+        <p className="lc-empty">
           {stats.activeAgents === undefined ? "—" : t("desktop.dashboard.byAgent.empty")}
         </p>
       ) : (
-        <ul className="divide-y">
+        <ul>
           {agents.map((agent) => (
-            <li key={agent.agent} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-              <code className="rounded bg-muted px-2 py-0.5 text-xs font-medium">{agent.agent}</code>
-              <span className="ml-auto tabular-nums text-muted-foreground">
+            <li key={agent.agent} className="lc-row">
+              <span className="lc-title min-w-0 flex-1">{agent.agent}</span>
+              <span className="text-xs tabular-nums text-muted-foreground">
                 {plain.format(agent.calls)} · {compact.format(agent.tokens)}
               </span>
             </li>

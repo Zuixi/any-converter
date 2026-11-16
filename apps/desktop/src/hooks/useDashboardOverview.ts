@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useApiClient, type ApiClient } from "@any-converter/core";
 import type { UsageSummary } from "@any-converter/shared";
 
@@ -8,8 +9,14 @@ import { usePolling } from "./usePolling";
 
 /** The dashboard polls less often than the sidebar: it is one page of many. */
 const DASHBOARD_INTERVAL_MS = 15000;
-/** Usage window behind the stat tiles and the agent leaderboard. */
-const USAGE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** Usage window lengths behind the range pills, in days. */
+export const RANGE_PRESETS = [
+  { key: "today", days: 1 },
+  { key: "week", days: 7 },
+  { key: "month", days: 30 },
+] as const;
+
+export type RangeKey = (typeof RANGE_PRESETS)[number]["key"];
 
 export interface AgentUsage {
   agent: string;
@@ -19,9 +26,10 @@ export interface AgentUsage {
 
 /**
  * Everything the control-tower dashboard shows, already derived: health
- * signals, onboarding progress, and the 7-day usage numbers. Like the
- * sidebar signals, every probe degrades to undefined (unknown) instead of
- * rejecting, so a stopped gateway dims the page rather than erroring it.
+ * signals, onboarding progress, and the usage numbers for the selected
+ * range. Like the sidebar signals, every probe degrades to undefined
+ * (unknown) instead of rejecting, so a stopped gateway dims the page
+ * rather than erroring it.
  */
 export interface DashboardStats {
   status: ServerStatus | undefined;
@@ -34,15 +42,30 @@ export interface DashboardStats {
   unroutedModels: number | undefined;
   routableModels: number | undefined;
   exposedModels: number | undefined;
-  /** 7-day usage totals; undefined when the usage API is unreachable. */
+  /** Usage totals for the selected window; undefined when unreachable. */
   calls: number | undefined;
   errors: number | undefined;
   costUsd: number | undefined;
+  inputTokens: number | undefined;
+  outputTokens: number | undefined;
+  cacheReadTokens: number | undefined;
+  reasoningTokens: number | undefined;
+  /** Share of reads served from cache, 0–100; null when no cache data. */
+  hitRatePct: number | null | undefined;
   meanLatencyMs: number | null | undefined;
-  /** Distinct agents with traffic this week (the tile's number). */
+  meanTtftMs: number | null | undefined;
+  /** One point per day in the window, for the trend chart. */
+  series: DayPoint[] | undefined;
+  /** Distinct agents with traffic in the window (the headline number). */
   activeAgentCount: number | undefined;
-  /** Agents with traffic this week, most calls first (top 5). */
+  /** Agents with traffic, most calls first (top 5). */
   activeAgents: AgentUsage[] | undefined;
+}
+
+/** A day's calls, the chart's only payload. */
+export interface DayPoint {
+  day: string;
+  calls: number;
 }
 
 const EMPTY_STATS: DashboardStats = {
@@ -57,7 +80,14 @@ const EMPTY_STATS: DashboardStats = {
   calls: undefined,
   errors: undefined,
   costUsd: undefined,
+  inputTokens: undefined,
+  outputTokens: undefined,
+  cacheReadTokens: undefined,
+  reasoningTokens: undefined,
+  hitRatePct: undefined,
   meanLatencyMs: undefined,
+  meanTtftMs: undefined,
+  series: undefined,
   activeAgentCount: undefined,
   activeAgents: undefined,
 };
@@ -66,9 +96,9 @@ function isoSeconds(date: Date): string {
   return `${date.toISOString().slice(0, 19)}Z`;
 }
 
-async function fetchOverview(apiClient: ApiClient): Promise<DashboardStats> {
+async function fetchOverview(apiClient: ApiClient, rangeDays: number): Promise<DashboardStats> {
   const to = new Date();
-  const from = new Date(to.getTime() - USAGE_WINDOW_MS);
+  const from = new Date(to.getTime() - rangeDays * 24 * 60 * 60 * 1000);
   const [status, catalog, agents, usage] = await Promise.all([
     api.getServerStatus().catch(() => undefined),
     management.getCatalog().catch(() => undefined),
@@ -116,7 +146,17 @@ function derive(
     calls: totals?.calls,
     errors: totals?.errors,
     costUsd: totals?.cost_usd,
+    inputTokens: totals?.input_tokens,
+    outputTokens: totals?.output_tokens,
+    cacheReadTokens: totals?.cache_read_tokens,
+    reasoningTokens: totals?.reasoning_tokens,
+    hitRatePct: totals ? (totals.hit_rate === null ? null : totals.hit_rate * 100) : undefined,
     meanLatencyMs: totals ? totals.mean_latency_ms : undefined,
+    meanTtftMs: totals ? totals.mean_ttft_ms : undefined,
+    series: usage?.series.map((bucket) => ({
+      day: bucket.label,
+      calls: bucket.totals.calls,
+    })),
     activeAgentCount: usage ? withTraffic.length : undefined,
     activeAgents,
   };
@@ -141,19 +181,40 @@ function statsEqual(a: DashboardStats, b: DashboardStats): boolean {
     a.calls === b.calls &&
     a.errors === b.errors &&
     a.costUsd === b.costUsd &&
+    a.inputTokens === b.inputTokens &&
+    a.outputTokens === b.outputTokens &&
+    a.cacheReadTokens === b.cacheReadTokens &&
+    a.reasoningTokens === b.reasoningTokens &&
+    a.hitRatePct === b.hitRatePct &&
     a.meanLatencyMs === b.meanLatencyMs &&
+    a.meanTtftMs === b.meanTtftMs &&
+    JSON.stringify(a.series) === JSON.stringify(b.series) &&
     a.activeAgentCount === b.activeAgentCount &&
     JSON.stringify(a.activeAgents) === JSON.stringify(b.activeAgents)
   );
 }
 
-/** The dashboard's single data source; `refresh` follows lifecycle actions. */
-export function useDashboardOverview(): DashboardStats & { refresh: () => void } {
+/**
+ * The dashboard's single data source; `refresh` follows lifecycle actions.
+ * Changing `rangeDays` refetches immediately — the pills must feel instant.
+ */
+export function useDashboardOverview(rangeDays: number): DashboardStats & { refresh: () => void } {
   const apiClient = useApiClient();
   const { data, refresh } = usePolling(
-    () => fetchOverview(apiClient),
+    () => fetchOverview(apiClient, rangeDays),
     statsEqual,
     DASHBOARD_INTERVAL_MS,
   );
+  // Refetch when the range changes (not on mount — the poll loop already
+  // starts with a round). fetchRef inside usePolling always runs the latest
+  // closure, so this pull always uses the new range.
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    refresh();
+  }, [rangeDays]); // eslint-disable-line react-hooks/exhaustive-deps
   return { ...(data ?? EMPTY_STATS), refresh };
 }

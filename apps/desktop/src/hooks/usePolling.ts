@@ -28,9 +28,19 @@ export function usePolling<T>(
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
+    // A refresh that arrived mid-round must not be lost: queue it and run
+    // as soon as the current round lands (a range switch would otherwise
+    // wait a whole interval for the next tick).
+    let pendingRefresh = false;
 
     const tick = (force: boolean) => {
-      if (inFlight || (!force && document.hidden)) {
+      if (!force && document.hidden) {
+        return;
+      }
+      if (inFlight) {
+        if (force) {
+          pendingRefresh = true;
+        }
         return;
       }
       inFlight = true;
@@ -49,6 +59,10 @@ export function usePolling<T>(
         })
         .finally(() => {
           inFlight = false;
+          if (pendingRefresh) {
+            pendingRefresh = false;
+            tick(true);
+          }
         });
     };
 

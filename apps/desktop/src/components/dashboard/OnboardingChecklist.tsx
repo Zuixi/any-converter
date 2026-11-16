@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useI18n } from "@any-converter/core";
-import { Card, CardContent, CardHeader, CardTitle } from "@any-converter/ui";
 
 import type { DashboardStats } from "../../hooks/useDashboardOverview";
 import { ONBOARDING_DISMISSED_KEY } from "../../lib/constants";
@@ -16,9 +15,10 @@ function readDismissed(): boolean {
 
 /**
  * The getting-started checklist, derived live from the gateway: provider,
- * route, agent, first request. Each step links to the page that completes
- * it; once everything is done it collapses to a single confirmation line.
- * Dismissal is the user's and sticks across sessions.
+ * route, agent, first request. Each step is a row that links to the page
+ * that completes it; done steps get a green check disc. Once everything is
+ * done it collapses to a single confirmation row. Dismissal is the user's
+ * and sticks across sessions.
  */
 export function OnboardingChecklist({ stats }: { stats: DashboardStats }) {
   const { t } = useI18n();
@@ -63,67 +63,56 @@ export function OnboardingChecklist({ stats }: { stats: DashboardStats }) {
 
   if (allDone) {
     return (
-      <Card>
-        <CardContent className="flex items-center justify-between gap-4 pt-6">
-          <p className="flex items-center gap-2 text-sm">
-            <span aria-hidden="true">✓</span>
-            {t("desktop.dashboard.checklist.done")}
-          </p>
+      <div className="list-card">
+        <div className="lc-row">
+          <span aria-hidden="true" className="step-disc done">
+            ✓
+          </span>
+          <span className="lc-title flex-1">{t("desktop.dashboard.checklist.done")}</span>
           <button
             type="button"
-            className="text-sm text-muted-foreground underline-offset-2 hover:underline"
-            onClick={dismiss}
-          >
-            {t("desktop.dashboard.checklist.dismiss")}
-          </button>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-lg">{t("desktop.dashboard.checklist.title")}</CardTitle>
-      </CardHeader>
-      <CardContent className="grid gap-1">
-        <ol>
-          {steps.map((step, index) => (
-            <li key={step.to}>
-              <Link
-                to={step.to}
-                className="flex items-center gap-3 rounded-md px-2 py-2 no-underline hover:bg-accent"
-              >
-                <span
-                  aria-hidden="true"
-                  className={
-                    step.done
-                      ? "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground"
-                      : "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border text-xs font-semibold text-muted-foreground"
-                  }
-                >
-                  {step.done ? "✓" : index + 1}
-                </span>
-                <span className={step.done ? "flex-1 text-sm line-through opacity-60" : "flex-1 text-sm"}>
-                  {step.label}
-                </span>
-                <span aria-hidden="true" className="text-sm text-muted-foreground">
-                  →
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ol>
-        <div className="mt-2 px-2">
-          <button
-            type="button"
-            className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+            className="text-xs text-muted-foreground underline-offset-2 hover:underline"
             onClick={dismiss}
           >
             {t("desktop.dashboard.checklist.dismiss")}
           </button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="list-card">
+      <div className="lc-head">
+        {t("desktop.dashboard.checklist.title")}
+        <button
+          type="button"
+          className="ml-auto text-xs font-normal text-muted-foreground underline-offset-2 hover:underline"
+          onClick={dismiss}
+        >
+          {t("desktop.dashboard.checklist.dismiss")}
+        </button>
+      </div>
+      <ol>
+        {steps.map((step, index) => (
+          <li key={step.to}>
+            <Link to={step.to} className="lc-row no-underline">
+              <span
+                aria-hidden="true"
+                className={`step-disc ${step.done ? "done" : "todo"}`}
+              >
+                {step.done ? "✓" : index + 1}
+              </span>
+              <span className={`lc-title flex-1 ${step.done ? "opacity-60 line-through" : ""}`}>
+                {step.label}
+              </span>
+              <span aria-hidden="true" className="text-muted-foreground">
+                →
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
