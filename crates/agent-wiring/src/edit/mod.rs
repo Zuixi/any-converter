@@ -8,6 +8,7 @@
 pub mod env;
 pub mod json;
 pub mod toml;
+pub mod yaml;
 
 use std::fmt;
 

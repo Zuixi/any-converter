@@ -59,6 +59,11 @@ impl Snapshot {
         Self::backup_path(file).exists()
     }
 
+    /// Reports whether `file` did not exist when the snapshot was taken.
+    pub fn was_absent(&self, file: &Path) -> bool {
+        with_suffix(&Self::backup_path(file), ABSENT_SUFFIX).exists()
+    }
+
     /// Reads the byte backup for `file`.
     ///
     /// Returns `Ok(None)` when no backup exists. An existing but unreadable

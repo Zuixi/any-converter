@@ -14,8 +14,9 @@ use axum::Extension;
 
 use crate::admin::{self, AdminRuntime};
 use crate::agents::{
-    AgentRegistry, catalog_from_config, handle_agent_connect, handle_agent_disconnect,
-    handle_agent_keys, handle_agent_rotate_key, handle_agent_sync, handle_agents_list,
+    AgentRegistry, catalog_from_config, handle_agent_connect, handle_agent_diff,
+    handle_agent_disconnect, handle_agent_keys, handle_agent_rotate_key, handle_agent_sync,
+    handle_agents_list,
 };
 use crate::config::ServerConfig;
 use crate::control_plane::{ControlPlane, ManagementAuthority};
@@ -26,12 +27,11 @@ use crate::credentials::copilot::CopilotSessions;
 use crate::handlers::{
     AppState, handle_account_adopt, handle_account_models, handle_account_order,
     handle_account_plugins, handle_account_quotas, handle_account_release, handle_account_remove,
-    handle_plugin_install, handle_plugin_uninstall,
     handle_account_signin, handle_account_signin_cancel, handle_account_signin_status,
     handle_account_signin_submit, handle_accounts, handle_admin_convert, handle_admin_logs,
     handle_admin_status, handle_admin_usage, handle_claude, handle_count_tokens, handle_gemini,
-    handle_health, handle_model_retrieve, handle_models, handle_openai_chat, handle_responses,
-    handle_usage_api,
+    handle_health, handle_model_retrieve, handle_models, handle_openai_chat, handle_plugin_install,
+    handle_plugin_uninstall, handle_responses, handle_usage_api,
 };
 use crate::plugins::{ManagedHosts, PluginAuthStore};
 use crate::signin_task::SignInTasks;
@@ -187,7 +187,7 @@ pub fn build_app_state(config: ServerConfig) -> Arc<AppState> {
 /// Create a router with a pre-built `AppState`, enabling test injection of
 /// custom HTTP clients (e.g., pointing at a local `wiremock` server).
 ///
-/// The sign-in task registry is the process-wide one (magpie `signIns`),
+/// The sign-in task registry is the process-wide one,
 /// seeded here with the server-level proxy so `run_with_shutdown` can
 /// cancel every outstanding task on exit.
 pub fn create_router_with_state(state: Arc<AppState>) -> Router {
@@ -288,10 +288,7 @@ fn create_router_with_runtime(state: Arc<AppState>, runtime: AdminRuntime) -> Ro
         .route("/v1/accounts", get(handle_accounts))
         .route("/v1/accounts/quotas", get(handle_account_quotas))
         .route("/v1/accounts/plugins", get(handle_account_plugins))
-        .route(
-            "/v1/accounts/plugins/install",
-            post(handle_plugin_install),
-        )
+        .route("/v1/accounts/plugins/install", post(handle_plugin_install))
         .route(
             "/v1/accounts/plugins/uninstall",
             post(handle_plugin_uninstall),
@@ -320,6 +317,7 @@ fn create_router_with_runtime(state: Arc<AppState>, runtime: AdminRuntime) -> Ro
         .route("/v1/agents/{id}/sync", post(handle_agent_sync))
         .route("/v1/agents/{id}/key/rotate", post(handle_agent_rotate_key))
         .route("/v1/agents/{id}/keys", get(handle_agent_keys))
+        .route("/v1/agents/{id}/diff", get(handle_agent_diff))
         .route(
             "/v1/admin/config",
             get(admin::get_config).patch(admin::patch_config),

@@ -66,6 +66,26 @@ struct AgentEntry {
     catalog_digest: Option<String>,
     #[serde(default)]
     home: Option<String>,
+    /// Reasoning effort last written, when the agent accepts one.
+    #[serde(default)]
+    effort: Option<String>,
+    /// Per-role model selections (`opus`, `sonnet`, `haiku`), when supported.
+    #[serde(default)]
+    role_models: BTreeMap<String, String>,
+}
+
+/// Options supplied with a connect (or reconnect) request.
+///
+/// `None` keeps the stored choice, so reconnecting from a model list never
+/// silently resets the reasoning effort. An empty effort string clears it.
+#[derive(Debug, Clone, Default)]
+pub struct AgentOptions {
+    /// Default model for this agent.
+    pub model: Option<String>,
+    /// Reasoning effort: `None` keeps, `Some("")` clears, else sets.
+    pub effort: Option<String>,
+    /// Replaces the per-role selections; `None` keeps the stored map.
+    pub role_models: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +120,23 @@ pub struct AgentStatus {
     /// Unix timestamp of the last successful connect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connected_at: Option<i64>,
+    /// Configuration files this agent reads (whether or not they exist yet).
+    pub config_files: Vec<String>,
+    /// Reasoning-effort levels this agent accepts; empty when it has none.
+    pub efforts: Vec<String>,
+    /// Per-role model slots this agent accepts; empty when it has none.
+    pub roles: Vec<String>,
+    /// Stored reasoning effort, when the user picked one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Stored per-role model selections.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub role_models: BTreeMap<String, String>,
+    /// Launch command for agents that need the gateway key in their
+    /// environment. Contains the plaintext agent key, so it is returned only
+    /// to an authenticated caller and never logged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch: Option<String>,
 }
 
 /// Key metadata returned by `GET /v1/agents/{id}/keys` (never plaintext).
@@ -113,6 +150,24 @@ pub struct KeyInfo {
     pub last_used: Option<i64>,
 }
 
+/// One configuration file's pre-connect and current contents.
+///
+/// Returned only to an authenticated caller, with our plaintext agent key
+/// replaced by a placeholder in both sides.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileDiff {
+    /// Absolute path of the configuration file.
+    pub path: String,
+    /// Contents before wiring; `None` when the file did not exist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// Current contents; `None` when the file was removed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// Whether the file was absent before connecting.
+    pub created: bool,
+}
+
 /// Serializes every agent write behind one async mutex.
 pub struct AgentRegistry {
     data_dir: PathBuf,
@@ -121,6 +176,7 @@ pub struct AgentRegistry {
     global_key: Option<String>,
     catalog: RwLock<ModelCatalog>,
     home_override: RwLock<Option<PathBuf>>,
+    env_lookup: RwLock<fn(&str) -> Option<String>>,
     inner: tokio::sync::Mutex<RegistryInner>,
 }
 
@@ -144,6 +200,7 @@ impl AgentRegistry {
             global_key,
             catalog: RwLock::new(ModelCatalog::default()),
             home_override: RwLock::new(None),
+            env_lookup: RwLock::new(env_lookup),
             inner: tokio::sync::Mutex::new(RegistryInner { state, agent_keys }),
         }
     }
@@ -159,7 +216,29 @@ impl AgentRegistry {
         let store = Arc::new(FileSecretStore::new(dir.join("secrets.json")));
         let registry = Self::new(dir.clone(), store, "http://127.0.0.1:8080".to_owned(), None);
         registry.set_home(dir);
+        // Machine-independent detection: no APPDATA/PATH/HERMES_HOME leaks
+        // from the developer's environment into test results.
+        registry.set_env(|_| None);
         registry
+    }
+
+    /// Replaces the environment lookup agent specs use (tests).
+    pub fn set_env(&self, lookup: fn(&str) -> Option<String>) {
+        let mut guard = self
+            .env_lookup
+            .write()
+            .unwrap_or_else(|lock| lock.into_inner());
+        *guard = lookup;
+    }
+
+    fn home_ctx(&self, home: &Path) -> HomeCtx {
+        HomeCtx {
+            home: home.to_path_buf(),
+            env: *self
+                .env_lookup
+                .read()
+                .unwrap_or_else(|lock| lock.into_inner()),
+        }
     }
 
     /// Replaces the catalog snapshot used by connect/sync/digest checks.
@@ -188,9 +267,11 @@ impl AgentRegistry {
             .unwrap_or_else(|lock| lock.into_inner())
             .clone();
         override_home.unwrap_or_else(|| {
-            std::env::var("HOME")
+            ["HOME", "USERPROFILE"]
+                .iter()
+                .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("."))
+                .unwrap_or_else(|| PathBuf::from("."))
         })
     }
 
@@ -223,7 +304,7 @@ impl AgentRegistry {
     /// hot path: a stored `connected` agent whose files no longer point at the
     /// gateway is persisted as `drifted`.
     pub async fn list(&self, home: &Path) -> Vec<AgentStatus> {
-        let ctx = home_ctx(home);
+        let ctx = self.home_ctx(home);
         // Read once outside the lock: drift tolerates seconds of staleness,
         // and file IO must not happen under the registry mutex (writes hold
         // it through connect/sync/rotate file work).
@@ -235,6 +316,17 @@ impl AgentRegistry {
             let inner = self.inner.lock().await;
             for spec in all_specs() {
                 let id = spec.id().to_owned();
+                let config_files = spec
+                    .config_files(&ctx)
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
+                let efforts = spec
+                    .efforts()
+                    .iter()
+                    .map(|level| (*level).to_owned())
+                    .collect();
+                let roles = spec.roles().iter().map(|role| (*role).to_owned()).collect();
                 if matches!(spec.detect(&ctx), DetectResult::Absent) {
                     rows.push(AgentStatus {
                         id,
@@ -243,6 +335,12 @@ impl AgentRegistry {
                         catalog_digest: None,
                         key_id: None,
                         connected_at: None,
+                        config_files,
+                        efforts,
+                        roles,
+                        effort: None,
+                        role_models: BTreeMap::new(),
+                        launch: None,
                     });
                     continue;
                 }
@@ -260,13 +358,28 @@ impl AgentRegistry {
                     status = STATUS_DRIFTED.to_owned();
                     drifted.push(id.clone());
                 }
+                let model = entry.and_then(|entry| entry.default_model.clone());
+                let launch = match (status.as_str(), inner.agent_keys.get(&id), &model) {
+                    (STATUS_CONNECTED | STATUS_DRIFTED, Some(key), Some(model)) => {
+                        spec.launch(&ctx, &self.gateway_url, &key.key, model)
+                    }
+                    _ => None,
+                };
                 rows.push(AgentStatus {
                     id,
                     status,
-                    model: entry.and_then(|entry| entry.default_model.clone()),
+                    model,
                     catalog_digest: entry.and_then(|entry| entry.catalog_digest.clone()),
                     key_id: entry.and_then(|entry| entry.agent_key_id.clone()),
                     connected_at: entry.and_then(|entry| entry.connected_at),
+                    config_files,
+                    efforts,
+                    roles,
+                    effort: entry.and_then(|entry| entry.effort.clone()),
+                    role_models: entry
+                        .map(|entry| entry.role_models.clone())
+                        .unwrap_or_default(),
+                    launch,
                 });
             }
         }
@@ -285,7 +398,7 @@ impl AgentRegistry {
     }
 
     /// Reports whether a connected agent's files no longer hold the values we
-    /// applied — magpie `Agent.Drift`'s shape: first the wiring check
+    /// applied: first the wiring check
     /// (`read_state`: do the wiring keys still point at THIS gateway), then
     /// the applied audit (`agent_applied.json`, written by `Wiring` on every
     /// connect) reconciled key-by-key against the agent's files. The audit
@@ -309,14 +422,14 @@ impl AgentRegistry {
     pub async fn connect(
         &self,
         agent_id: &str,
-        model: Option<String>,
+        options: AgentOptions,
         home: &Path,
     ) -> Result<ConnectReport, ApiError> {
         let catalog = self.catalog_snapshot();
         if catalog.models.is_empty() {
             return Err(ApiError::NoProviders);
         }
-        let home_ctx = home_ctx(home);
+        let home_ctx = self.home_ctx(home);
         let mut inner = self.inner.lock().await;
         let spec = spec_for(agent_id)?;
 
@@ -326,7 +439,15 @@ impl AgentRegistry {
             .get(agent_id)
             .cloned()
             .unwrap_or_default();
-        let default_model = resolve_model(&catalog, model, existing.default_model.as_deref())?;
+        let default_model =
+            resolve_model(&catalog, options.model, existing.default_model.as_deref())?;
+        let effort = resolve_effort(spec.as_ref(), options.effort, existing.effort.as_deref())?;
+        let role_models = resolve_roles(
+            spec.as_ref(),
+            &catalog,
+            options.role_models,
+            &existing.role_models,
+        )?;
 
         let (key, key_id, created_at, last_used) = match inner.agent_keys.get(agent_id) {
             Some(entry) => (
@@ -348,6 +469,8 @@ impl AgentRegistry {
             agent_key: &key,
             catalog: &catalog,
             default_model: &default_model,
+            effort: effort.as_deref(),
+            roles: &role_models,
         };
         let wiring = Wiring::new(&self.data_dir);
         let report = wiring.connect(spec.as_ref(), &home_ctx, &wiring_ctx)?;
@@ -370,6 +493,8 @@ impl AgentRegistry {
                 default_model: Some(default_model),
                 catalog_digest: Some(catalog.digest()),
                 home: Some(home.display().to_string()),
+                effort: effort.filter(|value| !value.is_empty()),
+                role_models,
             },
         );
         self.save_state(&inner.state)?;
@@ -382,7 +507,7 @@ impl AgentRegistry {
         agent_id: &str,
         home: &Path,
     ) -> Result<DisconnectReport, ApiError> {
-        let home_ctx = home_ctx(home);
+        let home_ctx = self.home_ctx(home);
         let mut inner = self.inner.lock().await;
         let spec = spec_for(agent_id)?;
         let wiring = Wiring::new(&self.data_dir);
@@ -399,7 +524,7 @@ impl AgentRegistry {
         if catalog.models.is_empty() {
             return Err(ApiError::NoProviders);
         }
-        let home_ctx = home_ctx(home);
+        let home_ctx = self.home_ctx(home);
         let mut inner = self.inner.lock().await;
         let spec = spec_for(agent_id)?;
         let entry = inner
@@ -422,6 +547,8 @@ impl AgentRegistry {
             agent_key: &key.key,
             catalog: &catalog,
             default_model: &default_model,
+            effort: entry.effort.as_deref(),
+            roles: &entry.role_models,
         };
         let wiring = Wiring::new(&self.data_dir);
         wiring.connect(spec.as_ref(), &home_ctx, &wiring_ctx)?;
@@ -435,6 +562,8 @@ impl AgentRegistry {
                 default_model: Some(default_model),
                 catalog_digest: Some(catalog.digest()),
                 home: Some(home.display().to_string()),
+                effort: entry.effort,
+                role_models: entry.role_models,
             },
         );
         self.save_state(&inner.state)?;
@@ -447,7 +576,7 @@ impl AgentRegistry {
         if catalog.models.is_empty() {
             return Err(ApiError::NoProviders);
         }
-        let home_ctx = home_ctx(home);
+        let home_ctx = self.home_ctx(home);
         let mut inner = self.inner.lock().await;
         let spec = spec_for(agent_id)?;
         let entry = inner
@@ -472,6 +601,8 @@ impl AgentRegistry {
             agent_key: &key,
             catalog: &catalog,
             default_model: &default_model,
+            effort: entry.effort.as_deref(),
+            roles: &entry.role_models,
         };
         let wiring = Wiring::new(&self.data_dir);
         wiring.connect(spec.as_ref(), &home_ctx, &wiring_ctx)?;
@@ -494,6 +625,8 @@ impl AgentRegistry {
                 default_model: Some(default_model),
                 catalog_digest: Some(catalog.digest()),
                 home: Some(home.display().to_string()),
+                effort: entry.effort,
+                role_models: entry.role_models,
             },
         );
         self.save_state(&inner.state)?;
@@ -508,6 +641,47 @@ impl AgentRegistry {
             created_at: entry.created_at,
             last_used: entry.last_used,
         })
+    }
+
+    /// Reports the files this wiring changed, with their pristine contents.
+    ///
+    /// Reads the `.before-any-converter` backups taken before the first
+    /// connect. Files without a backup are omitted: nothing was changed there.
+    /// The plaintext agent key is replaced so the response never carries a
+    /// credential; nothing here is ever logged.
+    pub async fn diff(&self, agent_id: &str, home: &Path) -> Result<Vec<FileDiff>, ApiError> {
+        let ctx = self.home_ctx(home);
+        // Take the lock before creating the spec: the trait object is not
+        // declared `Send`, so it must not live across an await point.
+        let key = {
+            let inner = self.inner.lock().await;
+            inner
+                .agent_keys
+                .get(agent_id)
+                .map(|entry| entry.key.clone())
+        };
+        let spec = spec_for(agent_id)?;
+        let snapshot = agent_wiring::backup::Snapshot::new(spec.config_files(&ctx));
+        let mut files = Vec::new();
+        for path in spec.config_files(&ctx) {
+            let created = snapshot.was_absent(&path);
+            if !created && !snapshot.has_backup(&path) {
+                continue;
+            }
+            let before = snapshot.read_backup(&path).ok().flatten().map(|bytes| {
+                redact_key(String::from_utf8_lossy(&bytes).into_owned(), key.as_deref())
+            });
+            let after = fs::read(&path).ok().map(|bytes| {
+                redact_key(String::from_utf8_lossy(&bytes).into_owned(), key.as_deref())
+            });
+            files.push(FileDiff {
+                path: path.display().to_string(),
+                before,
+                after,
+                created,
+            });
+        }
+        Ok(files)
     }
 
     /// Records that an agent key authenticated a request.
@@ -687,6 +861,79 @@ fn resolve_model(
         .ok_or(ApiError::NoProviders)
 }
 
+/// Validates a requested reasoning effort against the agent's levels.
+///
+/// `None` keeps the stored choice; `Some("")` clears it. Agents that declare
+/// no levels silently ignore the field so older clients keep working.
+fn resolve_effort(
+    spec: &dyn AgentSpec,
+    requested: Option<String>,
+    stored: Option<&str>,
+) -> Result<Option<String>, ApiError> {
+    let Some(requested) = requested else {
+        return Ok(stored.map(str::to_owned));
+    };
+    if spec.efforts().is_empty() {
+        return Ok(None);
+    }
+    if requested.is_empty() || spec.efforts().contains(&requested.as_str()) {
+        return Ok(Some(requested));
+    }
+    Err(ApiError::InvalidOption(format!(
+        "{} does not accept effort {requested}",
+        spec.id()
+    )))
+}
+
+/// Validates per-role model selections against the agent's slots and catalog.
+///
+/// `None` keeps the stored map; an explicit map replaces it. Empty values mean
+/// "use the catalog default" and are dropped.
+fn resolve_roles(
+    spec: &dyn AgentSpec,
+    catalog: &ModelCatalog,
+    requested: Option<BTreeMap<String, String>>,
+    stored: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, ApiError> {
+    let Some(requested) = requested else {
+        return Ok(stored.clone());
+    };
+    if spec.roles().is_empty() {
+        if requested.values().all(String::is_empty) {
+            return Ok(BTreeMap::new());
+        }
+        return Err(ApiError::InvalidOption(format!(
+            "{} does not support per-role models",
+            spec.id()
+        )));
+    }
+    let mut roles = BTreeMap::new();
+    for (role, model) in requested {
+        if !spec.roles().contains(&role.as_str()) {
+            return Err(ApiError::InvalidOption(format!(
+                "{} has no role {role}",
+                spec.id()
+            )));
+        }
+        if model.is_empty() {
+            continue;
+        }
+        if catalog.find(&model).is_none() {
+            return Err(ApiError::ModelNotFound(model));
+        }
+        roles.insert(role, model);
+    }
+    Ok(roles)
+}
+
+/// Replaces the plaintext agent key in file contents with a placeholder.
+fn redact_key(text: String, key: Option<&str>) -> String {
+    match key {
+        Some(key) if !key.is_empty() => text.replace(key, "<agent-key>"),
+        _ => text,
+    }
+}
+
 fn next_key_id(agent_id: &str, current: Option<&str>) -> String {
     let sequence = current
         .and_then(|id| id.rsplit('_').next())
@@ -716,13 +963,6 @@ fn now() -> i64 {
 
 fn bearer(header: Option<&str>) -> Option<&str> {
     header.and_then(|value| value.strip_prefix("Bearer "))
-}
-
-fn home_ctx(home: &Path) -> HomeCtx {
-    HomeCtx {
-        home: home.to_path_buf(),
-        env: env_lookup,
-    }
 }
 
 fn env_lookup(name: &str) -> Option<String> {

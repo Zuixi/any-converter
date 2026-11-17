@@ -41,6 +41,7 @@ impl Fixture {
         let config = config(api_key, provider, model);
         let registry = build_registry(&data_dir, api_key);
         registry.set_home(home.clone());
+        registry.set_env(|_| None);
         let app = app_with(config, registry, &data_dir);
         Self {
             _temp: temp,
@@ -53,6 +54,7 @@ impl Fixture {
     fn with_config(&self, api_key: Option<&str>, provider: &str, model: &str) -> axum::Router {
         let registry = build_registry(&self.data_dir, api_key);
         registry.set_home(self.home.clone());
+        registry.set_env(|_| None);
         app_with(config(api_key, provider, model), registry, &self.data_dir)
     }
 
@@ -156,8 +158,10 @@ provider = "{provider}"
 fn seed_all_agents(home: &Path) {
     write(home.join(".claude/settings.json"), "{}\n");
     write(home.join(".codex/config.toml"), "model = \"old\"\n");
+    write(home.join(".factory/settings.json"), "{}\n");
     write(home.join(".gemini/.env"), "OLD=1\n");
     write(home.join(".pi/agent/settings.json"), "{}\n");
+    write(home.join(".qwen/settings.json"), "{}\n");
 }
 
 fn write(path: PathBuf, contents: &str) {
@@ -245,8 +249,21 @@ async fn list_reports_all_agents_absent_in_empty_home() {
     let (status, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
     assert_eq!(status, StatusCode::OK);
     let body = json(&body);
-    assert_eq!(body["agents"].as_array().unwrap().len(), 4);
-    for id in ["claude-code", "codex", "gemini-cli", "pi"] {
+    assert_eq!(body["agents"].as_array().unwrap().len(), 12);
+    for id in [
+        "claude-code",
+        "codex",
+        "droid",
+        "gemini-cli",
+        "pi",
+        "qwen",
+        "opencode",
+        "vscode",
+        "antigravity",
+        "agy",
+        "cursor",
+        "hermes",
+    ] {
         assert_eq!(agent_status(&body, id), "absent", "{id}");
     }
 }
@@ -326,6 +343,161 @@ async fn connect_disconnect_roundtrip_is_byte_identical() {
         fixture.state()["agents"]["claude-code"]["status"],
         "disconnected"
     );
+}
+
+#[tokio::test]
+async fn connect_persists_effort_and_role_models() {
+    let fixture = Fixture::new(None, "deepseek", "claude-sonnet-4");
+    seed_all_agents(&fixture.home);
+    let settings = fixture.path(".claude/settings.json");
+    write(settings.clone(), "{}\n");
+
+    let connect_body = r#"{"model":"deepseek/claude-sonnet-4","effort":"high","roleModels":{"opus":"deepseek/claude-sonnet-4"}}"#;
+    let (status, body) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/claude-code/connect",
+        Some(connect_body),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(written["effortLevel"], "high");
+    assert_eq!(
+        written["modelSettings"]["claude-sonnet-4"]["effortLevel"],
+        "high"
+    );
+    assert_eq!(
+        written["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+        "deepseek/claude-sonnet-4"
+    );
+
+    let (status, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let body = json(&body);
+    let row = body["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "claude-code")
+        .unwrap();
+    assert_eq!(row["effort"], "high");
+    assert_eq!(row["role_models"]["opus"], "deepseek/claude-sonnet-4");
+    assert!(
+        row["efforts"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("high"))
+    );
+    assert!(
+        row["roles"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("opus"))
+    );
+
+    // Restore drops both the effort keys and the role model, returning the
+    // file to its pre-connect bytes.
+    let (status, body) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/claude-code/disconnect",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "{}\n");
+}
+
+#[tokio::test]
+async fn connect_rejects_unknown_effort_and_role() {
+    let fixture = Fixture::new(None, "deepseek", "claude-sonnet-4");
+    seed_all_agents(&fixture.home);
+
+    let (status, body) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/claude-code/connect",
+        Some(r#"{"model":"deepseek/claude-sonnet-4","effort":"ultra"}"#),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["error"]["code"], "invalid_option");
+
+    let (status, body) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/claude-code/connect",
+        Some(r#"{"model":"deepseek/claude-sonnet-4","roleModels":{"gpt":"deepseek/claude-sonnet-4"}}"#),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["error"]["code"], "invalid_option");
+
+    // An agent without role slots refuses a non-empty selection instead of
+    // silently ignoring it.
+    let (status, body) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/codex/connect",
+        Some(r#"{"model":"deepseek/claude-sonnet-4","roleModels":{"opus":"deepseek/claude-sonnet-4"}}"#),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["error"]["code"], "invalid_option");
+}
+
+#[tokio::test]
+async fn diff_shows_before_and_after_without_the_plaintext_key() {
+    let fixture = Fixture::new(None, "deepseek", "claude-sonnet-4");
+    seed_all_agents(&fixture.home);
+    let settings = fixture.path(".claude/settings.json");
+    let original = "{\n  \"env\": {\n    \"FOO\": \"bar\"\n  }\n}\n";
+    write(settings.clone(), original);
+
+    let (status, _) = send(
+        &fixture.app,
+        "POST",
+        "/v1/agents/claude-code/connect",
+        Some(r#"{"model":"deepseek/claude-sonnet-4"}"#),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = send(
+        &fixture.app,
+        "GET",
+        "/v1/agents/claude-code/diff",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let text = String::from_utf8_lossy(&body);
+    let key = claude_key(&fixture.home);
+    assert!(!text.contains(&key), "diff leaked the plaintext agent key");
+
+    let body = json(&body);
+    let file = body["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"].as_str().unwrap().ends_with("settings.json"))
+        .unwrap();
+    assert_eq!(file["created"], false);
+    assert_eq!(file["before"], original);
+    let after = file["after"].as_str().unwrap();
+    assert!(after.contains(GATEWAY), "{after}");
+    assert!(after.contains("<agent-key>"), "{after}");
+    assert!(after.contains("FOO"), "user content lost: {after}");
 }
 
 #[tokio::test]

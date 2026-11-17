@@ -74,3 +74,6 @@ pub fn write(path: &Path, text: &str) {
 pub fn read(path: &Path) -> String {
     String::from_utf8(fs::read(path).unwrap()).unwrap()
 }
+
+/// No per-role or per-effort selections: the defaults every spec must accept.
+pub static NO_ROLES: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();

@@ -2,7 +2,6 @@
 
 mod common;
 
-use std::fs;
 use std::path::PathBuf;
 
 use agent_wiring::backup::{Applied, Stash};
@@ -17,13 +16,31 @@ fn wiring_ctx<'a>(catalog: &'a agent_wiring::ModelCatalog) -> WiringCtx<'a> {
         agent_key: common::AGENT_KEY,
         catalog,
         default_model: common::DEFAULT_MODEL,
+        effort: None,
+        roles: &common::NO_ROLES,
     }
 }
 
 #[test]
-fn registry_contains_all_four_agents() {
+fn registry_contains_every_agent() {
     let ids: Vec<&str> = all_specs().iter().map(|spec| spec.id()).collect();
-    assert_eq!(ids, vec!["claude-code", "codex", "gemini-cli", "pi"]);
+    assert_eq!(
+        ids,
+        vec![
+            "claude-code",
+            "codex",
+            "droid",
+            "gemini-cli",
+            "pi",
+            "qwen",
+            "opencode",
+            "vscode",
+            "antigravity",
+            "agy",
+            "cursor",
+            "hermes",
+        ]
+    );
 }
 
 #[test]

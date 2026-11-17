@@ -10,6 +10,7 @@ use serde_json::Value;
 
 /// Reads a value from JSON or JSONC text using a dot-separated path.
 ///
+/// A key that itself contains a dot is written with a backslash (`chat\.defaultModel`).
 /// String values are returned without their quotes; every other value is
 /// returned as compact JSON. Returns `None` for malformed input or a missing
 /// path.
@@ -23,9 +24,9 @@ use serde_json::Value;
 pub fn get(path_bytes: &str, key_path: &str) -> Option<String> {
     let value = parse_json(path_bytes).ok()?;
     let mut current = &value;
-    for segment in key_path.split('.').filter(|segment| !segment.is_empty()) {
+    for segment in split_path(key_path) {
         current = match current {
-            Value::Object(map) => map.get(segment)?,
+            Value::Object(map) => map.get(&segment)?,
             Value::Array(items) => items.get(segment.parse::<usize>().ok()?)?,
             _ => return None,
         };
@@ -88,6 +89,96 @@ pub fn del(original: &str, keys: &[&str]) -> Result<String, EditError> {
     Ok(format!("{bom}{text}"))
 }
 
+/// Deletes one or more keys, then removes object ancestors the deletions
+/// emptied.
+///
+/// Restoring our wiring must leave no shell behind: deleting the last key
+/// under `env` otherwise yields `"env": {}`, which never matched the file's
+/// pre-connect bytes. An ancestor that already held other members keeps them.
+///
+/// # Errors
+///
+/// Returns [`EditError::Parse`] when the original text is not valid JSONC.
+pub fn del_pruning(original: &str, keys: &[&str]) -> Result<String, EditError> {
+    let before = parse_json(original)?;
+    let mut text = del(original, keys)?;
+    let after = parse_json(&text)?;
+
+    let mut ancestors: Vec<Vec<String>> = Vec::new();
+    for key in keys {
+        let segments = split_path(key);
+        for depth in 1..segments.len() {
+            let path = &segments[..depth];
+            let emptied = matches!(lookup(&before, path), Some(found) if !is_emptyish(found))
+                && matches!(lookup(&after, path), Some(found) if is_emptyish(found));
+            if emptied && !ancestors.iter().any(|seen| seen.as_slice() == path) {
+                ancestors.push(path.to_vec());
+            }
+        }
+    }
+    // Deepest first: removing an empty child is what lets its parent collapse.
+    ancestors.sort_by_key(|path| std::cmp::Reverse(path.len()));
+    let paths: Vec<String> = ancestors.iter().map(|path| join_path(path)).collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    text = del(&text, &refs)?;
+    Ok(text)
+}
+
+/// Follows a path of object keys, returning `None` on any missing segment.
+fn lookup<'a>(root: &'a Value, segments: &[String]) -> Option<&'a Value> {
+    let mut current = root;
+    for segment in segments {
+        current = match current {
+            Value::Object(map) => map.get(segment)?,
+            Value::Array(items) => items.get(segment.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
+/// Whether a value carries no data once empty objects are stripped.
+fn is_emptyish(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.values().all(is_emptyish),
+        _ => false,
+    }
+}
+
+/// Joins path segments back into the dotted form the editor expects.
+fn join_path(segments: &[String]) -> String {
+    segments
+        .iter()
+        .map(|segment| segment.replace('.', "\\."))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Splits a dot path, honoring `\.` for keys that contain a literal dot.
+fn split_path(key_path: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut chars = key_path.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' if chars.peek() == Some(&'.') => {
+                chars.next();
+                current.push('.');
+            }
+            '.' => {
+                if !current.is_empty() {
+                    segments.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+    segments
+}
+
 fn parse_json(src: &str) -> Result<Value, EditError> {
     let (_, body) = split_bom(src);
     let stripped = strip_jsonc(body)?;
@@ -96,11 +187,8 @@ fn parse_json(src: &str) -> Result<Value, EditError> {
 
 fn set_one(text: &str, kv: &KV) -> Result<String, EditError> {
     parse_json(text)?;
-    let segments: Vec<&str> = kv
-        .path
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .collect();
+    let segments = split_path(&kv.path);
+    let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
     if segments.is_empty() {
         return Err(EditError::Parse("empty key path".into()));
     }
@@ -118,10 +206,8 @@ fn set_one(text: &str, kv: &KV) -> Result<String, EditError> {
 
 fn del_one(text: &str, key_path: &str) -> Result<String, EditError> {
     parse_json(text)?;
-    let segments: Vec<&str> = key_path
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .collect();
+    let segments = split_path(key_path);
+    let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
     if segments.is_empty() {
         return Err(EditError::Parse("empty key path".into()));
     }

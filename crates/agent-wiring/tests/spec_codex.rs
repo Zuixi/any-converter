@@ -17,6 +17,8 @@ fn wiring_ctx<'a>(catalog: &'a agent_wiring::ModelCatalog) -> WiringCtx<'a> {
         agent_key: common::AGENT_KEY,
         catalog,
         default_model: "gpt-5-codex",
+        effort: None,
+        roles: &common::NO_ROLES,
     }
 }
 
@@ -47,7 +49,7 @@ fn connect_sets_requires_openai_auth_and_preserves_oauth_tokens() {
     let ctx = common::home(dir.path());
     let config = dir.path().join(".codex/config.toml");
     let auth = dir.path().join(".codex/auth.json");
-    let catalog_file = dir.path().join(".codex/any-converter-models.json");
+    let catalog_file = dir.path().join(".codex").join("any-converter-models.json");
     common::write(&config, "# keep\nmodel_provider = \"openai\"\n");
     common::write(
         &auth,
@@ -143,7 +145,7 @@ fn direct_disconnect_restores_old_values_and_removes_catalog() {
     let ctx = common::home(dir.path());
     let config = dir.path().join(".codex/config.toml");
     let auth = dir.path().join(".codex/auth.json");
-    let catalog_file = dir.path().join(".codex/any-converter-models.json");
+    let catalog_file = dir.path().join(".codex").join("any-converter-models.json");
     common::write(
         &config,
         "model_provider = \"openai\"\nmodel = \"gpt-old\"\n",
@@ -187,7 +189,7 @@ fn golden_roundtrip_is_byte_identical() {
     let ctx = common::home(dir.path());
     let config = dir.path().join(".codex/config.toml");
     let auth = dir.path().join(".codex/auth.json");
-    let catalog_file = dir.path().join(".codex/any-converter-models.json");
+    let catalog_file = dir.path().join(".codex").join("any-converter-models.json");
     let original_config = concat!(
         "# keep this comment\r\n",
         "model_provider = \"openai\"\r\n",

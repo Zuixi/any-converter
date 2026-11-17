@@ -5,10 +5,18 @@
 //! receives a data directory, so the orchestration layer owns snapshots,
 //! stashes, and drift audits.
 
+pub mod agy;
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
+pub mod cursor;
+pub mod droid;
 pub mod gemini;
+pub mod hermes;
+pub mod opencode;
 pub mod pi;
+pub mod qwen;
+pub mod vscode;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -45,6 +53,12 @@ pub struct WiringCtx<'a> {
     pub catalog: &'a ModelCatalog,
     /// Model selected for this agent.
     pub default_model: &'a str,
+    /// Reasoning effort selected for this agent, when it accepts one.
+    pub effort: Option<&'a str>,
+    /// Per-role model selections (`opus`, `sonnet`, `haiku`, ...).
+    ///
+    /// Empty for agents whose trait [`AgentSpec::roles`] is empty.
+    pub roles: &'a BTreeMap<String, String>,
 }
 
 /// Result of checking whether an agent is installed.
@@ -91,7 +105,7 @@ pub trait AgentSpec {
     fn disconnect(&self, ctx: &HomeCtx) -> Result<Vec<PathBuf>, WiringError>;
 
     /// Reads the drift state from the agent configuration against the actual
-    /// gateway address (magpie `Agent.Drift`'s wiring check): Connected when
+    /// gateway address: Connected when
     /// every wiring key points at THIS gateway, Disconnected when none do,
     /// Drifted when only some do. Asking "is this URL the gateway" instead
     /// of "does it look like a gateway" is what keeps third-party proxies
@@ -104,6 +118,36 @@ pub trait AgentSpec {
     fn applied_values(&self, _ctx: &HomeCtx) -> BTreeMap<String, String> {
         BTreeMap::new()
     }
+
+    /// Reasoning-effort levels this agent accepts, in display order.
+    ///
+    /// An empty slice means the agent has no writable effort setting.
+    fn efforts(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Per-role model slots this agent accepts (`opus`, `sonnet`, `haiku`).
+    ///
+    /// An empty slice means the agent only supports one default model.
+    fn roles(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// A shell command that starts the agent against the gateway.
+    ///
+    /// Most agents read the gateway address and key from their configuration
+    /// files, so they need no launcher. Agents that only accept them through
+    /// the environment (Antigravity CLI) return a command here; the caller
+    /// shows it to the user and never logs it, because it carries the key.
+    fn launch(
+        &self,
+        _ctx: &HomeCtx,
+        _gateway_url: &str,
+        _agent_key: &str,
+        _model: &str,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// Returns every supported agent specification.
@@ -111,8 +155,16 @@ pub fn all_specs() -> Vec<Box<dyn AgentSpec>> {
     vec![
         Box::new(claude::ClaudeSpec),
         Box::new(codex::CodexSpec),
+        Box::new(droid::DroidSpec),
         Box::new(gemini::GeminiSpec),
         Box::new(pi::PiSpec),
+        Box::new(qwen::QwenSpec),
+        Box::new(opencode::OpenCodeSpec),
+        Box::new(vscode::VSCodeSpec),
+        Box::new(antigravity::AntigravitySpec),
+        Box::new(agy::AgySpec),
+        Box::new(cursor::CursorSpec),
+        Box::new(hermes::HermesSpec),
     ]
 }
 
@@ -214,13 +266,26 @@ pub(crate) fn gateway_path(gateway_url: &str, suffix: &str) -> String {
     )
 }
 
+/// Joins a portable relative path onto `base` one component at a time.
+///
+/// `Path::join("a/b")` keeps the forward slash inside the component on
+/// Windows, producing mixed separators such as `C:\Users\me\.antigravity/settings.json`.
+/// Splitting on `/` makes every platform use its native separator, which is
+/// also what the UI displays.
+pub(crate) fn join_relative(base: &Path, relative: &str) -> PathBuf {
+    relative
+        .split(['/', '\\'])
+        .filter(|component| !component.is_empty())
+        .fold(base.to_path_buf(), |path, component| path.join(component))
+}
+
 /// Expands a leading `~` using `ctx.home`.
 pub(crate) fn expand_tilde(ctx: &HomeCtx, value: &str) -> PathBuf {
     if value == "~" {
         return ctx.home.clone();
     }
     if let Some(rest) = value.strip_prefix("~/") {
-        return ctx.home.join(rest);
+        return join_relative(&ctx.home, rest);
     }
     PathBuf::from(value)
 }
@@ -235,6 +300,83 @@ pub(crate) fn env_dir(
         Some(value) if !value.trim().is_empty() => expand_tilde(ctx, value.trim()),
         _ => default(ctx),
     }
+}
+
+/// The user's configuration root (`$XDG_CONFIG_HOME`, else `~/.config`).
+pub(crate) fn xdg_config_home(ctx: &HomeCtx) -> PathBuf {
+    env_dir(ctx, "XDG_CONFIG_HOME", |ctx| ctx.home.join(".config"))
+}
+
+/// The per-user application data directory for the current platform.
+///
+/// Editors such as VS Code keep `User/settings.json` there rather than under
+/// the home directory: `%APPDATA%` on Windows, `~/Library/Application
+/// Support` on macOS, and `$XDG_CONFIG_HOME` on Linux.
+pub(crate) fn app_data_dir(ctx: &HomeCtx) -> PathBuf {
+    #[cfg(windows)]
+    {
+        env_dir(ctx, "APPDATA", |ctx| {
+            join_relative(&ctx.home, "AppData/Roaming")
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        join_relative(&ctx.home, "Library/Application Support")
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        xdg_config_home(ctx)
+    }
+}
+
+/// The local (non-roaming) application data directory for the platform.
+pub(crate) fn local_app_data_dir(ctx: &HomeCtx) -> PathBuf {
+    #[cfg(windows)]
+    {
+        env_dir(ctx, "LOCALAPPDATA", |ctx| {
+            join_relative(&ctx.home, "AppData/Local")
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        join_relative(&ctx.home, "Library/Application Support")
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        xdg_config_home(ctx)
+    }
+}
+
+/// Reports whether `name` resolves to a file on `PATH` as `ctx` sees it.
+///
+/// Agents that share a configuration directory with another product (Gemini
+/// CLI and Antigravity both use `~/.gemini`) can only be told apart by their
+/// own binary. On Windows the suffixes in `PATHEXT` are tried too.
+pub(crate) fn bin_in_path(ctx: &HomeCtx, name: &str) -> bool {
+    let path = ["PATH", "Path"]
+        .iter()
+        .find_map(|key| (ctx.env)(key))
+        .unwrap_or_default();
+    let extensions: Vec<String> = if cfg!(windows) {
+        let extensions = (ctx.env)("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_owned());
+        extensions
+            .split(';')
+            .filter(|extension| !extension.is_empty())
+            .map(str::to_owned)
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    let separator = if cfg!(windows) { ';' } else { ':' };
+
+    path.split(separator)
+        .filter(|dir| !dir.trim().is_empty())
+        .any(|dir| {
+            let dir = Path::new(dir.trim());
+            extensions
+                .iter()
+                .any(|extension| dir.join(format!("{name}{extension}")).is_file())
+        })
 }
 
 /// Reads a configuration file as UTF-8, returning `None` when it is absent.

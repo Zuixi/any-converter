@@ -4,6 +4,7 @@
 pub(crate) const KNOWN_AGENTS: &[(&str, &[&str])] = &[
     ("claude-code", &["claude-cli/", "claude-code/"]),
     ("codex", &["codex", "acp-extension-codex"]),
+    ("droid", &["factory-cli"]),
     ("gemini-cli", &["gemini-cli/", "google-genai-sdk/"]),
     ("opencode", &["opencode"]),
     ("cursor", &["cursor"]),
@@ -11,6 +12,7 @@ pub(crate) const KNOWN_AGENTS: &[(&str, &[&str])] = &[
     ("roo-code", &["roo-", "roocoder"]),
     ("aider", &["aider"]),
     ("pi", &["pi/"]),
+    ("qwen", &["qwencode", "qwen-code/"]),
 ];
 
 /// Map a `User-Agent` to a known agent id, or fall back to its product name.
@@ -47,8 +49,11 @@ mod tests {
             ("codex_cli_rs/0.159.2 (Mac OS 26.6.0; arm64)", "codex"),
             ("Codex Desktop/0.162.3", "codex"),
             ("acp-extension-codex/1.0", "codex"),
+            ("factory-cli/0.231.0", "droid"),
             ("gemini-cli/0.11.0", "gemini-cli"),
             ("google-genai-sdk/1.2.3", "gemini-cli"),
+            ("qwencode/0.9.0", "qwen"),
+            ("qwen-code/0.9.0", "qwen"),
             ("opencode/0.4.0", "opencode"),
             ("Cursor/1.2.3", "cursor"),
             ("cline/3.1.0", "cline"),

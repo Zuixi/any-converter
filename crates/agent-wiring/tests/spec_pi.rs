@@ -17,6 +17,8 @@ fn wiring_ctx<'a>(catalog: &'a agent_wiring::ModelCatalog) -> WiringCtx<'a> {
         agent_key: common::AGENT_KEY,
         catalog,
         default_model: "claude-sonnet-4-5",
+        effort: None,
+        roles: &common::NO_ROLES,
     }
 }
 

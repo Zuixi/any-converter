@@ -4,6 +4,7 @@
 //! module only translates HTTP requests into registry calls and maps
 //! [`ApiError`] to the uniform JSON error envelope shared by the CLI/WebUI.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::{
@@ -16,7 +17,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::agents_registry::{STATUS_CONNECTED, STATUS_DISCONNECTED, spec_for};
+use crate::agents_registry::{AgentOptions, STATUS_CONNECTED, STATUS_DISCONNECTED, spec_for};
 use crate::handlers::AppState;
 
 pub use crate::agents_registry::{AgentRegistry, AgentStatus, KeyInfo, catalog_from_config};
@@ -34,6 +35,8 @@ pub enum ApiError {
     StashMissing(String),
     /// The requested model is not in the catalog.
     ModelNotFound(String),
+    /// A connect option is not something this agent accepts.
+    InvalidOption(String),
     /// The agent id is not one of the supported specs.
     UnknownAgent(String),
     /// The agent has no active wiring to sync or rotate.
@@ -51,6 +54,7 @@ impl ApiError {
             Self::ConfigUnwritable(_) => "config_unwritable",
             Self::StashMissing(_) => "stash_missing",
             Self::ModelNotFound(_) => "model_not_found",
+            Self::InvalidOption(_) => "invalid_option",
             Self::UnknownAgent(_) => "unknown_agent",
             Self::NotConnected(_) => "not_connected",
             Self::Internal(_) => "internal",
@@ -61,7 +65,9 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::AgentAbsent(_) | Self::UnknownAgent(_) => StatusCode::NOT_FOUND,
-            Self::NoProviders | Self::ModelNotFound(_) => StatusCode::BAD_REQUEST,
+            Self::NoProviders | Self::ModelNotFound(_) | Self::InvalidOption(_) => {
+                StatusCode::BAD_REQUEST
+            }
             Self::StashMissing(_) | Self::NotConnected(_) => StatusCode::CONFLICT,
             Self::ConfigUnwritable(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -75,6 +81,7 @@ impl ApiError {
             Self::ConfigUnwritable(detail) => format!("could not update agent config: {detail}"),
             Self::StashMissing(agent) => format!("missing recovery data for {agent}"),
             Self::ModelNotFound(model) => format!("model {model} is not in the catalog"),
+            Self::InvalidOption(detail) => detail.clone(),
             Self::UnknownAgent(agent) => format!("unknown agent: {agent}"),
             Self::NotConnected(agent) => format!("agent {agent} is not connected"),
             Self::Internal(detail) => format!("internal error: {detail}"),
@@ -145,13 +152,22 @@ pub async fn handle_agent_connect(
     AxumPath(id): AxumPath<String>,
     body: Bytes,
 ) -> Response {
-    let model = if body.is_empty() {
-        None
+    let options = if body.is_empty() {
+        AgentOptions::default()
     } else {
         match serde_json::from_slice::<ConnectBody>(&body) {
-            Ok(ConnectBody { model, codex_home }) => {
+            Ok(ConnectBody {
+                model,
+                effort,
+                role_models,
+                codex_home,
+            }) => {
                 let _ = codex_home;
-                model
+                AgentOptions {
+                    model,
+                    effort,
+                    role_models,
+                }
             }
             Err(error) => {
                 return error_response(
@@ -166,7 +182,7 @@ pub async fn handle_agent_connect(
     };
     state.agents.set_catalog(catalog_from_config(&state.config));
     let home = state.agents.home();
-    match state.agents.connect(&id, model, &home).await {
+    match state.agents.connect(&id, options, &home).await {
         Ok(report) => Json(json!({
             "agent": id,
             "status": STATUS_CONNECTED,
@@ -251,10 +267,26 @@ pub async fn handle_agent_keys(
     Json(json!({ "agent": id, "keys": keys })).into_response()
 }
 
+/// `GET /v1/agents/{id}/diff`
+pub async fn handle_agent_diff(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let home = state.agents.home();
+    match state.agents.diff(&id, &home).await {
+        Ok(files) => Json(json!({ "agent": id, "files": files })).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ConnectBody {
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+    #[serde(default, rename = "roleModels")]
+    role_models: Option<BTreeMap<String, String>>,
     #[serde(default, rename = "codexHome")]
     codex_home: Option<String>,
 }

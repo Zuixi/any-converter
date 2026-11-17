@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@any-converter/core";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@any-converter/ui";
+import { Button, Card, CardContent } from "@any-converter/ui";
 
+import { AgentDiffModal } from "../components/agents/AgentDiffModal";
+import { AgentRow, type AgentAction, type AgentActionOptions } from "../components/agents/AgentRow";
+import { Header } from "../components/layout/Header";
+import { agentMeta, STATUS_ORDER } from "../lib/agents";
 import {
   management,
   useServerRequest,
@@ -9,33 +13,20 @@ import {
   type AgentSummary,
 } from "../lib/management";
 
-const AGENT_LABELS: Record<string, string> = {
-  "claude-code": "Claude Code",
-  codex: "Codex",
-  "gemini-cli": "Gemini CLI",
-  pi: "Pi",
-};
-
-function shortKeyId(id?: string): string {
-  if (!id) return "";
-  return id.length > 4 ? `…${id.slice(-4)}` : id;
-}
-
-const STATUS_STYLE: Record<AgentStatus, string> = {
-  connected:
-    "border-emerald-500/60 bg-emerald-500/10 text-emerald-600 dark:border-emerald-500/40 dark:text-emerald-400",
-  drifted:
-    "border-amber-500/60 bg-amber-500/10 text-amber-600 dark:border-amber-500/40 dark:text-amber-400",
-  disconnected: "border-border bg-muted text-muted-foreground",
-  absent: "border-dashed border-border bg-transparent text-muted-foreground",
-};
+/** Rows share one list; captions only split the states worth telling apart. */
+const GROUPS: ReadonlyArray<{ statuses: AgentStatus[]; labelKey: "agents.group.wired" | "agents.group.available" | "agents.group.absent" }> = [
+  { statuses: ["connected", "drifted"], labelKey: "agents.group.wired" },
+  { statuses: ["disconnected"], labelKey: "agents.group.available" },
+  { statuses: ["absent"], labelKey: "agents.group.absent" },
+];
 
 export function AgentsPage() {
   const { t } = useI18n();
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [models, setModels] = useState<string[]>([]);
-  const [model, setModel] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [diffAgent, setDiffAgent] = useState<AgentSummary | null>(null);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const visible = useRef(true);
@@ -50,7 +41,6 @@ export function AgentsPage() {
       const { agents: list, models: ids } = await management.agentsWithModels();
       setAgents(list);
       setModels(ids);
-      setModel((current) => (current && ids.includes(current) ? current : (ids[0] ?? "")));
       setError(undefined);
     } catch (cause) {
       setError(describeError(cause));
@@ -73,17 +63,29 @@ export function AgentsPage() {
   }, [refresh]);
 
   const act = useCallback(
-    async (id: string, action: "connect" | "disconnect" | "sync" | "key/rotate", body?: object) => {
-      setBusy(`${id}:${action}`);
+    async (agent: AgentSummary, action: AgentAction, options?: AgentActionOptions) => {
+      if (action === "disconnect" && !window.confirm(t("agents.confirm.disconnect").replace("{agent}", agentMeta(agent.id).label))) {
+        return;
+      }
+      setBusy(`${agent.id}:${action}`);
       setNotice(undefined);
       try {
-        const report = await management.agentAction(id, action, body);
-        if (action === "connect" || action === "key/rotate") {
-          const files = report.files_written?.length ?? 0;
-          setNotice(`${id}: ${report.status}${files ? ` (${files} file(s) written)` : ""}`);
-        } else {
-          setNotice(`${id}: ${report.status}`);
-        }
+        const report = await management.agentAction(
+          agent.id,
+          action,
+          action === "connect" ? options : undefined,
+        );
+        const files = report.files_written?.length ?? 0;
+        setNotice(
+          files > 0
+            ? t("agents.notice.files")
+                .replace("{agent}", agentMeta(agent.id).label)
+                .replace("{status}", report.status)
+                .replace("{files}", String(files))
+            : t("agents.notice")
+                .replace("{agent}", agentMeta(agent.id).label)
+                .replace("{status}", report.status),
+        );
         await refresh();
       } catch (cause) {
         setError(describeError(cause));
@@ -91,142 +93,96 @@ export function AgentsPage() {
         setBusy(null);
       }
     },
-    [refresh, describeError],
+    [refresh, describeError, t],
   );
 
+  const sorted = useMemo(
+    () =>
+      [...agents].sort(
+        (a, b) =>
+          STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
+          agentMeta(a.id).label.localeCompare(agentMeta(b.id).label),
+      ),
+    [agents],
+  );
+
+  const hasDrift = agents.some((agent) => agent.status === "drifted");
+
   return (
+    <>
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">{t("nav.agents")}</h1>
-          <p className="text-sm text-muted-foreground">
-            Connect coding agents to this gateway; disconnect restores their configs byte for byte.
-          </p>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <Header title={t("nav.agents")} subtitle={t("agents.subtitle")} />
+        <div className="flex flex-wrap items-center gap-2 pb-1">
+          {models.length > 0 ? (
+            <span className="text-sm text-muted-foreground">
+              {t("agents.modelCount").replace("{count}", String(models.length))}
+            </span>
+          ) : (
+            <span className="text-sm text-muted-foreground">{t("agents.noModels")}</span>
+          )}
+          <Button size="sm" variant="outline" onClick={() => void refresh()}>
+            {t("agents.refresh")}
+          </Button>
         </div>
-        {models.length > 0 && (
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Default model</span>
-            <select
-              className="rounded border border-border bg-background px-2 py-1"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-            >
-              {models.map((id) => (
-                <option key={id} value={id}>
-                  {id}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
       </div>
 
       {error && (
         <Card className="border-destructive/60">
-          <CardContent className="text-sm text-destructive">{error}</CardContent>
+          <CardContent className="pt-6 text-sm text-destructive">{error}</CardContent>
         </Card>
       )}
       {notice && (
         <Card>
-          <CardContent className="text-sm text-muted-foreground">{notice}</CardContent>
+          <CardContent className="pt-6 text-sm text-muted-foreground">{notice}</CardContent>
         </Card>
       )}
-      {agents.some((agent) => agent.status === "drifted") && (
+      {hasDrift && (
         <Card className="border-amber-500/60 dark:border-amber-500/40">
-          <CardContent className="text-sm text-amber-600 dark:text-amber-400">
-            {t("agents.drift_banner") ||
-              "Config changed externally — Reapply rewrites the wiring on top of your other changes."}
+          <CardContent className="pt-6 text-sm text-amber-600 dark:text-amber-400">
+            {t("agents.drift_banner")}
           </CardContent>
         </Card>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {agents.map((agent) => {
-          const wired = agent.status === "connected" || agent.status === "drifted";
-          const installed = agent.status !== "absent";
-          const isBusy = busy?.startsWith(`${agent.id}:`);
-          return (
-            <Card key={agent.id} className={installed ? "" : "opacity-60"}>
-              <CardHeader className="flex-row items-start justify-between space-y-0 pb-4">
-                <div className="grid gap-1">
-                  <CardTitle className="text-xl">
-                    {AGENT_LABELS[agent.id] ?? agent.id}
-                  </CardTitle>
-                  <p className="font-mono text-xs text-muted-foreground">
-                    {agent.id}
-                    {agent.key_id ? ` · ${shortKeyId(agent.key_id)}` : ""}
-                  </p>
-                </div>
-                <Badge variant="outline" className={STATUS_STYLE[agent.status]}>
-                  {agent.status}
-                </Badge>
-              </CardHeader>
-              <CardContent className="grid gap-3">
-                <p className="text-sm text-muted-foreground">
-                  {agent.model ? `Model: ${agent.model}` : "No model wired"}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {(wired || agent.status === "drifted") && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={isBusy || !installed}
-                      onClick={() =>
-                        act(agent.id, "connect", model ? { model } : undefined)
-                      }
-                    >
-                      {agent.status === "drifted" ? "Reapply" : "Reconnect"}
-                    </Button>
-                  )}
-                  {!wired && installed && (
-                    <Button
-                      size="sm"
-                      disabled={isBusy || models.length === 0}
-                      onClick={() =>
-                        act(agent.id, "connect", model ? { model } : undefined)
-                      }
-                    >
-                      Connect
-                    </Button>
-                  )}
-                  {wired && (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={isBusy}
-                        onClick={() => act(agent.id, "sync")}
-                      >
-                        Sync
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={isBusy}
-                        onClick={() => act(agent.id, "key/rotate")}
-                      >
-                        Rotate key
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={isBusy}
-                        onClick={() => {
-                          if (window.confirm("Restore this agent's pre-connect config?")) {
-                            void act(agent.id, "disconnect");
-                          }
-                        }}
-                      >
-                        Disconnect
-                      </Button>
-                    </>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+      {agents.length === 0 ? (
+        <Card>
+          <CardContent className="grid justify-items-center gap-1 py-10 text-center">
+            <p className="font-medium">{t("agents.empty.title")}</p>
+            <p className="max-w-md text-sm text-muted-foreground">{t("agents.empty.body")}</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="overflow-hidden rounded-lg border bg-card">
+          {GROUPS.map((group) => {
+            const rows = sorted.filter((agent) => group.statuses.includes(agent.status));
+            if (rows.length === 0) return null;
+            return (
+              <section key={group.labelKey} aria-label={t(group.labelKey)}>
+                <h2 className="border-b bg-muted/40 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {t(group.labelKey)}
+                </h2>
+                <ul className="divide-y">
+                  {rows.map((agent) => (
+                    <AgentRow
+                      key={agent.id}
+                      agent={agent}
+                      models={models}
+                      expanded={openId === agent.id}
+                      busy={busy?.startsWith(`${agent.id}:`) ?? false}
+                      onToggle={() => setOpenId((current) => (current === agent.id ? null : agent.id))}
+                      onAction={(action, options) => void act(agent, action, options)}
+                      onViewDiff={() => setDiffAgent(agent)}
+                    />
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
+      )}
     </div>
+    {diffAgent && <AgentDiffModal agent={diffAgent} onClose={() => setDiffAgent(null)} />}
+    </>
   );
 }

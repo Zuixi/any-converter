@@ -303,6 +303,12 @@ pub(crate) fn require_success(
     })
 }
 
+// `home` is only consulted by the Unix service managers; other targets
+// report the daemon as unsupported and have no use for it.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    allow(unused_variables)
+)]
 fn platform_manager(home: &Home) -> Result<Box<dyn ServiceManager>, DaemonError> {
     #[cfg(target_os = "macos")]
     {

@@ -94,6 +94,47 @@ export interface AgentSummary {
   status: AgentStatus;
   model?: string;
   key_id?: string;
+  /** Unix seconds of the last successful connect. */
+  connected_at?: number;
+  /** Digest of the catalog last written into this agent's config. */
+  catalog_digest?: string;
+  /** Files this agent reads, whether or not they exist yet. */
+  config_files: string[];
+  /** Reasoning levels this agent accepts; empty when it has none. */
+  efforts: string[];
+  /** Per-role model slots (`opus`, `sonnet`, `haiku`); empty when unsupported. */
+  roles: string[];
+  /** Stored reasoning effort, when the user picked one. */
+  effort?: string;
+  /** Stored per-role model selections. */
+  role_models?: Record<string, string>;
+  /**
+   * Launch command for agents that need the key in their environment (for
+   * example Antigravity CLI). Contains the plaintext agent key — display it
+   * only on explicit request.
+   */
+  launch?: string;
+}
+
+/** Agent mutations the page can trigger. */
+export type AgentAction = "connect" | "disconnect" | "sync" | "key/rotate";
+
+/** Options sent with a connect/reconnect. */
+export interface AgentConnectOptions {
+  model?: string;
+  /** Empty string clears the stored effort; omit to keep it. */
+  effort?: string;
+  /** Replaces the per-role selections; omit to keep them. */
+  roleModels?: Record<string, string>;
+}
+
+/** One file's pre-connect and current contents (`GET /v1/agents/{id}/diff`). */
+export interface AgentFileDiff {
+  path: string;
+  before?: string;
+  after?: string;
+  /** The file did not exist before connecting. */
+  created: boolean;
 }
 
 export interface ConnectReport {
@@ -426,10 +467,18 @@ export const management = {
 
   agentAction(
     id: string,
-    action: "connect" | "disconnect" | "sync" | "key/rotate",
+    action: AgentAction,
     body?: object,
   ): Promise<ConnectReport> {
     return call(`/v1/agents/${encodeURIComponent(id)}/${action}`, "POST", JSON.stringify(body ?? {}));
+  },
+
+  /** The files this agent's wiring changed, with pristine contents. */
+  async agentDiff(id: string): Promise<AgentFileDiff[]> {
+    const body = await call<{ files: AgentFileDiff[] }>(
+      `/v1/agents/${encodeURIComponent(id)}/diff`,
+    );
+    return body.files ?? [];
   },
 };
 

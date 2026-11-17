@@ -233,6 +233,15 @@ fn semantically_equal(path: &Path, left: &[u8], right: &[u8]) -> bool {
     match extension(path) {
         "json" => normalize_json(left) == normalize_json(right),
         "toml" => normalize_toml(left) == normalize_toml(right),
+        "yaml" | "yml" => {
+            let (Some(left), Some(right)) = (
+                crate::edit::yaml::to_value(left),
+                crate::edit::yaml::to_value(right),
+            ) else {
+                return false;
+            };
+            left == right
+        }
         _ if is_dotenv(path) => normalize_env(left) == normalize_env(right),
         _ => false,
     }
@@ -244,6 +253,7 @@ fn is_empty_document(path: &Path, bytes: &[u8]) -> bool {
     };
     match extension(path) {
         "json" => text.trim().is_empty() || is_empty_json(text),
+        "yaml" | "yml" => text.trim().is_empty(),
         "toml" => {
             text.trim().is_empty()
                 || text

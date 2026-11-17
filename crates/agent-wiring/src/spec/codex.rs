@@ -17,9 +17,15 @@ pub const OUR_KEYS: &[&str] = &[
     "config.model_provider",
     "config.model",
     "config.model_catalog_json",
+    "config.model_reasoning_effort",
     "config.model_providers.any-converter",
     "auth.OPENAI_API_KEY",
 ];
+
+/// Reasoning levels Codex accepts, in its own order.
+const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh"];
+
+const REASONING_EFFORT: &str = "model_reasoning_effort";
 
 /// Codex wiring implementation.
 #[derive(Debug, Default, Clone, Copy)]
@@ -81,7 +87,12 @@ impl AgentSpec for CodexSpec {
         let auth = read_config(&auth_path)?.unwrap_or_default();
 
         let mut old = BTreeMap::new();
-        for key in ["model_provider", "model", "model_catalog_json"] {
+        for key in [
+            "model_provider",
+            "model",
+            "model_catalog_json",
+            REASONING_EFFORT,
+        ] {
             if let Some(value) = toml::get(&config, key) {
                 old.insert(format!("config.{key}"), value);
             }
@@ -105,6 +116,7 @@ impl AgentSpec for CodexSpec {
                 ),
             ],
         )?;
+        config_text = apply_effort(&config_text, wiring.effort)?;
         config_text = toml::set_table(
             &config_text,
             PROVIDER_TABLE,
@@ -139,7 +151,12 @@ impl AgentSpec for CodexSpec {
             let mut text = config;
             let mut sets = Vec::new();
             let mut deletes = Vec::new();
-            for key in ["model_provider", "model", "model_catalog_json"] {
+            for key in [
+                "model_provider",
+                "model",
+                "model_catalog_json",
+                REASONING_EFFORT,
+            ] {
                 match old.get(&format!("config.{key}")) {
                     Some(value) if !value.is_empty() => {
                         sets.push(KV::new(key, json!(value)));
@@ -196,7 +213,12 @@ impl AgentSpec for CodexSpec {
     fn applied_values(&self, ctx: &HomeCtx) -> BTreeMap<String, String> {
         let mut values = BTreeMap::new();
         if let Ok(Some(config)) = read_config(&Self::config_path(ctx)) {
-            for key in ["model_provider", "model", "model_catalog_json"] {
+            for key in [
+                "model_provider",
+                "model",
+                "model_catalog_json",
+                REASONING_EFFORT,
+            ] {
                 if let Some(value) = toml::get(&config, key) {
                     values.insert(format!("config.{key}"), value);
                 }
@@ -211,6 +233,25 @@ impl AgentSpec for CodexSpec {
             }
         }
         values
+    }
+
+    fn efforts(&self) -> &'static [&'static str] {
+        EFFORTS
+    }
+}
+
+/// Writes `model_reasoning_effort` the way Codex stores it.
+///
+/// `None` leaves the file untouched; `Some("")` removes our setting so the
+/// model default applies.
+fn apply_effort(text: &str, effort: Option<&str>) -> Result<String, WiringError> {
+    match effort {
+        None => Ok(text.to_owned()),
+        Some("") => Ok(toml::del(text, &[REASONING_EFFORT])?),
+        Some(effort) => Ok(toml::set(
+            text,
+            &[KV::new(REASONING_EFFORT, json!(effort))],
+        )?),
     }
 }
 
