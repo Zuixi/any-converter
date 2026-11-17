@@ -160,8 +160,14 @@ export function AgentRow({
       roleModels: agent.roles.length > 0 ? roles : undefined,
     });
 
+  // The left rail marks the card the user is editing, not a status; status
+  // lives in the dot. Background stays flat so rows read as one surface.
   return (
-    <li className={`transition-colors ${expanded ? "bg-accent/40" : ""} ${installed ? "" : "opacity-70"}`}>
+    <li
+      className={`border-l-2 transition-colors ${
+        expanded ? "border-primary/40" : "border-transparent"
+      } ${installed ? "" : "opacity-70"}`}
+    >
       <div className="flex items-center gap-3 px-4 py-3">
         <button
           type="button"
@@ -228,7 +234,7 @@ export function AgentRow({
       </div>
 
       {expanded && (
-        <div className="grid gap-4 border-t px-4 py-4">
+        <div className="grid gap-4 border-t bg-muted/40 px-4 py-4">
           <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <Detail label={t("agents.detail.status")}>{statusLabel}</Detail>
             <Detail label={t("agents.detail.model")}>

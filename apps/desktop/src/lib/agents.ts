@@ -43,7 +43,8 @@ export function agentMeta(id: string): AgentMeta {
 export const STATUS_TONE: Record<AgentStatus, { dot: string; text: string }> = {
   connected: { dot: "bg-emerald-500", text: "text-emerald-600 dark:text-emerald-400" },
   drifted: { dot: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" },
-  disconnected: { dot: "bg-muted-foreground/50", text: "text-muted-foreground" },
+  // Installed but idle is a soft to-do: muted amber, not an alarm color.
+  disconnected: { dot: "bg-amber-400/80", text: "text-amber-600/90 dark:text-amber-300/80" },
   absent: { dot: "border border-muted-foreground/50 bg-transparent", text: "text-muted-foreground" },
 };
 
