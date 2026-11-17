@@ -150,7 +150,7 @@ fn build_message(msg: IrMessage) -> ClaudeMessage {
 /// (and rejects non-alternating roles), and a client can split one turn's
 /// parallel tool calls over two assistant messages: fold same-role runs
 /// into one message, as the old pairwise builders' merge_claude_messages
-/// did (magpie ir.go joinSplitCalls, #1275).
+/// did.
 fn merge_same_role(messages: Vec<IrMessage>) -> Vec<IrMessage> {
     let mut out: Vec<IrMessage> = Vec::with_capacity(messages.len());
     for msg in messages {

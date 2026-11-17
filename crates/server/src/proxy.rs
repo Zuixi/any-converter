@@ -69,8 +69,7 @@ fn join_base_and_path(base_url: &str, path: &str) -> String {
 /// Whether `url` stays on the same host (and port) as `base`.
 ///
 /// The plugin transport signs requests with the account's credentials, so
-/// the final URL must never drift to another host (magpie `pluginFetch`
-/// `HostOf(rest) != HostOf(base)` check). A relative/hostless `base` is
+/// the final URL must never drift to another host. A relative/hostless `base` is
 /// rejected too: credentialed requests need an absolute URL whose host the
 /// gateway can verify.
 pub fn assert_same_host(base: &str, url: &str) -> bool {

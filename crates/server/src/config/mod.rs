@@ -141,9 +141,7 @@ pub struct ServerSettings {
     #[serde(default)]
     pub pass_through_headers: PassThroughHeadersConfig,
     /// Global egress proxy (e.g. `http://127.0.0.1:7890`): sign-in, token
-    /// refresh and revocation clients leave through it (magpie
-    /// `ProxyOfLogin` — a sign-in must use the same exit as the account's
-    /// own requests). Provider-level `proxy` wins over this one.
+    /// refresh and revocation clients leave through it. Provider-level `proxy` wins over this one.
     #[serde(default)]
     pub proxy: Option<String>,
 }
@@ -733,8 +731,7 @@ rotation = "never"
         );
 
         // Antigravity accounts default generation to the daily host; the
-        // loadCodeAssist discovery base stays on the regular host (magpie
-        // `Base` / `LoadBase`).
+        // loadCodeAssist discovery base stays on the regular host.
         provider.base_url = String::new();
         provider.account = Some("antigravity:me@example.com".into());
         assert_eq!(
@@ -956,7 +953,7 @@ wire = "code_assist"
             ("gpt-5.6-luna", UpstreamApi::Responses),
             ("gpt-50", UpstreamApi::Responses),
             ("gpt-5-mini", UpstreamApi::Chat),
-            // magpie's check is a HasPrefix on the whole model name.
+            // The check is a prefix match on the whole model name.
             ("gpt-5-mini-2", UpstreamApi::Chat),
             ("gpt-4.1", UpstreamApi::Chat),
             ("claude-sonnet-4-5", UpstreamApi::Chat),

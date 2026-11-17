@@ -612,7 +612,7 @@ async fn revoked_401_marks_account_and_fails_over() {
 
     revoked_upstream.push_generate_401(r#"{"error":{"message":"token_revoked"}}"#);
 
-    // The 401 says the sign-in is revoked, but magpie refreshes first and
+    // The 401 says the sign-in is revoked, but the account is refreshed first and
     // "a refresh that goes through marks nothing" — the token was merely
     // stale, so the same provider serves the retry and no marker is kept.
     let (status, body) = chat_via(&app, chat_body(false)).await;
@@ -645,7 +645,7 @@ async fn unknown_401_does_not_mark() {
 
     let (_status, _body) = env.chat(chat_body(false)).await;
 
-    // An Unknown 401 is still a 401: magpie refreshes once first, so the
+    // An Unknown 401 is still a 401: it refreshes once first, so the
     // request goes again with the renewed token — but the words name no
     // sign-in refusal, so nothing is marked.
     assert!(
@@ -712,7 +712,7 @@ async fn refresh_takes_the_file_lock() {
 }
 
 /// The one path that marks an account: a 401 whose words say the sign-in is
-/// gone, and a refresh the vendor refuses. magpie's order — refresh first —
+/// gone, and a refresh the vendor refuses. Refreshing first
 /// makes the marker the refresh's verdict, not the words alone.
 #[tokio::test]
 async fn revoked_401_then_a_refused_refresh_marks_the_account() {

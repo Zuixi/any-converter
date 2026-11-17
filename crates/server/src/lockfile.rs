@@ -4,9 +4,8 @@
 //! both refresh the same OAuth credential. Vendors answer concurrent spends
 //! of one refresh token with `refresh_token_reused` and revoke the
 //! sign-in, so refresh must be serialized across processes, not just within
-//! one tokio runtime. [`FileLock`] is magpie's `filelock.Mutex` equivalent
-//! (`logins.json.codex.lock`): a `create_new` lock file whose holder writes
-//! its pid and a timestamp.
+//! one tokio runtime. [`FileLock`] is a cross-process mutex: a `create_new`
+//! lock file whose holder writes its pid and a timestamp.
 //!
 //! The lock is advisory: every participant must agree on the same path. A
 //! lock file whose mtime is older than [`DEFAULT_STALE_AFTER`] is

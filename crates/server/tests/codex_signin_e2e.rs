@@ -63,7 +63,7 @@ fn fake_jwt(payload: serde_json::Value) -> String {
     format!("{header}.{body}.sig")
 }
 
-/// The id token claims every test starts from (magpie `jwtClaims`).
+/// The id token claims every test starts from.
 fn claims(email: &str, plan: &str, account_id: &str) -> serde_json::Value {
     serde_json::json!({
         "email": email,
@@ -411,6 +411,6 @@ async fn codex_signin_writes_back_to_auth_json() {
     assert_eq!(after["auth_mode"], "chatgpt");
     assert!(after["OPENAI_API_KEY"].is_null());
     assert_eq!(after["custom_field"], "keep-me");
-    // The last-good backup exists (magpie's lastgood generation).
+    // The last-good backup exists.
     assert!(home.join("auth.json.bak").is_file());
 }

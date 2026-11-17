@@ -2,19 +2,19 @@
 
 状态：草图 v2（2026-11-12），已吸收评审意见，待评审
 范围：桌面端 `apps/desktop`，合并 Providers + Accounts 为单一「供应商」页
-参照：magpie `internal/gui/assets/index.html` Providers 页 + `app.js` renderProviders/renderEditor/renderAdd/renderAccounts
+参照：主流网关 GUI 的 Providers 页信息架构
 
 v2 修订（评审意见）：
 1. Zone 1 移除拖拽排序 —— 供应商顺序无路由含义，仅按配置序展示
 2. 路由策略完全移出本页 —— 归 Routes 页；本页只提示"未路由"，不承载排序/策略
-3. 插件免 CLI —— 点击市场 tile 即"安装 → 登录"一条链（对齐 magpie 体验），需补三件后端基础设施
+3. 插件免 CLI —— 点击市场 tile 即"安装 → 登录"一条链（体验对齐主流网关），需补三件后端基础设施
 
 ---
 
 ## 0. 目标与原则
 
 1. **供应商是唯一的一等概念。** 用户心智里没有 "provider 配置" 和 "account 凭据" 的区分，只有"我接入了哪些供应商、健康吗、路由到谁"。
-2. **列表是摘要，详情是 Dialog。** 卡片回答"现在怎么样"，浮层回答"怎么改"。不跳页，列表上下文永远在场（magpie `app.js:6054` 注释的原则）。
+2. **列表是摘要，详情是 Dialog。** 卡片回答"现在怎么样"，浮层回答"怎么改"。不跳页，列表上下文永远在场（原位编辑原则）。
 3. **接入方式三分法统一一切 UI。** API Key / OAuth 订阅（含插件）/ 插件托管，是同一组字段的三种取值（对应 `ProviderConfig` 的 `api_key` / `accounts` / `plugin`），Add 入口、卡片徽标、详情分区全部按这三分法组织。
 4. **本页只管"接入"，不管"路由"。** 哪个 provider 优先、什么策略，全部在 Routes 页表达；本页至多出现"有模型尚未路由"的提示与跳转。
 5. **插件与内建订阅同权。** 点击插件 tile = 安装（自动）→ 登录，与内建订阅登录走同一 UI、同一状态机，用户不应感知"插件需要额外步骤"。
@@ -115,9 +115,9 @@ ProviderCard（页面上的卡片）
 
 ---
 
-## 4. Zone 2 · 待绑定账号（ac 特有，magpie 无此问题）
+## 4. Zone 2 · 待绑定账号（ac 特有）
 
-magpie 的账号天然属于内建 provider；ac 的账号是独立凭据库，可先登录后绑定。合并后这些账号不能消失，进入专属折叠区：
+其它网关的账号天然属于内建 provider；ac 的账号是独立凭据库，可先登录后绑定。合并后这些账号不能消失，进入专属折叠区：
 
 ```
 ▸ 待绑定账号（2）
@@ -152,7 +152,7 @@ magpie 的账号天然属于内建 provider；ac 的账号是独立凭据库，�
 | 兼容网关 | "一个 Key，多家厂商" | OpenRouter / OneAPI / 各家 `-cn` 端点 | 同上 |
 | 本机 | "无需 Key" | Ollama / LM Studio (Phase 2) | 同上 |
 
-tile 选中后**不关 sheet、不跳页**，在 sheet 原位展开对应的表单/登录流（magpie 7097 行的原位原则）。
+tile 选中后**不关 sheet、不跳页**，在 sheet 原位展开对应的表单/登录流（原位原则）。
 
 ### 5.3 插件一键链（本版核心增量）
 
@@ -273,7 +273,7 @@ lib/management.ts                  + installPlugin / uninstallPlugin / pluginIns
 ### Phase 1 — 纯前端重组（现有 API 全覆盖）
 - 页面合并、卡片列表、详情 Dialog、Add Sheet 分区、待绑定区
 - 账号置顶/配额/模型发现/移除（全部现有端点）
-- 插件分区仅列**已安装**插件的登录项（现状能力，体验已对齐 magpie 的"点击登录"）
+- 插件分区仅列**已安装**插件的登录项（现状能力，体验已对齐"点击登录"）
 
 ### Phase 2 — 插件免 CLI 三件套（核心后端工作）
 1. **服务端安装 API**：`POST /v1/plugins/install { spec }`、`DELETE /v1/plugins/{spec}`、安装状态查询。实现 = 把 CLI `plugin_install`（`crates/cli/src/main.rs:1065`，`npm install --prefix` 子进程）逻辑挪进 server crate（admin 鉴权下）。CLI 命令保留，共享同一实现。
@@ -283,14 +283,14 @@ lib/management.ts                  + installPlugin / uninstallPlugin / pluginIns
 5. provider 启用/停用开关（可选）。
 
 ### Phase 3 — 打磨
-- 动态插件市场（对齐 magpie market.go：搜索/README/版本/star）、上游状态页轮询徽标、供应商成本徽标、从其他工具导入。
+- 动态插件市场（搜索/README/版本/star）、上游状态页轮询徽标、供应商成本徽标、从其他工具导入。
 
 ---
 
 ## 11. 开放问题（需决策）
 
 1. **Node 自举方式**：已决策（2026-11-12）—— Tauri sidecar 内置。`scripts/fetch-node.mjs` 下载 Node v22.14.0 到 `src-tauri/binaries/node-<triple>`，`tauri.conf.json` 的 `bundle.externalBin` 打包；desktop 启动时经 `plugins::host::set_node_override` 指向 sidecar（desktop crate forbid unsafe，不能 env::set_var，故走 OnceLock 注入）。无 sidecar 的发行版维持系统 node。
-2. **插件目录的来源**：内置静态清单（推荐起步）vs 直接对接 magpie-community/plugins 仓库动态拉取（更快丰富，但引入外部依赖与版本耦合）。
+2. **插件目录的来源**：内置静态清单（推荐起步）vs 直接对接公共插件仓库动态拉取（更快丰富，但引入外部依赖与版本耦合）。
 3. **账号"置顶"够不够**：账号间顺序用置顶按钮（现 AccountsPage 语义）vs 自由拖拽。推荐置顶（改动小、语义清晰），拖拽留待反馈。
 4. **AccountsPage 是否彻底删除**：推荐 Phase 1 直接删（i18n 迁移）；保守方案是先隐藏后删。
 5. **logo 资产**：静态 SVG 打包进前端（参考 lobehub/icons）；无 logo 的 custom provider 用首字母色块。

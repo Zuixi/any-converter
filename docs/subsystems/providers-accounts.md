@@ -54,8 +54,7 @@ its listener and temp state.
 | `claude`      | Claude Code's own `claude auth login`, run here           | Approve, then paste the code or the address                      |
 | `plugin:<id>` | The plugin's own authorize                                | Depends on the plugin: browser, pasted code, or an API key       |
 
-Three rules hold across all of them, taken from magpie because each was
-learned the hard way:
+Three rules hold across all of them; each was learned the hard way:
 
 - **Tokens are refreshed before they expire** (5 minutes; 3 for ChatGPT API),
   and a refresh never happens twice for the same refresh token: a
@@ -156,7 +155,7 @@ header for a plugin provider.
 config.toml:
   [[providers]]
   name = "cursor"
-  plugin = { spec = "@magpie-community/opencode-cursor-auth" }
+  plugin = { spec = "@scope/opencode-cursor-auth" }
   account = "cursor:me@example.com"
 ```
 

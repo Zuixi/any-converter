@@ -10,7 +10,7 @@ const ITEM_TYPE_SUMMARY_TEXT: &str = "summary_text";
 
 // StreamState has one reasoning accumulator, `thinking_signature`: the open
 // thinking block's text rides ahead of its signature in it, split by a NUL no
-// base64 signature carries (magpie keeps the two in `e.text`/`e.sig`).
+// base64 signature carries.
 // shortcut: a StreamState without a thinking-text field; upgrade when the IR gains one.
 const THINKING_TEXT_END: char = '\0';
 
@@ -1322,7 +1322,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","status":"complet
             .iter()
             .find(|c| c.contains("response.completed"))
             .expect("response.completed");
-        assert!(completed.contains("magpie-claude1:"));
+        assert!(completed.contains("ac-claude1:"));
     }
 
     #[test]

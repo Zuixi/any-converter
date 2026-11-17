@@ -33,7 +33,7 @@ pub struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thought: Option<bool>,
     /// Gemini 3 signs the parts it thought through and refuses the next
-    /// request without the signature back (magpie gemini_signature.go, #687).
+    /// request without the signature back.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thought_signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

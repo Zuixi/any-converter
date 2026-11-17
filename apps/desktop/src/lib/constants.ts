@@ -159,17 +159,10 @@ export type PluginCatalogEntry = {
 };
 
 /**
- * The built-in plugin catalog: seeded from the specs this repo documents;
- * entries land here as the ecosystem grows, and any npm spec can be typed
- * in directly beside them.
+ * The built-in plugin catalog: entries land here as the ecosystem grows,
+ * and any npm spec can be typed in directly beside them.
  */
-export const PLUGIN_CATALOG: PluginCatalogEntry[] = [
-  {
-    spec: "@magpie-community/opencode-cursor-auth",
-    label: "Cursor",
-    note: "Signs in with your Cursor account; serves its subscription models.",
-  },
-];
+export const PLUGIN_CATALOG: PluginCatalogEntry[] = [];
 
 export const SIDEBAR_COLLAPSED_KEY = "any-converter.desktop.sidebarCollapsed";
 

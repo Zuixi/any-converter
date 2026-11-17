@@ -15,7 +15,7 @@ pub enum CanonicalStreamEvent {
         id: String,
         name: String,
         /// Gemini signs a call as it starts it: only a Gemini emitter
-        /// writes it back (magpie gemini_signature.go)
+        /// writes it back
         signature: Option<String>,
     },
     ToolCallDelta {
@@ -24,14 +24,12 @@ pub enum CanonicalStreamEvent {
     },
     ThinkingDelta(String),
     /// A thinking block's signature, whole or a chunk of it, and the API
-    /// that signed it: only that format's emitter may replay it (magpie
-    /// ir.go KSig; Claude streams it as signature_delta at block end)
+    /// that signed it: only that format's emitter may replay it
     ThinkingSignature {
         by: crate::convert::Format,
         delta: String,
     },
-    /// Reasoning an upstream sealed whole, as its API wrote it (Anthropic's
-    /// redacted_thinking block; magpie ir.go KSealed): only the sealing
+    /// Reasoning an upstream sealed whole, as its API wrote it: only the sealing
     /// API's emitter may write it out
     SealedThinking {
         by: crate::convert::Format,
@@ -65,8 +63,7 @@ pub struct StreamState {
     pub accumulated_tool_calls: Vec<AccumulatedToolCall>,
     pub phase: StreamPhase,
     pub done: bool,
-    /// A thinking block's signature as its deltas arrive (Claude streams
-    /// signature_delta in pieces; magpie's encoder accumulates then seals)
+    /// A thinking block's signature as its deltas arrive
     pub thinking_signature: String,
     /// and which API signed it
     pub thinking_signature_by: Option<crate::convert::Format>,

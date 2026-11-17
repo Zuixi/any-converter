@@ -389,9 +389,9 @@ async fn plugin_url_is_base_plus_api_path() {
         )
         .await;
 
-    // url = loader.baseURL + TrimPrefix(path, "/v1"), as magpie's
-    // pluginFetch does: the AI SDK's base ends where magpie's /v1 does, so a
-    // base of https://gw.example.test asks for /chat/completions.
+    // url = loader.baseURL + TrimPrefix(path, "/v1"): the AI SDK's base
+    // ends where the provider's /v1 does, so a base of
+    // https://gw.example.test asks for /chat/completions.
     let seen = h.seen();
     let urls: Vec<&str> = seen
         .iter()
@@ -415,7 +415,7 @@ async fn loader_base_ending_in_v1_is_not_doubled() {
     }
     // A loader base that already carries the version (as @ai-sdk/anthropic's
     // npmBase does: https://api.anthropic.com/v1) must not become
-    // /v1/v1/messages. magpie pluginFetch strips the leading /v1 from the
+    // /v1/v1/messages. The plugin forward strips the leading /v1 from the
     // path for exactly this reason.
     let h = Harness::new(vec![plugin_provider("gw", "test")]).await;
     // The `versioned` metadata makes the fixture's loader return a base that

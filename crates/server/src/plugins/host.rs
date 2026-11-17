@@ -86,7 +86,7 @@ pub struct PluginLaunch {
     pub env: Vec<(String, String)>,
 }
 
-/// One plugin the JS host should load: magpie's `{spec, target}` pair.
+/// One plugin the JS host should load: a `{spec, target}` pair.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginSpec {
     /// Package name, absolute path, or path relative to `target`.
@@ -404,8 +404,8 @@ impl PluginTransport {
 /// The plugin runs the HTTP request against the upstream provider (its own
 /// web API or auth endpoints) where the host's HTTP stack must not be
 /// involved, and returns the raw status/headers/body. `provider`/`account`/
-/// `model`/`npm` mirror magpie's `plugin.FetchRequest`: plugins that sign
-/// requests need the identity, and per-package routing needs the rest.
+/// `model`/`npm` mirror the fetch request: plugins that sign requests need
+/// the identity, and per-package routing needs the rest.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PluginFetchRequest {
     /// Full request URL.
@@ -1805,7 +1805,7 @@ for line in sys.stdin:
         .unwrap();
 
         // The fixture loader omits apiKey when the stored credential is an
-        // api key: magpie options() falls back to `stored.key`.
+        // api key; `options()` falls back to `stored.key`.
         let options = plugin
             .load(LoadParams {
                 provider: "hello".into(),

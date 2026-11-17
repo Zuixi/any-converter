@@ -1,5 +1,5 @@
 //! Import accounts from other tools' export files into a
-//! [`FileSecretStore`] (magpie `internal/provider/login_import.go`).
+//! [`FileSecretStore`].
 //!
 //! Three export shapes are recognised, in this priority order:
 //!
@@ -7,7 +7,7 @@
 //!    [{"credentials": {"claudeAiOauth": {...}}, "config": {"oauthAccount":
 //!    {...}}, "alias": "..."}]}`. A Claude account whose email (or alias)
 //!    is already stored is only replaced when the export's `expiresAt` is
-//!    strictly later than the stored sign-in's (magpie `claudeNewerKept`).
+//!    strictly later than the stored sign-in's.
 //!    An export without `expiresAt` never replaces anything.
 //! 2. **Sub2API exports** — a top-level array or `{"accounts": [...]}` of
 //!    `{"platform", "credentials", "extra"}` entries; Claude and Codex
@@ -55,7 +55,7 @@ pub struct ImportedAccount {
 }
 
 /// Read a file (or every `*.json` under a directory, by file-name order)
-/// and import the accounts it holds into `store`, honouring magpie's
+/// and import the accounts it holds into `store`, honouring the
 /// newer-wins rule for claude-swap exports. Never fails: every row's
 /// outcome is reported through an [`ImportStatus`].
 pub fn import_path(store: &FileSecretStore, path: &Path) -> Vec<ImportedAccount> {
@@ -225,7 +225,7 @@ const CODEX_CSWAP_MSG: &str = "a Codex account in a claude-swap export: claude-s
      files hold Claude sign-ins; import Codex accounts from a Codex tool's export \
      (CLIProxyAPI or Sub2API) instead";
 
-/// Import the accounts of a claude-swap export (magpie `cswapEntry`).
+/// Import the accounts of a claude-swap export.
 ///
 /// Refuses the whole export when `format`/`version` is not 1, and refuses
 /// API-key and Codex entries individually. Claude entries follow
@@ -342,7 +342,7 @@ fn has_platform(value: &Value) -> bool {
         .is_some_and(|map| map.contains_key("platform"))
 }
 
-/// Import one account of a Sub2API export (magpie `sub2apiEntry`).
+/// Import one account of a Sub2API export.
 fn import_sub2api_entry(
     store: &FileSecretStore,
     file: &str,
@@ -597,7 +597,7 @@ struct Entry {
     refresh_token: Option<String>,
     expires_at_unix: Option<i64>,
     /// Only claude-swap entries may replace a stored sign-in, and only
-    /// with a strictly later `expiresAt` (magpie `claudeNewerKept`).
+    /// with a strictly later `expiresAt`.
     newer_wins: bool,
 }
 
@@ -641,8 +641,7 @@ fn import_entry(store: &FileSecretStore, file: &str, entry: Entry, out: &mut Vec
             ),
             file: file.to_string(),
         }),
-        // A stored sign-in whose expiry is unknown counts as oldest (magpie
-        // treats a missing expiry as 0), so a dated export replaces it.
+        // A stored sign-in whose expiry is unknown counts as oldest, so a dated export replaces it.
         Some(None) => match entry.expires_at_unix {
             None => out.push(ImportedAccount {
                 account: id,
@@ -822,8 +821,7 @@ fn normalize_expiry(value: i64) -> i64 {
     }
 }
 
-/// The entry's `name`, when it looks like an email address (magpie reads
-/// the account's email from the name Cockpit Tools gives each account).
+/// The entry's `name`, when it looks like an email address.
 fn name_if_email(obj: Option<&Map<String, Value>>) -> String {
     let name = str_of(obj, &["name"]);
     if name.contains('@') {

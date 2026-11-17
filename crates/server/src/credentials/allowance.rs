@@ -1,15 +1,12 @@
-//! Account quota windows (P9), mirroring magpie's `internal/provider/
-//! allowance*.go`: a vendor reports [`Limit`] windows, an [`Allowance`]
-//! collects them, and routing asks how much of them is used.
+//! Account quota windows (P9): a vendor reports [`Limit`] windows, an
+//! [`Allowance`] collects them, and routing asks how much of them is used.
 //!
-//! Two layers are kept apart on purpose (magpie `account_order.go` vs
-//! `allowance*.go`): the user's account order is authoritative, and quota
+//! Two layers are kept apart on purpose: the user's account order is authoritative, and quota
 //! only moves accounts *past their line* to the back — it never reorders
 //! them (see [`crate::provider_pool`]).
 //!
-//! Reading the windows is [`AccountResolver::allowance`] (Gemini /
-//! Antigravity, magpie `modelInfo`'s Antigravity branch) and
-//! [`copilot_allowance`] (magpie `CopilotUserURL`); every other vendor
+//! Reading the windows is [`AccountResolver::allowance`] and
+//! [`copilot_allowance`]; every other vendor
 //! reports nothing and its accounts count as unused.
 
 use std::sync::Arc;
@@ -18,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use super::account::{AccountError, AccountResolver};
 use super::copilot::{COPILOT_DEFAULT_API_BASE, CopilotSession, copilot_api_headers};
 
-/// One window of an account's allowance (magpie provider.Limit).
+/// One window of an account's allowance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Limit {
     /// Percent of the window used, 0–100.
@@ -28,7 +25,7 @@ pub struct Limit {
     /// How long the window runs; zero when unknown.
     pub span: Duration,
     /// Counts only models whose id contains this; `None` counts every
-    /// model (magpie's `strings.Contains(model, limit.Model)`).
+    /// model.
     pub model: Option<String>,
 }
 
@@ -42,7 +39,7 @@ impl Limit {
     }
 
     /// The window's used percent at `now`: a window whose reset has passed
-    /// is empty again and reads 0 (magpie `For`).
+    /// is empty again and reads 0.
     fn used_now(&self, now: SystemTime) -> f64 {
         match self.resets {
             Some(resets) if resets <= now => 0.0,
@@ -51,7 +48,7 @@ impl Limit {
     }
 }
 
-/// Every window an account reported (magpie provider.Allowance).
+/// Every window an account reported.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Allowance(Vec<Limit>);
 
@@ -73,13 +70,13 @@ impl Allowance {
     /// The windows related to `model`: every window that counts requests
     /// for it ([`Limit::counts`]). Expiry is not filtered here — a window
     /// whose reset has passed reads 0 through [`Self::fullest_used`] and
-    /// [`Self::exhausted`] (magpie `For`'s rule).
+    /// [`Self::exhausted`].
     pub fn for_model(&self, model: &str, _now: SystemTime) -> Vec<&Limit> {
         self.0.iter().filter(|limit| limit.counts(model)).collect()
     }
 
     /// Used percent of the fullest window that counts for the model, with
-    /// a window whose reset has passed read as 0 (magpie `For`'s used).
+    /// a window whose reset has passed read as 0.
     pub fn fullest_used(&self, model: &str, now: SystemTime) -> f64 {
         self.for_model(model, now)
             .iter()
@@ -89,7 +86,7 @@ impl Allowance {
 
     /// Whether the account is past `share` on the window that decides it.
     ///
-    /// magpie reads an account's use as the **fullest** of the windows that
+    /// An account's use is the **fullest** of the windows that
     /// count for the model (`Allowance.For` takes a max), so one spent window
     /// is enough: a five-hour window at 100% beside a weekly at 10% is an
     /// account that answers 429 until the shorter one renews, and routing
@@ -105,10 +102,8 @@ impl Allowance {
 }
 
 impl AccountResolver {
-    /// The account's allowance windows, when its vendor tells them
-    /// (Gemini / Antigravity via `POST {base}/v1internal:fetchAvailableModels`,
-    /// magpie `modelInfo`'s Antigravity branch; other providers report
-    /// nothing and answer `None`). Cached 5 minutes; a failed read keeps
+    /// The account's allowance windows, when its vendor tells them.
+    /// Cached 5 minutes; a failed read keeps
     /// the last known value.
     pub async fn allowance(&self, account_id: &str, base: &str) -> Option<Allowance> {
         let provider = account_id.split(':').next().unwrap_or("");
@@ -138,7 +133,7 @@ impl AccountResolver {
 
     /// The windows read earlier, if any and still fresh — **no I/O**.
     ///
-    /// This is what routing uses: magpie reads allowances in the background
+    /// This is what routing uses: allowances are read in the background
     /// and never makes a request wait on one (`KeyAllowance`: "never waited
     /// for, read in the background"). An account with nothing cached counts
     /// as having room, which is why a cold start keeps the user's order.
@@ -157,7 +152,7 @@ impl AccountResolver {
         {
             let mut reading = self.reading.lock().unwrap_or_else(|e| e.into_inner());
             if !reading.insert(account_id.to_string()) {
-                return; // one read at a time per account, as magpie keeps it
+                return; // one read at a time per account
             }
         }
         let this = Arc::clone(self);
@@ -218,12 +213,11 @@ impl AccountResolver {
 /// How long a quota reading stays fresh (P9: cached 5 minutes).
 pub(crate) const ALLOWANCE_CACHE_SECS: i64 = 300;
 
-/// Parse a Gemini / Antigravity `fetchAvailableModels` reply into windows
-/// (magpie `modelInfo`'s Antigravity branch): `models` maps a model id to
+/// Parse a Gemini / Antigravity `fetchAvailableModels` reply into windows:
+/// `models` maps a model id to
 /// `{quotaInfo: {remainingFraction, resetTime}}`; used is
 /// `1 - remainingFraction` as a percent, the reset is RFC3339, and the
-/// window counts only that model id (the full id — magpie's `Limit.Model`
-/// is a "word in the id" match, here it is the exact id Google named).
+/// window counts only that model id.
 /// The window's span is unknown → [`Duration::ZERO`].
 pub(crate) fn gemini_allowance_from_reply(reply: &serde_json::Value) -> Allowance {
     let mut limits = Vec::new();
@@ -235,12 +229,10 @@ pub(crate) fn gemini_allowance_from_reply(reply: &serde_json::Value) -> Allowanc
             .get("quotaInfo")
             .and_then(serde_json::Value::as_object)
         else {
-            // No quota window reported for this model (magpie keeps the
-            // remaining at -1 there: unknown, no window).
+            // No quota window reported for this model.
             continue;
         };
-        // Antigravity omits remainingFraction once none is left (magpie
-        // modelInfo): the window then reads fully used.
+        // Antigravity omits remainingFraction once none is left: the window then reads fully used.
         let remaining = quota
             .get("remainingFraction")
             .and_then(serde_json::Value::as_f64)
@@ -261,8 +253,7 @@ pub(crate) fn gemini_allowance_from_reply(reply: &serde_json::Value) -> Allowanc
 }
 
 /// Read a Copilot account's allowance: `GET {session.api_base}/
-/// copilot_internal/user` with the session's Copilot headers (magpie
-/// `CopilotUserURL`); `quota_snapshots.premium_interactions`
+/// copilot_internal/user` with the session's Copilot headers; `quota_snapshots.premium_interactions`
 /// (`percent_remaining` / `unlimited`) becomes one account-wide window.
 /// `None` when the vendor doesn't answer, or the snapshot is missing.
 pub async fn copilot_allowance(
@@ -441,8 +432,7 @@ mod tests {
 
     #[test]
     fn test_exhausted_when_only_one_window_is_over() {
-        // One spent window is enough (magpie reads an account's use as the
-        // fullest of its windows): the five-hour one answers 429 until it
+        // One spent window is enough: the five-hour one answers 429 until it
         // renews, whatever the weekly says.
         let allowance = Allowance::new(vec![
             limit(99.0, resets_in(3600), Some("gemini")),
@@ -561,8 +551,7 @@ mod tests {
 
 /// Copilot accounts' quota windows, cached so routing never waits on the
 /// read: asking needs a session exchange plus a round trip, far too much to
-/// put in front of every request (magpie reads allowances in the background
-/// for the same reason).
+/// put in front of every request.
 #[derive(Default)]
 pub struct CopilotAllowances {
     entries: std::sync::Mutex<std::collections::HashMap<String, (i64, Allowance)>>,

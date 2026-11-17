@@ -132,10 +132,10 @@ pub struct Totals {
     /// total, so a bare sum is never read as the cost of all the traffic.
     pub cost_usd: f64,
     /// Calls that reported tokens but whose model has no price, so `cost_usd`
-    /// covers only the rest. magpie calls this `Unpriced`.
+    /// covers only the rest.
     pub unpriced: u64,
     /// Requests answered after a try failed first: a success with `attempt > 0`.
-    /// magpie's `Retried`.
+    /// Counted as `retried`.
     pub retried: u64,
     /// Of `errors`, those the gateway ended for looping.
     pub loops: u64,
@@ -184,7 +184,7 @@ pub struct Bucket {
     pub totals: Totals,
     /// The point told apart by `split_by`: value → that value's totals at this
     /// point. The 24 with the most tokens over the whole period are kept; the
-    /// rest of the point is what remains of `totals` (magpie's `seriesKeep`).
+    /// rest of the point is what remains of `totals`.
     /// A value with no calls in this bucket has no entry, which a chart reads
     /// as zero.
     #[serde(skip_serializing_if = "Option::is_none")]

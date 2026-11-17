@@ -2,7 +2,7 @@
 
 > **For agentic workers:** execute one task at a time; each task ends with a verification command whose output must be shown before moving on. Mark `- [x]` only after the verification passes.
 
-**Goal:** Reach parity with magpie's usage subsystem at the level of its **public contract** (`internal/usageapi/usageapi.go`: `Summary`, `Ledger`, `Heatmap`, `Totals`, `Filter`), using SQLite as the single source of truth.
+**Goal:** Reach parity with a matured gateway's usage subsystem at the level of its **public contract** (`Summary`, `Ledger`, `Heatmap`, `Totals`, `Filter`), using SQLite as the single source of truth.
 
 **Architecture decision (validated by measurement):** three layers, one owner each.
 
@@ -24,11 +24,11 @@ Measured basis (1M rows, 4.2 GB payload, macOS SQLite):
 
 ---
 
-## magpie contract coverage matrix
+## Contract coverage matrix
 
-Every item below is a field or endpoint in magpie's `usageapi` contract. This table is the plan's definition of done — if a row says `⬜` at the end, the plan is not finished.
+Every item below is a field or endpoint in the usage contract. This table is the plan's definition of done — if a row says `⬜` at the end, the plan is not finished.
 
-| # | magpie capability | Where it lands | Status |
+| # | Capability | Where it lands | Status |
 |---|---|---|---|
 | 1 | `Period`: today / 7d / 30d / all | Task 5.1 | ⬜ |
 | 2 | `Period`: picked day range (`2026-10-01..2026-10-07`) | Task 5.1 | ⬜ |
@@ -56,15 +56,15 @@ Every item below is a field or endpoint in magpie's `usageapi` contract. This ta
 | 24 | `Ledger`: three sources (gateway / session file / reported) | **not applicable** | — |
 | 25 | `CallerKeys`, `Computers`, `Via` (multi-user / multi-machine) | **not applicable** | — |
 
-Rows 24–25 are excluded because any-converter has no agent-session-file reader, no client-reported ingestion endpoint, no multi-user keys, and no cross-machine sync. If any of those ever ships, `Totals` splits the same way magpie's does and no schema change is needed beyond a `source` column.
+Rows 24–25 are excluded because any-converter has no agent-session-file reader, no client-reported ingestion endpoint, no multi-user keys, and no cross-machine sync. If any of those ever ships, `Totals` splits the same way and no schema change is needed beyond a `source` column.
 
 **Non-goals:** ClickHouse or any external OLAP engine; multi-process writers; OTel export; full-text search; service tiers (`TierAsked/Sent/Served`); plan credits; loop detection.
 
 ---
 
-## Why magpie's own index layer is not reproduced
+## Why a custom index layer is not reproduced
 
-| magpie module | Lines | Replaced by |
+| Module | Lines | Replaced by |
 |---|---|---|
 | `request_page.go` | 2876 | `select ... where ... limit` + keyset |
 | `log_disk.go` | 264 | `journal_mode=wal` + `pragma optimize` |
@@ -74,7 +74,7 @@ Rows 24–25 are excluded because any-converter has no agent-session-file reader
 | `heatmap.go` | 480 | `group by substr(timestamp,1,10)` |
 | **≈ 5100** | | **≈ 200 lines of SQL** |
 
-That layer exists because magpie chose JSONL. It is magpie's cost, not its design.
+That layer exists because a JSONL-first store needs it; it is the cost of JSONL, not of the design.
 
 ---
 
@@ -213,13 +213,13 @@ Measured failure: without statistics SQLite chose `SCAN meta USING INDEX idx_pm`
 - [ ] Backfill from `record_json` with SQLite's JSON1 (`json_extract(record_json,'$.client_id')`).
 - [ ] Test: a record with `client_id = "claude-code"` is found by `where client_id = 'claude-code'` after backfill.
 
-**This task is the difference between "provider/model statistics" and "magpie parity".** Without it, `Summary.Agents` and `Summary.Sessions` (matrix rows 8–9) are impossible.
+**This task is the difference between "provider/model statistics" and "full usage parity".** Without it, `Summary.Agents` and `Summary.Sessions` (matrix rows 8–9) are impossible.
 
 ### Task 2.5 — Route identity for failover
 
 **Files:** `crates/server/src/storage.rs` (step 3), `crates/server/src/handlers.rs`
 
-any-converter retries the next provider on a retryable status (`handlers.rs:877`, `943`), which is magpie's "route with several attempts" — but today each attempt is an unrelated row, so a failed try is indistinguishable from a separate request.
+any-converter retries the next provider on a retryable status (`handlers.rs:877`, `943`), which is the "route with several attempts" model — but today each attempt is an unrelated row, so a failed try is indistinguishable from a separate request.
 
 - [ ] Step 3 adds `route_id integer` and `attempt integer not null default 0`, index `idx_logs_route on request_logs(route_id)`.
 - [ ] Generate `route_id` once per client request in `handlers.rs` and stamp every provider attempt with it plus a zero-based `attempt`.
@@ -274,7 +274,7 @@ any-converter retries the next provider on a retryable status (`handlers.rs:877`
   ) without rowid;
   ```
 - [ ] `bucket` = UTC hour truncated to `YYYY-MM-DDTHH:00:00Z`, agreeing with `substr(timestamp,1,13)` exactly.
-- [ ] **`agent` is in the primary key.** Omitting it would force a second full table for the agent dimension; magpie keeps agents in the same pass.
+- [ ] **`agent` is in the primary key.** Omitting it would force a second full table for the agent dimension; agents are kept in the same pass.
 
 ### Task 3.2 — Maintain it in the write path
 
@@ -310,14 +310,14 @@ A pre-aggregate that can only be written forward is a trap: one missed write and
   | `Month` | `substr(bucket,1,7)` |
 
 - [ ] Returns `UsageSummary { totals, series, by_provider, by_agent, by_model, by_account }` from three queries in one deferred read transaction.
-- [ ] `by_model` carries its `provider` so the UI can show "model · provider" (magpie's `modelAt`).
+- [ ] `by_model` carries its `provider` so the UI can show "model · provider".
 - [ ] Test: day granularity over 3 hours of one day → one bucket summing the three.
 - [ ] Test: a Sunday/Monday pair lands in different week buckets (Monday-start).
 - [ ] Test (gate): 100k rollup rows, 30-day all-dimension summary **< 50 ms**; print the measured number.
 
 ### Task 3.5 — Series split by dimension
 
-magpie's `SeriesPoint.By` lets the chart stack by provider/agent/model, keeping the top `seriesKeep = 24` and folding the rest into "other".
+`SeriesPoint.By` lets the chart stack by provider/agent/model, keeping the top `seriesKeep = 24` and folding the rest into "other".
 
 **Files:** `crates/server/src/storage.rs`
 
@@ -329,13 +329,13 @@ magpie's `SeriesPoint.By` lets the chart stack by provider/agent/model, keeping 
 
 ## Phase 4 — Ledger (the detail layer)
 
-This phase is entirely absent from the first draft of this plan. magpie's `QueryPage`/`LedgerPage` is half of its usage product: without it the UI can only show totals, never answer "which call was that?".
+This phase is entirely absent from the first draft of this plan. A paged ledger (`QueryPage`/`LedgerPage`) is half of a usage product: without it the UI can only show totals, never answer "which call was that?".
 
 ### Task 4.1 — Keyset paging
 
 **Files:** `crates/server/src/storage.rs`
 
-- [ ] `fn ledger_page(&self, f: &Filter, cursor: Option<i64>, limit: u64) -> Ledger` using `where id < ?cursor order by id desc limit ?` — **not** `offset`, which degrades linearly and is what magpie had to work around for ~750k rows.
+- [ ] `fn ledger_page(&self, f: &Filter, cursor: Option<i64>, limit: u64) -> Ledger` using `where id < ?cursor order by id desc limit ?` — **not** `offset`, which degrades linearly and had to be worked around at ~750k rows.
 - [ ] `Ledger { rows, total, bucket, series, totals, by }` with `total` from a separate `count(*)` under the same filter.
 - [ ] `limit` clamped to 500, default 100.
 - [ ] Test: paging through 250 rows at 100/page yields 100/100/50 with no duplicates and no gaps.
@@ -353,7 +353,7 @@ This phase is entirely absent from the first draft of this plan. magpie's `Query
 
 ### Task 4.3 — `By` ranking that stays switchable
 
-magpie's rule: the ranking for the dimension **currently filtered on** is computed **without that filter**, so the other options stay visible to switch to.
+The rule: the ranking for the dimension **currently filtered on** is computed **without that filter**, so the other options stay visible to switch to.
 
 **Files:** `crates/server/src/storage.rs`
 
@@ -363,7 +363,7 @@ magpie's rule: the ranking for the dimension **currently filtered on** is comput
 
 ### Task 4.4 — Day drill-down
 
-- [ ] `Filter.day` restricts to one local calendar day; `series` is then computed **before** the day filter (magpie returns `Series` pre-`Day` so the chart still shows the period).
+- [ ] `Filter.day` restricts to one local calendar day; `series` is then computed **before** the day filter.
 - [ ] Test: with `day` set, `rows`/`totals` reflect one day while `series` still covers the whole period.
 
 ---
@@ -449,7 +449,7 @@ magpie's rule: the ranking for the dimension **currently filtered on** is comput
 
 ### Task 7.2 — Optional JSONL mirror
 
-The only thing magpie's storage choice buys that SQLite loses is inspectability. Recover it without giving up SQL.
+The only thing a JSONL store buys that SQLite loses is inspectability. Recover it without giving up SQL.
 
 - [ ] `RequestLogConfig.jsonl_mirror: bool`, default **false**.
 - [ ] Written from the same batch writer **after** the SQLite commit; never read for queries.

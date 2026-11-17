@@ -4,8 +4,8 @@
 
 @layer base {
   /*
-   * Palette adopted from magpie (yetone/magpie): a soft gray canvas, white
-   * cards, indigo accent, and quiet 11px uppercase labels. Values are full
+   * The palette: a soft gray canvas, white cards, indigo accent, and
+   * quiet 11px uppercase labels. Values are full
    * colors for status tokens, HSL triplets for the shadcn-compatible ones.
    */
   :root {
@@ -32,7 +32,7 @@
     --radius: 0.5rem;
     --sidebar-width: 230px;
     --sidebar-collapsed-width: 72px;
-    /* Status colors (magpie's green/amber/drift pair with a soft tint). */
+    /* Status colors. */
     --ok: #189a58;
     --ok-soft: #e4f6ec;
     --warn: #b45309;
@@ -91,7 +91,7 @@
     @apply bg-background text-foreground;
     margin: 0;
     overflow: hidden;
-    /* magpie's system stack: SF Pro on macOS, Segoe UI + YaHei on Windows. */
+    /* System stack: SF Pro on macOS, Segoe UI + YaHei on Windows. */
     font-family:
       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Microsoft YaHei UI",
       system-ui, sans-serif;
@@ -655,7 +655,7 @@
     padding: 28px;
   }
 
-  /* ---- Main panel (magpie's page anatomy) ---- */
+  /* ---- Main panel ---- */
 
   /* One quiet sentence per page; the key term carries the weight. */
   .page-intro {
@@ -670,7 +670,7 @@
     color: hsl(var(--foreground));
   }
 
-  /* Range pills left, cost right — magpie's usage page head. */
+  /* Range pills left, cost right. */
   .usage-head {
     display: flex;
     align-items: center;
@@ -732,7 +732,7 @@
     color: hsl(var(--foreground));
   }
 
-  /* One card, hairline-divided cells (magpie: gap 1px over the line color). */
+  /* One card, hairline-divided cells. */
   .stats {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -784,7 +784,7 @@
     color: var(--drift);
   }
 
-  /* magpie's trend chart: flat-accent bars, muted y-max label. */
+  /* Trend chart: flat-accent bars, muted y-max label. */
   .chart-card {
     background: hsl(var(--card));
     border: 1px solid hsl(var(--border));

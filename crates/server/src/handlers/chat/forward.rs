@@ -99,7 +99,7 @@ pub(crate) async fn convert_and_build_upstream(
     };
 
     // Copilot accounts (copilot:...) resolve the GitHub OAuth token and
-    // exchange it for a short-lived Copilot session (magpie copilotToken)
+    // exchange it for a short-lived Copilot session
     // before building the request: the session supplies both the API base
     // URL and the auth headers.
     let copilot_session = if provider.is_copilot_account() {
@@ -158,7 +158,7 @@ pub(crate) async fn convert_and_build_upstream(
     let url = if let Some(session) = &copilot_session {
         // The session's `endpoints.api` overrides `provider.base_url`
         // (defaulting to the public Copilot base); the path follows the
-        // P6.3 rule of stripping the leading `/v1` (magpie api.path()).
+        // P6.3 rule of stripping the leading `/v1`.
         let base = if session.api_base.is_empty() {
             COPILOT_DEFAULT_API_BASE
         } else {
@@ -191,7 +191,7 @@ pub(crate) async fn convert_and_build_upstream(
             UpstreamApi::CodeAssist => crate::wire::build_url(
                 UpstreamApi::CodeAssist,
                 // Antigravity's generation host is the daily one; a provider
-                // that names its own base keeps it (magpie app.base).
+                // that names its own base keeps it.
                 &provider.code_assist_base(),
                 &ctx.upstream_model,
                 ctx.streaming,
@@ -207,7 +207,7 @@ pub(crate) async fn convert_and_build_upstream(
     // header for them; provider-level extra headers still ride along.
     let auth_headers: Vec<(String, String)> = if let Some(session) = &copilot_session {
         // Copilot wire: Bearer session token plus the Copilot client
-        // headers and API version (magpie copilotAPIHeaders).
+        // headers and API version.
         copilot_api_headers(&session.token)
     } else if provider.plugin.is_some() {
         provider

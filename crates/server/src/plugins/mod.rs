@@ -2,9 +2,7 @@
 //! trait, and a [`PluginRegistry`].
 //!
 //! This module is deliberately free of process and network concerns: it
-//! defines the shapes that cross the host↔plugin boundary (auth storage in
-//! [`authstore`], RPC method parameters/results mirroring magpie host.js
-//! `handlers`) and the trait a concrete plugin runtime implements. The
+//! defines the shapes that cross the host↔plugin boundary and the trait a concrete plugin runtime implements. The
 //! subprocess runtime ([`host`]) spawns `plugin-host.js` — the Node side that
 //! loads real OpenCode plugin modules — and implements [`ProviderPlugin`] over
 //! the child's stdio JSON-RPC.
@@ -29,7 +27,7 @@ pub use host::{
 };
 pub use managed::ManagedHosts;
 
-/// Host → plugin RPC method names (magpie host.js `handlers`).
+/// Host → plugin RPC method names.
 pub mod methods {
     /// Begin an authorization flow for an account.
     pub const AUTHORIZE: &str = "authorize";
@@ -109,7 +107,7 @@ pub struct PromptDef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuthMethod {
     /// The credential kind this method yields. The JS host reports it as
-    /// `type` (magpie shape); the alias keeps that wire form parseable.
+    /// `type`; the alias keeps that wire form parseable.
     #[serde(alias = "type")]
     pub kind: AuthMethodKind,
     /// What the method is called in the vendor's UI (OpenCode's `label`),
@@ -235,7 +233,7 @@ pub struct UsageParams {
     pub proxy: Option<String>,
 }
 
-/// What the plugin's `load` returns for an account (magpie `plugin.Options`).
+/// What the plugin's `load` returns for an account.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LoaderOptions {
     #[serde(rename = "baseURL", default)]
@@ -244,12 +242,12 @@ pub struct LoaderOptions {
     pub api_key: String,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
-    /// The plugin brings its own fetch (magpie: `typeof o.fetch === "function"`).
+    /// The plugin brings its own fetch.
     #[serde(default)]
     pub fetch: bool,
 }
 
-/// One model a plugin lists (magpie `plugin.Model` subset).
+/// One model a plugin lists.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PluginModel {
     pub id: String,
@@ -299,7 +297,7 @@ pub struct ModelsParams {
 
 /// A provider plugin: metadata plus the host↔plugin RPC surface.
 ///
-/// Methods mirror the magpie host.js `handlers` one-to-one. The trait is
+/// Methods mirror the host's RPC handlers one-to-one. The trait is
 /// object-safe (futures boxed via [`PluginFuture`]) so plugins can be held as
 /// `Arc<dyn ProviderPlugin>` in the [`PluginRegistry`]; the subprocess
 /// runtime (T7) implements this over stdio JSON-RPC.

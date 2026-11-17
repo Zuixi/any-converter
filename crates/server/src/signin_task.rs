@@ -1,15 +1,14 @@
-//! Task-based sign-in flows (magpie `internal/provider/signin.go`).
+//! Task-based sign-in flows.
 //!
 //! A sign-in is an inspectable, cancelable *task*: `POST /v1/accounts/signin`
 //! starts one and returns a [`SignInTask`] snapshot at once; the UI polls
 //! `GET /v1/accounts/signin/{id}`, submits a pasted callback or cancels.
 //!
-//! Mirrors magpie's `signIns` map:
+//! The registry holds:
 //!
 //! - one in-flight flow per id, tracked in a process-wide registry
 //!   ([`SignInTasks::global`], seeded by the router);
-//! - a 10-minute timeout ([`DEFAULT_SIGN_IN_TIMEOUT`], magpie
-//!   `signInTimeout`);
+//! - a 10-minute timeout;
 //! - `cancel` finishes the flow: it aborts the background task (closing the
 //!   Gemini loopback listener, which lives in `GeminiSignIn::wait`'s axum
 //!   server) and removes the entry, so no listener or temp state outlives
@@ -68,12 +67,12 @@ const COPILOT_INSTRUCTIONS: &str = "Open the verification page and enter the cod
 const CODEX_INSTRUCTIONS: &str = "Open the URL in your browser. If the browser \
 cannot reach this host or port 1455 is busy, paste the callback URL from the \
 browser's address bar below.";
-/// Claude instructions shown to the user (magpie `claudePaste`'s refusal):
+/// Claude instructions shown to the user:
 /// the code its page shows, or the address the browser ended on.
 const CLAUDE_INSTRUCTIONS: &str =
     "paste the code Claude's page shows, or the whole address the browser ended on";
 
-/// One sign-in task snapshot (magpie `SignInState`).
+/// One sign-in task snapshot.
 #[derive(Debug, Clone, Serialize)]
 pub struct SignInTask {
     /// Registry id (`signin-<uuid>`); also the `id` of the sign-in route.
@@ -164,7 +163,7 @@ struct Registry {
 }
 
 /// In-flight sign-ins, keyed by id, each with a cancel handle that closes
-/// its listener and removes its temporary state (magpie's `signIns`).
+/// its listener and removes its temporary state.
 pub struct SignInTasks {
     inner: Arc<std::sync::Mutex<Registry>>,
     /// The server-level proxy ([`crate::config::ServerSettings::proxy`]);
@@ -187,7 +186,7 @@ impl Registry {
     }
 }
 
-/// The process-wide registry (magpie's package-level `signIns` map).
+/// The process-wide registry.
 static GLOBAL: OnceLock<Arc<SignInTasks>> = OnceLock::new();
 
 impl SignInTasks {
@@ -224,7 +223,7 @@ impl SignInTasks {
     }
 
     /// Start a gemini, antigravity, codex, copilot or claude sign-in and
-    /// return the task at once (magpie `startSignIn`). Uses the
+    /// return the task at once. Uses the
     /// server-level proxy; callers that resolved a provider-level proxy
     /// use [`Self::start_with_proxy`].
     pub async fn start(
@@ -297,7 +296,7 @@ impl SignInTasks {
     /// Runs the provider sign-in's `finish_pasted` path: the background
     /// `wait` (and its loopback listener) is aborted first so the pasted
     /// exchange owns the session. A failed exchange marks the task
-    /// `failed` and returns the snapshot (magpie `signInFlow.finish`).
+    /// `failed` and returns the snapshot.
     /// Copilot has no pasted input; submitting one is an error.
     pub async fn submit(&self, id: &str, input: &str) -> Result<SignInTask, String> {
         // Nothing is awaited while the registry lock is held: a guard alive
@@ -591,7 +590,7 @@ impl SignInTasks {
     /// 1455, report `waiting` + the authorize URL at once, then `wait` in
     /// the background until the callback arrives or the timeout elapses.
     /// When the port stays taken the task is paste-only: `submit` finishes
-    /// it with the address the browser finally lands on (magpie #1782).
+    /// it with the address the browser finally lands on.
     async fn start_codex(
         &self,
         proxy: Option<String>,
@@ -1133,7 +1132,7 @@ async fn settle_copilot(
         Ok(account) => account,
         Err(err) => return (STATE_FAILED.to_string(), String::new(), err.to_string()),
     };
-    // Named by its GitHub login (magpie CopilotAccountName), not by the
+    // Named by its GitHub login, not by the
     // masked device code, which changes every sign-in.
     let account_id = account.account_id();
     let credential = Credential::OAuth {

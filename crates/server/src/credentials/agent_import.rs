@@ -1,10 +1,9 @@
 //! Read-only import of accounts other tools keep on this machine.
 //!
-//! Codex CLI keeps its ChatGPT sign-in in `auth.json` (one per CODEX_HOME;
-//! `~/.codex` by default, magpie `appdir.CodexHomes`) and Claude Code keeps
+//! Codex CLI keeps its ChatGPT sign-in in `auth.json` and Claude Code keeps
 //! its Anthropic sign-in in `~/.claude/.credentials.json`, with the user
 //! identity (`oauthAccount.emailAddress`) in Claude Code's state file.
-//! [`discover`] finds both kinds the way magpie reads them, without ever
+//! [`discover`] finds both kinds the way the tools write them, without ever
 //! writing back: writing the tools' files back is P11b (last-good
 //! generations + file locks + "never overwrite what we could not read").
 //!
@@ -38,8 +37,7 @@ pub struct FoundAccount {
 }
 
 /// Codex homes: `$CODEX_HOME` (else `home/.codex`) plus siblings that look
-/// like a codex profile and hold `auth.json` or `sessions/` (magpie
-/// `appdir.CodexHomes`): in `home` and beside the main home, every folder
+/// like a codex profile and hold `auth.json` or `sessions/`: in `home` and beside the main home, every folder
 /// whose name starts with `codex` (after one leading dot), or one folder
 /// down in such a folder (`~/.codex-profiles/work`).
 pub fn codex_homes(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Vec<PathBuf> {
@@ -93,8 +91,7 @@ fn push_home(out: &mut Vec<PathBuf>, seen: &mut HashSet<String>, dir: PathBuf) {
     }
 }
 
-/// The key two names of one folder share: where its links lead (magpie
-/// `sameDir`), or the path itself when the folder does not exist yet.
+/// The key two names of one folder share: where its links lead, or the path itself when the folder does not exist yet.
 fn dir_key(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
@@ -103,7 +100,7 @@ fn dir_key(path: &Path) -> String {
 }
 
 /// Whether Codex has run in `dir`: it signed in there (`auth.json`) or kept
-/// a session there (`sessions/`) (magpie `codexHomeAt`).
+/// a session there (`sessions/`).
 fn codex_home_at(dir: &Path) -> bool {
     dir.join("auth.json").is_file() || dir.join("sessions").is_dir()
 }
@@ -112,10 +109,9 @@ fn codex_home_at(dir: &Path) -> bool {
 ///
 /// Only `auth_mode == "tokens"` with a non-empty refresh token counts as a
 /// usable ChatGPT subscription account; an `apiKey` mode or a set
-/// `OPENAI_API_KEY` is an API-key account, not a subscription (magpie
-/// `codexAccount`). The `id_token` is decoded without checking its
+/// `OPENAI_API_KEY` is an API-key account, not a subscription. The `id_token` is decoded without checking its
 /// signature — the tokens are the user's own, only their claims matter
-/// here (magpie `jwtClaims`).
+/// here.
 pub fn read_codex(home: &Path) -> Vec<FoundAccount> {
     read_codex_with_env(&env_var, home)
 }
@@ -160,7 +156,7 @@ fn read_codex_dir(dir: &Path, main: &Path) -> Vec<FoundAccount> {
     }
 
     // Identity comes from the id_token's claims, decoded unverified: the
-    // email, the ChatGPT account id, and the plan (magpie `codexUser`).
+    // email, the ChatGPT account id, and the plan.
     let id_claims = tokens
         .id_token
         .as_deref()
@@ -196,7 +192,7 @@ fn read_codex_dir(dir: &Path, main: &Path) -> Vec<FoundAccount> {
         )
     };
 
-    // The access token's own `exp` claim, as magpie reads it.
+    // The access token's own `exp` claim is the expiry.
     let expires_at_unix = tokens
         .access_token
         .as_deref()
@@ -324,8 +320,7 @@ fn claude_email(home: &Path) -> String {
     String::new()
 }
 
-/// The payload of a JWT, decoded without checking its signature (magpie
-/// `jwtClaims`: the tokens are the user's own, only their claims matter).
+/// The payload of a JWT, decoded without checking its signature.
 fn jwt_payload(token: &str) -> Option<serde_json::Value> {
     let payload = token.split('.').nth(1)?;
     let bytes = b64url_decode(payload)?;
@@ -358,7 +353,7 @@ fn b64url_decode(input: &str) -> Option<Vec<u8>> {
 }
 
 /// The string a claim path reads, `""` when any step is missing or not a
-/// string (magpie `claimString`).
+/// string.
 fn claim_str<'a>(mut claims: &'a serde_json::Value, path: &[&str]) -> &'a str {
     for key in path {
         let Some(next) = claims.get(*key) else {
@@ -369,7 +364,7 @@ fn claim_str<'a>(mut claims: &'a serde_json::Value, path: &[&str]) -> &'a str {
     claims.as_str().unwrap_or("")
 }
 
-/// `auth.json` as Codex keeps it (magpie `codexAuth`).
+/// `auth.json` as Codex keeps it.
 #[derive(serde::Deserialize)]
 struct CodexAuth {
     auth_mode: Option<String>,
@@ -386,7 +381,7 @@ struct CodexTokens {
     account_id: Option<String>,
 }
 
-/// `~/.claude/.credentials.json` (magpie `claudeCredentials`).
+/// `~/.claude/.credentials.json`.
 #[derive(serde::Deserialize)]
 struct ClaudeCredentials {
     #[serde(rename = "claudeAiOauth")]
@@ -420,8 +415,7 @@ struct ClaudeOAuthAccount {
 }
 
 /// The environment lookup the production entrypoints use: the process
-/// environment, blank values counting as unset (magpie reads `CODEX_HOME`
-/// through `LookupEnv`).
+/// environment, blank values counting as unset.
 fn env_var(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()

@@ -179,7 +179,7 @@ fn antigravity_endpoints_carry_the_difference_table() {
 
 /// Google sets an Antigravity account up as Antigravity, not as Gemini CLI:
 /// `loadCodeAssist` takes `{"metadata":{"ideType":"ANTIGRAVITY"}}`, and
-/// onboarding names the tier in snake_case (magpie `antigravityProject`).
+/// onboarding names the tier in snake_case.
 /// Asking as Gemini CLI gives the account a Gemini project and tier.
 #[tokio::test]
 async fn antigravity_onboards_with_its_own_identity() {

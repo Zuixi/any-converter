@@ -16,7 +16,7 @@ import { Modal } from "./Modal";
 import { ModelPicker, type PickerModel } from "./ModelPicker";
 import { useProvidersStrings } from "./strings";
 
-/** Every format's own URL box, seeded empty (magpie keeps one per protocol). */
+/** Every format's own URL box, seeded empty. */
 type UrlDraft = Record<ConfigFormat, string>;
 
 const EMPTY_URLS: UrlDraft = {
@@ -26,7 +26,7 @@ const EMPTY_URLS: UrlDraft = {
   gemini: "",
 };
 
-/** Which URL hint fits a format (magpie's urlHint, in ac's words). */
+/** Which URL hint fits a format. */
 function urlHint(format: ConfigFormat, s: ReturnType<typeof useProvidersStrings>): string {
   switch (format) {
     case "openai_responses":
@@ -41,11 +41,11 @@ function urlHint(format: ConfigFormat, s: ReturnType<typeof useProvidersStrings>
 }
 
 /**
- * The custom provider editor as a modal, laid out the way magpie's is:
- * name, a protocol segmented control where each protocol keeps its own
- * base URL, the key with show/hide and a get-a-key link, a probe that
- * fills the model picker, the auth scheme under Advanced, and a footer
- * of cancel and add. Enter in any field adds.
+ * The custom provider editor as a modal: name, a protocol segmented
+ * control where each protocol keeps its own base URL, the key with
+ * show/hide and a get-a-key link, a probe that fills the model picker,
+ * the auth scheme under Advanced, and a footer of cancel and add. Enter
+ * in any field adds.
  */
 export function VendorProviderModal({
   presetId,
@@ -79,8 +79,8 @@ export function VendorProviderModal({
   const baseUrl = urls[format];
   const canAdd = name.trim().length > 0 && baseUrl.trim().length > 0 && selected.length > 0 && !creating;
 
-  /** magpie's carried URL: a typed URL follows a protocol switch when the
-   * target protocol has none of its own; the seed stays behind. */
+  /** A typed URL follows a protocol switch when the target protocol has
+   * none of its own; the seed stays behind. */
   const switchFormat = (next: ConfigFormat) => {
     if (next === format) return;
     setUrls((current) => {
@@ -157,7 +157,7 @@ export function VendorProviderModal({
     }
   };
 
-  /** Enter adds (magpie's key box does); ESC closes, the Modal handles it. */
+  /** Enter adds; ESC closes, the Modal handles it. */
   const enterAdds = (event: React.KeyboardEvent) => {
     if (event.key === "Enter" && canAdd) {
       event.preventDefault();
@@ -316,7 +316,7 @@ export function VendorProviderModal({
           {s.createRoutes}
         </label>
 
-        {/* Advanced: the auth header story, as magpie's Key header row */}
+        {/* Advanced: the auth header story, keyed with the provider's own names */}
         <details className="rounded-md border px-3 py-2">
           <summary className="cursor-pointer select-none text-sm text-muted-foreground">{s.advanced}</summary>
           <div className="grid gap-3 pt-3">

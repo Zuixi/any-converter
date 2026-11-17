@@ -1,6 +1,6 @@
 //! GitHub Copilot device-code sign-in (RFC 8628 against GitHub's OAuth).
 //!
-//! Flow (mirrors magpie `copilot_signin.go`):
+//! Flow:
 //!
 //! 1. [`CopilotSignIn::start`] posts `client_id` + `scope=read:user` to the
 //!    device endpoint and receives a `device_code` plus a `user_code` the
@@ -27,7 +27,7 @@ use thiserror::Error;
 
 pub use super::gemini::SignInError;
 
-/// Copilot OAuth client id (magpie / GitHub Copilot plugin source).
+/// Copilot OAuth client id.
 pub const COPILOT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 /// Device-code endpoint.
 pub const COPILOT_DEVICE_URL: &str = "https://github.com/login/device/code";
@@ -93,9 +93,8 @@ pub struct DeviceCodeStarted {
 
 /// A fully signed-in Copilot device-flow account.
 ///
-/// The account is named by its **GitHub login**, as magpie names it
-/// (`CopilotAccountName`: `login`, or `login@host` on an enterprise), not by
-/// the device code: a user code is masked, changes every sign-in, and would
+/// The account is named by its **GitHub login** (`login`, or `login@host`
+/// on an enterprise), not by the device code: a user code is masked, changes every sign-in, and would
 /// make the same person two accounts. The login is read from GitHub with the
 /// token the flow just issued.
 #[derive(Debug, Clone)]
@@ -188,9 +187,8 @@ pub trait DeviceHttp: Send + Sync {
         request: TokenPollRequest,
     ) -> BoxFuture<'static, Result<TokenPollResponse, SignInError>>;
 
-    /// Whose token this is, and the Copilot plan it is served on
-    /// (magpie `copilotUser`: GET /user for the login, then
-    /// /copilot_internal/user for the plan). `Ok(("", ""))` when GitHub
+    /// Whose token this is, and the Copilot plan it is served on.
+    /// `Ok(("", ""))` when GitHub
     /// won't say — the sign-in still succeeds, named by the user code.
     fn user(
         &self,
@@ -200,11 +198,9 @@ pub trait DeviceHttp: Send + Sync {
     }
 }
 
-/// GitHub's user page, whose `login` names the account (magpie
-/// `GitHubUserURL`).
+/// GitHub's user page, whose `login` names the account.
 pub const GITHUB_USER_URL: &str = "https://api.github.com/user";
-/// Copilot's own user page, whose `copilot_plan` is the plan (magpie
-/// `CopilotUserURL`).
+/// Copilot's own user page, whose `copilot_plan` is the plan.
 pub const COPILOT_USER_URL: &str = "https://api.github.com/copilot_internal/user";
 
 /// Production [`DeviceHttp`] backed by reqwest.
@@ -230,8 +226,7 @@ impl ReqwestDeviceHttp {
     }
 
     /// Create the production HTTP layer leaving through `proxy` when set
-    /// (P10: the sign-in must exit through the same proxy the account's
-    /// own requests will use — magpie `ProxyOfLogin`).
+    ///
     pub fn with_proxy(proxy: Option<&str>) -> Result<Self, SignInError> {
         let client = crate::config::build_proxied_client(proxy)
             .map_err(|error| SignInError::Proxy(error.to_string()))?;
@@ -334,8 +329,8 @@ impl DeviceHttp for ReqwestDeviceHttp {
         &self,
         access_token: String,
     ) -> BoxFuture<'static, Result<(String, String), SignInError>> {
-        // magpie copilotUser: GET /user names the account, then
-        // /copilot_internal/user gives the plan. A GitHub that won't say
+        // GET /user names the account, then /copilot_internal/user gives
+        // the plan. A GitHub that won't say
         // leaves the sign-in valid and named by its user code.
         let client = self.client.clone();
         Box::pin(async move {
@@ -487,8 +482,7 @@ impl CopilotSignIn {
                 .await?;
 
             if let Some(access_token) = response.access_token {
-                // Name the account by its GitHub login (magpie
-                // copilotUser), falling back to the user code when GitHub
+                // Name the account by its GitHub login, falling back to the user code when GitHub
                 // won't say.
                 let (user, plan) = self
                     .http
@@ -563,29 +557,28 @@ fn user_code_hint(user_code: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Session exchange (magpie copilotToken → copilotSession)
+// Session exchange
 // ---------------------------------------------------------------------------
 
 /// GitHub endpoint that exchanges an OAuth token for a Copilot session
-/// token (magpie `CopilotTokenURL`).
+/// token.
 pub const COPILOT_SESSION_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 /// API base used when the exchange response omits `endpoints.api`.
 pub const COPILOT_DEFAULT_API_BASE: &str = "https://api.githubcopilot.com";
-/// `X-GitHub-Api-Version` attached to Copilot API calls (magpie
-/// `copilotAPIHeaders`).
+/// `X-GitHub-Api-Version` attached to Copilot API calls.
 pub const COPILOT_API_VERSION: &str = "2026-01-09";
 
-/// Copilot client metadata headers (magpie `copilotHeaders`, account.go).
+/// Copilot client metadata headers.
 const COPILOT_EDITOR_VERSION: &str = "vscode/1.140.0";
 const COPILOT_EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.68.0";
 const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
 const COPILOT_USER_AGENT: &str = "GitHubCopilotChat/0.68.0";
 
 /// Cached sessions with at most this many seconds of life left are
-/// re-exchanged (magpie re-exchanges once under two minutes remain).
+/// re-exchanged.
 const SESSION_MIN_REMAINING_SECS: i64 = 120;
 
-/// A short-lived Copilot session token (magpie `copilotSession`).
+/// A short-lived Copilot session token.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CopilotSession {
     /// Bearer token for Copilot API calls.
@@ -608,8 +601,8 @@ pub enum CopilotError {
     Exchange(String),
 }
 
-/// GitHub OAuth token → Copilot session token, cached per GitHub token
-/// (magpie `copilotToken`). Cached sessions with more than two minutes of
+/// GitHub OAuth token → Copilot session token, cached per GitHub token.
+/// Cached sessions with more than two minutes of
 /// life left are reused as-is; anything else triggers a fresh exchange that
 /// overwrites the cache entry.
 pub struct CopilotSessions {
@@ -659,7 +652,7 @@ impl CopilotSessions {
     }
 
     /// One exchange: `GET {token_url}` with `Authorization: token <github>`
-    /// (magpie sends the literal `token` prefix, not `Bearer`).
+    ///
     async fn exchange(&self, github_token: &str) -> Result<CopilotSession, CopilotError> {
         let response = self
             .client
@@ -684,8 +677,7 @@ impl CopilotSessions {
             CopilotError::Exchange(format!("token exchange read failed: {error}"))
         })?;
 
-        // 401/403 mean the GitHub OAuth token itself is stale (magpie
-        // treats both as sign-in refusals); every other non-200 is a
+        // 401/403 mean the GitHub OAuth token itself is stale; every other non-200 is a
         // transport-level exchange failure.
         if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(CopilotError::Refused(format!(
@@ -725,7 +717,7 @@ impl CopilotSessions {
     }
 }
 
-/// Headers attached to Copilot API calls (magpie `copilotAPIHeaders`): the
+/// Headers attached to Copilot API calls: the
 /// session token as `Authorization: Bearer`, the `X-GitHub-Api-Version`,
 /// and the Copilot client headers.
 pub fn copilot_api_headers(session_token: &str) -> Vec<(String, String)> {
@@ -1272,7 +1264,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     /// The cached session is reused only while more than two minutes of
-    /// life remain (magpie re-exchanges under the two-minute margin).
+    /// life remain.
     #[test]
     fn cached_copilot_session_requires_two_minutes_of_life() {
         let sessions = CopilotSessions::new(reqwest::Client::new());
@@ -1321,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn copilot_api_headers_match_magpie_copilot_api_headers() {
+    fn copilot_api_headers_match_the_copilot_wire() {
         let headers = copilot_api_headers("cpt-session");
         let get = |name: &str| {
             headers
@@ -1338,7 +1330,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_match_magpie_copilot_wire() {
+    fn defaults_match_the_copilot_wire() {
         assert_eq!(
             COPILOT_SESSION_URL,
             "https://api.github.com/copilot_internal/v2/token"
@@ -1348,7 +1340,7 @@ mod tests {
     }
     #[test]
     fn account_id_is_the_github_login_not_the_user_code() {
-        // magpie CopilotAccountName: the login names the account. A masked
+        // The login names the account. A masked
         // user code changes every sign-in and would make one person two
         // accounts.
         let named = CopilotAccount {

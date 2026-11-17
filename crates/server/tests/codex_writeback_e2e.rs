@@ -1,6 +1,6 @@
 //! End-to-end tests for the Codex token write-back (P11b): rotated tokens
-//! written back to the `auth.json` a Codex sign-in lives in, with magpie's
-//! three protections — never overwrite what could not be read, last-good
+//! written back to the `auth.json` a Codex sign-in lives in, with three
+//! protections — never overwrite what could not be read, last-good
 //! `.bak` backup plus temp-and-rename atomic commit, and a cross-process
 //! `FileLock` so two processes never refresh (and write back) one sign-in
 //! concurrently.

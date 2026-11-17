@@ -3,8 +3,7 @@
 //! A provider configured with `account = "<provider>:<id>"` signs its
 //! upstream requests with that account's OAuth access token instead of
 //! `api_key`. [`AccountResolver`] reads the credential from the
-//! [`FileSecretStore`], refreshes it 5 minutes before expiry (mirroring
-//! magpie's refresh margin), and single-flights concurrent refreshes so a
+//! [`FileSecretStore`], refreshes it 5 minutes before expiry, and single-flights concurrent refreshes so a
 //! rotated refresh token is never spent twice.
 //!
 //! Model discovery ([`AccountResolver::project`] /
@@ -14,7 +13,7 @@
 //! experiment flags, and offers the models those experiments select from the
 //! static Gemini table. The project and flags are cached per account for an
 //! hour; when Code Assist can't be asked, the full static table stands in
-//! (magpie's fallback semantics).
+//!
 //!
 //! Refreshes are additionally serialized **across processes** through a
 //! [`crate::lockfile::FileLock`] next to the secrets file (the CLI and the
@@ -47,7 +46,7 @@ pub struct ResolvedAccount {
 }
 
 /// The Code Assist project the account's requests go to, and the plan the
-/// account is on (magpie `googleProject`).
+/// account is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeAssistProject {
     pub id: String,
@@ -91,8 +90,7 @@ pub enum AccountError {
     Store(#[from] SecretStoreError),
 }
 
-/// The Antigravity build this setup names (magpie `antigravityVersion`,
-/// which reads the installed app and falls back to this).
+/// The Antigravity build this setup names.
 pub const ANTIGRAVITY_VERSION: &str = "1.0.0";
 
 /// Whether this account is an Antigravity sign-in.
@@ -104,22 +102,20 @@ pub fn is_antigravity(account_id: &str) -> bool {
 pub const REFRESH_MARGIN_SECS: i64 = 300;
 
 /// How long a found Code Assist project (and its experiment flags) stays
-/// cached per account (magpie caches the flags for an hour).
+/// cached per account.
 pub const PROJECT_CACHE_SECS: i64 = 3600;
 
-/// How long onboarding waits between `onboardUser` asks (magpie
-/// `onboardPoll`).
+/// How long onboarding waits between `onboardUser` asks.
 const ONBOARD_POLL: Duration = Duration::from_secs(2);
 
 /// ChatGPT's OAuth token endpoint, where Codex CLI itself renews its
-/// sign-in (magpie `codexTokenURL`).
+/// sign-in.
 pub const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
-/// Codex CLI's own public OAuth client id (magpie `codexClientID`; a
-/// public-client identifier, not a secret).
+/// Codex CLI's own public OAuth client id.
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
-/// The scope the codex refresh grant asks for (magpie `codexRefresh`).
+/// The scope the codex refresh grant asks for.
 const CODEX_REFRESH_SCOPE: &str = "openid profile email";
 
 /// How long [`AccountResolver::resolve`] waits for the cross-process
@@ -321,8 +317,7 @@ impl AccountResolver {
 
         // Cross-process re-check: the CLI (or another server) may have
         // refreshed and persisted while we waited for the file lock. Key
-        // the decision on the refresh token actually spent, mirroring
-        // magpie's per-token `logins.json.codex.lock`.
+        // the decision on the refresh token actually spent.
         let _file_guard = self.refresh_lock().acquire(self.lock_timeout).await?;
         let latest = self.read_oauth(account_id)?;
         if latest.refresh_token != seen_refresh_token || !expired(latest.expires_at_unix) {
@@ -401,8 +396,7 @@ impl AccountResolver {
         })?;
 
         // Gemini's refresh is the classic form grant; Codex CLI's own
-        // refresh is a JSON grant (magpie `codexRefresh`: Codex's public
-        // client id, the refresh token, and a fixed scope).
+        // refresh is a JSON grant.
         let (content_type, body) = if provider == "codex" {
             (
                 "application/json",
@@ -466,8 +460,7 @@ impl AccountResolver {
         let expires_at_unix = match parsed.expires_in {
             Some(secs) => Some(unix_now() + secs as i64),
             // ChatGPT's token endpoint answers no `expires_in`: the new
-            // access token's own `exp` claim is the expiry (magpie
-            // `codexRefresh`).
+            // access token's own `exp` claim is the expiry.
             None if provider == "codex" => access_token_exp(&parsed.access_token),
             None => None,
         };
@@ -480,8 +473,7 @@ impl AccountResolver {
 
         // What an adopted codex account's auth.json receives: the rotated
         // tokens, written back under the same cross-process refresh lock
-        // this refresh holds (magpie's `logins.json.codex.lock` spans the
-        // refresh and the write-back). The id_token is only rewritten when
+        // this refresh holds. The id_token is only rewritten when
         // the endpoint rotated one.
         let write_back = TokenUpdate {
             access_token: parsed.access_token.clone(),
@@ -504,7 +496,7 @@ impl AccountResolver {
         // disk work runs off the async workers, and a failed write-back
         // never fails the request — the new tokens are already in the
         // secret store, and the next refresh retries the write-back
-        // (magpie's write-back is best-effort for the same reason).
+        //
         if let Some(home) = self.adopted_home_of(account_id) {
             let outcome =
                 tokio::task::spawn_blocking(move || write_tokens(&home, &write_back)).await;
@@ -606,7 +598,7 @@ impl AccountResolver {
     }
 
     /// The Code Assist project the account's requests go to, found the way
-    /// Gemini CLI does it (magpie `googleAccount.project`). Cached per
+    /// Gemini CLI does it. Cached per
     /// account for an hour.
     ///
     /// `project_override` is the GCP project the user named; it wins when
@@ -625,7 +617,7 @@ impl AccountResolver {
             .0)
     }
 
-    /// The models Code Assist offers the account (magpie `models()`).
+    /// The models Code Assist offers the account.
     ///
     /// The project and the experiment flags come from one `loadCodeAssist`
     /// reply and are cached together (see [`Self::project`]);
@@ -633,7 +625,7 @@ impl AccountResolver {
     /// Preview models need quota evidence (`listModels`), which this
     /// project doesn't read, so `preview` stays `false` until a quota
     /// source exists. When Code Assist can't be asked — any failure — the
-    /// full static table stands in (magpie's fallback semantics), with one
+    /// full static table stands in, with one
     /// warning.
     pub async fn list_models(
         &self,
@@ -688,8 +680,8 @@ impl AccountResolver {
         let base = base.trim_end_matches('/');
 
         // Antigravity is set up as Antigravity, not as Gemini CLI: Google
-        // serves it a different project and tier for `ideType: ANTIGRAVITY`
-        // (magpie `antigravityProject`, google.go:726). Everything else
+        // serves it a different project and tier for `ideType: ANTIGRAVITY`.
+        // Everything else
         // asks as the Gemini CLI does.
         let antigravity = is_antigravity(account_id);
         let mut metadata = if antigravity {
@@ -785,7 +777,7 @@ impl AccountResolver {
     }
 
     /// Ask Code Assist to set the account up (`onboardUser`), polling the
-    /// long-running reply the way magpie does.
+    /// long-running reply until it settles.
     async fn onboard(
         &self,
         base: &str,
@@ -816,7 +808,7 @@ impl AccountResolver {
     }
 
     /// POST one of Code Assist's methods, signed with the account's access
-    /// token (magpie `googleAccount.call`).
+    /// token.
     async fn code_assist_post(
         &self,
         url: &str,
@@ -1088,7 +1080,7 @@ fn expired(expires_at_unix: Option<i64>) -> bool {
 }
 
 /// Code Assist's project arrives as a bare id string or as `{id, name}`
-/// (magpie `companionProject`).
+///
 fn companion_project(value: Option<&serde_json::Value>) -> String {
     match value {
         Some(serde_json::Value::String(id)) => id.clone(),
@@ -1128,7 +1120,7 @@ fn tier_view(tier: &serde_json::Value) -> CodeAssistTier {
 }
 
 /// The tier to onboard to: the default one, the first, or a legacy tier
-/// that always wants a user project (magpie `defaultTier`).
+/// that always wants a user project.
 fn default_tier(reply: &serde_json::Value) -> CodeAssistTier {
     let tiers: &[serde_json::Value] = reply
         .get("allowedTiers")
@@ -1155,7 +1147,7 @@ fn default_tier(reply: &serde_json::Value) -> CodeAssistTier {
 }
 
 /// The plan the account is on: the paid tier's name, else the current
-/// tier's name or id (magpie `plan`).
+/// tier's name or id.
 fn plan_of(reply: &serde_json::Value) -> String {
     let paid = reply.get("paidTier").filter(|tier| tier.is_object());
     if let Some(tier) = paid {
@@ -1195,8 +1187,7 @@ fn tier_plan(tier: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// Google's reason the account is ineligible, when it gave one (magpie
-/// `needsProject`'s why).
+/// Google's reason the account is ineligible, when it gave one.
 fn ineligible_reason(reply: &serde_json::Value) -> String {
     reply
         .get("ineligibleTiers")
@@ -1216,7 +1207,7 @@ fn ineligible_reason(reply: &serde_json::Value) -> String {
 }
 
 /// A Standard/Enterprise account needs a Google Cloud project named
-/// (magpie `needsProject`).
+///
 fn needs_project(account_id: &str, why: &str) -> AccountError {
     let mut msg = format!(
         "Google serves this sign-in only to Gemini Code Assist Standard and Enterprise, \
@@ -1365,7 +1356,7 @@ fn load_adopted(path: &std::path::Path) -> HashMap<String, String> {
 /// The access token's own JWT `exp` claim in unix seconds, decoded without
 /// checking the signature — ChatGPT's token endpoint answers no
 /// `expires_in`, so the new access token itself carries the expiry
-/// (magpie `codexRefresh` reads it the same way).
+///
 fn access_token_exp(access_token: &str) -> Option<i64> {
     let payload = access_token.split('.').nth(1)?;
     let bytes = b64url_decode(payload)?;

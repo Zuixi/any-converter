@@ -1,13 +1,13 @@
 //! Codex CLI-style ChatGPT OAuth sign-in (PKCE + fixed loopback port 1455).
 //!
-//! Flow (mirrors magpie `codexLogin` / `signin.go:363-390, 834-880`):
+//! Flow:
 //!
 //! 1. [`CodexSignIn::start`] generates a PKCE pair, tries to take
 //!    `127.0.0.1:1455` (OpenAI only redirects to that fixed address) and
 //!    returns the authorize URL. When the port stays taken after asking a
 //!    lingering `codex login` to leave (`GET /cancel`, 10 tries), the flow
 //!    continues without a callback server: the browser lands on an address
-//!    carrying the `code`, which the user pastes to finish (magpie #1782).
+//!    carrying the `code`, which the user pastes to finish.
 //! 2. [`CodexSignIn::wait`] serves `GET /auth/callback` on the held port
 //!    until a callback with a matching `state` arrives, then exchanges the
 //!    code for tokens.
@@ -48,7 +48,7 @@ pub const CODEX_OAUTH_SCOPES: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
 /// The `originator` header value the authorize URL and the token exchange
-/// carry (magpie `codex_cli_rs`).
+/// carry.
 pub const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
 /// OAuth endpoints and client configuration for the Codex ChatGPT flow.
@@ -100,7 +100,7 @@ pub struct CodexStarted {
 /// A fully signed-in ChatGPT account (Codex CLI's own OAuth client).
 #[derive(Debug, Clone)]
 pub struct CodexAccount {
-    /// Display name (magpie `codexUser`): the email, plus `" · Team"` when
+    /// Display name: the email, plus `" · Team"` when
     /// the plan is team/business/enterprise/edu.
     pub user: String,
     /// The email the id token claims; the stable account identity.
@@ -118,7 +118,7 @@ pub struct CodexAccount {
 }
 
 impl CodexAccount {
-    /// The `auth.json` content Codex reads back (magpie `codexLogin`),
+    /// The `auth.json` content Codex reads back,
     /// with sorted top-level and token keys.
     pub fn auth_json(&self) -> Vec<u8> {
         let value = serde_json::json!({
@@ -202,7 +202,7 @@ impl CodexSignIn {
     }
 
     /// Create a sign-in whose HTTP exchange leaves through `proxy` when
-    /// set (P10, magpie `ProxyOfLogin`).
+    /// set.
     pub fn with_proxy(endpoints: CodexEndpoints, proxy: Option<&str>) -> Result<Self, SignInError> {
         let client = crate::config::build_proxied_client(proxy)
             .map_err(|error| SignInError::Proxy(error.to_string()))?;
@@ -229,7 +229,7 @@ impl CodexSignIn {
     /// authorize URL. Call this before `wait`/`finish_pasted`; calling it
     /// again replaces any previous session.
     ///
-    /// Port contention never fails the flow (magpie #1782): after asking a
+    /// Port contention never fails the flow: after asking a
     /// lingering `codex login` to leave (`GET /cancel`, 10 tries), a
     /// still-taken port makes the flow paste-only
     /// (`callback_blocked = "busy"`).
@@ -262,7 +262,7 @@ impl CodexSignIn {
     }
 
     /// Take `127.0.0.1:<port>`, first asking whatever holds it to leave
-    /// (magpie #1782: a `codex login` left behind answers `GET /cancel`).
+    ///
     /// 10 tries, 200ms apart; `Err(())` when the port stays taken.
     async fn take_port(&self) -> Result<tokio::net::TcpListener, ()> {
         // The cancel probe is a fire-and-forget courtesy call: a short
@@ -458,7 +458,7 @@ impl CodexSignIn {
             SignInError::Vendor(format!("token endpoint returned malformed payload: {e}"))
         })?;
         // All three tokens are required: the sign-in is unusable without
-        // them (magpie fails the same way).
+        // them.
         let (id_token, access_token, refresh_token) =
             match (tokens.id_token, tokens.access_token, tokens.refresh_token) {
                 (Some(id_token), Some(access_token), Some(refresh_token)) => {
@@ -497,7 +497,7 @@ impl CodexSignIn {
 }
 
 /// Resolve the account identity from the `id_token`'s claims, decoded
-/// without checking the signature (magpie `jwtClaims` + `codexUser`).
+/// without checking the signature.
 fn account_from_claims(
     id_token: &str,
     access_token: String,
@@ -569,8 +569,8 @@ fn claim_str<'a>(claims: Option<&'a serde_json::Value>, path: &[&str]) -> &'a st
     claims.as_str().unwrap_or("")
 }
 
-/// The display name magpie shows for a ChatGPT account (`codexUser`):
-/// the email; team/business/enterprise/edu plans add `" · <Plan>"`.
+/// The display name for a ChatGPT account: the email; team, business,
+/// enterprise, and edu plans add `" · <Plan>"`.
 fn codex_user(email: &str, plan: &str) -> String {
     let plan_label = match plan {
         "team" | "business" | "enterprise" | "edu" => {
@@ -584,7 +584,7 @@ fn codex_user(email: &str, plan: &str) -> String {
     format!("{email} · {plan_label}")
 }
 
-/// `codex_cli_rs/<ver> (<os>; <arch>) <term>` (magpie `codexUserAgent`).
+/// `codex_cli_rs/<ver> (<os>; <arch>) <term>`.
 fn codex_user_agent() -> String {
     let term = std::env::var("TERM").unwrap_or_default();
     format!(
@@ -595,8 +595,7 @@ fn codex_user_agent() -> String {
     )
 }
 
-/// `$CODEX_HOME`, else `$HOME/.codex` (magpie `appdir.CodexHomes`' main
-/// home; `$USERPROFILE` stands in for `$HOME` on Windows).
+/// `$CODEX_HOME`, else `$HOME/.codex`.
 fn default_codex_home() -> PathBuf {
     if let Some(home) = std::env::var("CODEX_HOME")
         .ok()
@@ -649,8 +648,7 @@ fn classify_callback(
     }
 }
 
-/// Assemble the authorize URL (all values percent-encoded; magpie
-/// `signin.go:363-390`).
+/// Assemble the authorize URL.
 fn build_authorize_url(endpoints: &CodexEndpoints, state: &str, challenge: &str) -> String {
     let params: [(&str, String); 10] = [
         ("response_type", "code".to_string()),
@@ -1007,7 +1005,7 @@ mod tests {
         assert_eq!(after["auth_mode"], "chatgpt");
         assert!(after["OPENAI_API_KEY"].is_null());
         assert_eq!(after["custom_field"], "keep-me");
-        // The last-good backup exists (magpie's lastgood generation).
+        // The last-good backup exists.
         assert!(home.join("auth.json.bak").is_file());
     }
 

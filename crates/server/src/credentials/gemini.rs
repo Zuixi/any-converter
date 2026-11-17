@@ -1,6 +1,6 @@
 //! Gemini CLI-style browser OAuth sign-in (PKCE + loopback redirect).
 //!
-//! Flow (mirrors magpie `startGoogleSignIn` / `googleExchange`):
+//! Flow:
 //!
 //! 1. [`GeminiSignIn::start`] generates a PKCE pair, binds an ephemeral
 //!    loopback `TcpListener` and returns the authorize URL to open in a
@@ -41,8 +41,7 @@ pub const GEMINI_OAUTH_SCOPES: &str = concat!(
 );
 
 /// Scope set used by the Antigravity OAuth client (space-joined): the
-/// Gemini scopes plus `cclog` and `experimentsandconfigs` (magpie
-/// `google.go`).
+/// Gemini scopes plus `cclog` and `experimentsandconfigs`.
 pub const ANTIGRAVITY_OAUTH_SCOPES: &str = concat!(
     "https://www.googleapis.com/auth/cloud-platform",
     " https://www.googleapis.com/auth/userinfo.email",
@@ -51,15 +50,14 @@ pub const ANTIGRAVITY_OAUTH_SCOPES: &str = concat!(
     " https://www.googleapis.com/auth/experimentsandconfigs"
 );
 
-/// Warning shown before adding an Antigravity account (magpie
-/// `AntigravityRisk`).
+/// Warning shown before adding an Antigravity account.
 pub const ANTIGRAVITY_RISK: &str = concat!(
     "Google may suspend an Antigravity account it sees used outside Antigravity.\n",
     "Use one you can afford to lose."
 );
 
 /// Which Google OAuth app this sign-in serves: the Gemini CLI client or
-/// Antigravity (magpie `googleApp`). The OAuth flow is shared; only the
+/// Antigravity. The OAuth flow is shared; only the
 /// client id/secret, scopes, callback path, loopback host and the Code
 /// Assist bases differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +70,7 @@ pub enum GoogleApp {
 
 impl GoogleApp {
     /// The Code Assist request base generation traffic goes to for this
-    /// app (Antigravity is served on the `daily-` host; magpie `Base`).
+    /// app.
     pub const fn base(self) -> &'static str {
         match self {
             GoogleApp::Gemini => crate::config::GEMINI_CODE_ASSIST_BASE,
@@ -81,7 +79,7 @@ impl GoogleApp {
     }
 
     /// The `loadCodeAssist` discovery base for this app — always the
-    /// regular Code Assist host, even for Antigravity (magpie `LoadBase`).
+    /// regular Code Assist host, even for Antigravity.
     pub const fn load_base(self) -> &'static str {
         crate::config::GEMINI_CODE_ASSIST_BASE
     }
@@ -117,17 +115,14 @@ pub struct GeminiEndpoints {
     /// Loopback host the redirect URI names (`127.0.0.1` for Gemini,
     /// `localhost` for Antigravity).
     pub loopback_host: String,
-    /// Code Assist request base for this app's accounts (generation
-    /// traffic; magpie `Base`).
+    /// Code Assist request base for this app's accounts.
     pub base: String,
-    /// Code Assist `loadCodeAssist` base for this app's accounts (magpie
-    /// `LoadBase`).
+    /// Code Assist `loadCodeAssist` base for this app's accounts.
     pub load_base: String,
 }
 
 impl GeminiEndpoints {
-    /// Endpoints for `app`, filled from magpie's per-app difference table
-    /// (`internal/provider/google.go:82-90`).
+    /// Endpoints for `app`, filled from the per-app difference table.
     pub fn for_app(app: GoogleApp) -> Self {
         let (client_id, client_secret, scopes, callback_path, loopback_host) = match app {
             GoogleApp::Gemini => (
@@ -283,8 +278,7 @@ impl ReqwestHttpExchange {
     }
 
     /// Create the production HTTP layer leaving through `proxy` when set
-    /// (P10: the sign-in must exit through the same proxy the account's own
-    /// requests will use — magpie `ProxyOfLogin`).
+    ///
     fn with_proxy(proxy: Option<&str>) -> Result<Self, SignInError> {
         let client = crate::config::build_proxied_client(proxy)
             .map_err(|error| SignInError::Proxy(error.to_string()))?;

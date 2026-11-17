@@ -292,7 +292,7 @@ fn upsert_rollup(
             i64::from(record.ttft_ms > 0),
             record.cost_usd.unwrap_or(0.0),
             priced_calls,
-            // magpie's `Retried`: answered after a try failed first.
+            // Counted as retried: answered after a try failed first.
             i64::from(record.attempt > 0 && record.response_status < 400),
             i64::from(record.err_type.as_deref() == Some("loop")),
             to_i64(record.decode_ms),

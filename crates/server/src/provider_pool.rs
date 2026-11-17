@@ -1,11 +1,9 @@
 //! Account ordering within one provider (P9).
 //!
-//! Mirrors magpie's two-layer split: the **user's** account order is
-//! authoritative (`internal/provider/account_order.go` — `SetAccountOrder`
-//! moves accounts around, never enables a disabled one by a drag), and
-//! quota (`internal/provider/allowance*.go`) only moves the accounts past
-//! their line to the back — magpie skips the used-up ones without ever
-//! reordering the rest.
+//! Two layers are kept apart: the **user's** account order is authoritative
+//! (a reorder moves accounts around, never enables a disabled one by a
+//! drag), and quota only moves the accounts past their line to the back.
+//! The used-up ones are skipped without ever reordering the rest.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -13,8 +11,7 @@ use std::time::SystemTime;
 use crate::credentials::Allowance;
 
 /// The account ids to try for a request, in the user's order, with the
-/// ones past their line moved last rather than reordered (magpie keeps the
-/// user's order authoritative). Accounts with no allowance information
+/// ones past their line moved last rather than reordered. Accounts with no allowance information
 /// count as not exhausted.
 /// Where a provider's account order is kept: `<config>/account-order.json`,
 /// beside the secrets file. The provider's own config is the user's to edit,

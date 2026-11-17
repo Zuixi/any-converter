@@ -5,8 +5,9 @@
 > the same gateway. There is one UI build, one data API, one management API,
 > and one gateway process per home.
 >
-> **Reference:** `../magpie` — `internal/gui/web.go`, `apppage.go`,
-> `daemon/{daemon,launchd,systemd}.go`, `autostart/*`, `backend.go`.
+> **Reference:** the GUI + daemon patterns of mature local gateways: one
+> listener serving the SPA and the API, page-session cookies, and
+> cross-platform autostart.
 >
 > **Status:** accepted for implementation. Supersedes the separate-process
 > Next.js assumptions in `docs/build.md` and the SQLite-as-data-API
@@ -116,7 +117,7 @@ The cookie name carries the port because browsers scope cookies by host and
 ignore the port: two gateways on `127.0.0.1:1228` and `127.0.0.1:1229`
 would otherwise overwrite each other's session. The port is taken from the
 request `Host` header (the address the browser used), with `80` when the
-header has none; this matches magpie's `magpie_web_<port>`. The `k` link,
+header has none; the name is `any-converter-session-<port>`. The `k` link,
 `/v1/session`, and the management cookie check all derive the same name.
 
 ### 4.3 Management middleware
@@ -134,7 +135,7 @@ header has none; this matches magpie's `magpie_web_<port>`. The `k` link,
    - for `POST`/`PUT`/`PATCH`/`DELETE`, `Origin`, when present, matches the
      request host.
 
-`Sec-Fetch-Site` mirrors magpie's `webOwnPage`: `SameSite=Strict` already
+`Sec-Fetch-Site` mirrors the same-origin page check: `SameSite=Strict` already
 keeps the cookie out of cross-site writes in modern browsers, but browsers
 too old to honor it, or a future relaxation of the cookie, must not turn a
 sibling `127.0.0.1` port into a management client.

@@ -1,7 +1,7 @@
 //! End-to-end tests for the read-only agent account import (P11a): Codex's
 //! `auth.json` sign-ins (tokens mode only), Claude Code's
-//! `.credentials.json` sign-in, the multi-home scan magpie's
-//! `appdir.CodexHomes` performs, corrupt-file tolerance, and that the
+//! `.credentials.json` sign-in, the multi-home scan, corrupt-file
+//! tolerance, and that the
 //! import path `accounts import-agent` runs writes `secrets.json` without
 //! ever touching the agent files.
 
@@ -24,7 +24,7 @@ fn no_env(_name: &str) -> Option<String> {
 
 /// A fake JWT whose payload is `claims`: a real-looking header, the
 /// base64url-encoded payload, and a bogus signature. Import decodes the
-/// payload without verifying, exactly as magpie reads it.
+/// payload without verifying, as the importer does.
 fn jwt_with(claims: serde_json::Value) -> String {
     format!(
         "{}.{}.{}",
@@ -145,7 +145,7 @@ fn codex_api_key_auth_mode_is_not_a_subscription() {
 fn codex_homes_finds_siblings() {
     let home = tempfile::tempdir().unwrap();
     // The main home, a dot-prefixed sibling, and a one-level-down profile
-    // (magpie: ~/.codex-profiles/work).
+    //
     for name in [".codex", ".codex-work"] {
         let dir = home.path().join(name);
         std::fs::create_dir_all(&dir).unwrap();

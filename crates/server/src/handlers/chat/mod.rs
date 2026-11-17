@@ -372,10 +372,9 @@ pub(crate) async fn build_plan(
         let mut allowances: HashMap<String, Allowance> = HashMap::new();
         // Reading quota costs an upstream call (for Copilot a session
         // exchange): with a single account there is nothing to reorder,
-        // so the reading is skipped (magpie reads quotas to rank seats).
+        // so the reading is skipped.
         if ids.len() > 1 {
-            // Routing never waits on a quota read (magpie: allowances are
-            // read in the background and "never waited for"). A cached,
+            // Routing never waits on a quota read. A cached,
             // fresh value decides the order; a stale one is refreshed off
             // the request path, and an account with nothing cached counts
             // as having room, so a cold start keeps the user's order.

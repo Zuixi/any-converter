@@ -423,8 +423,7 @@ async fn exhausted_account_goes_last() {
         dir.path(),
     );
 
-    // Routing never waits on a quota read (magpie reads allowances in the
-    // background), so the windows must already be known. The quotas
+    // Routing never waits on a quota read, so the windows must already be known. The quotas
     // endpoint is the explicit read that primes them — the UI's path.
     let (status, _) = send(&app, quotas_request(&management_key)).await;
     assert_eq!(status, StatusCode::OK);
@@ -458,8 +457,8 @@ async fn routing_never_reads_quota_on_the_request_path() {
     );
 
     // Nothing has primed the cache, and the quota endpoint is slow: a
-    // request that waited on it would take that long. Magpie reads
-    // allowances in the background and never waits on one; an account with
+    // request that waited on it would take that long. Allowances are read
+    // in the background and never waited on; an account with
     // nothing known counts as having room, so the user's order stands.
     upstream.set_quota_delay(1500);
     let started = std::time::Instant::now();

@@ -24,8 +24,7 @@ pub async fn handle_health() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
-/// Quota share past which an account counts as used up (P9; magpie's
-/// switch share, percent of the window — magpie's `Used` is 0–100 too).
+/// Quota share past which an account counts as used up.
 pub(crate) const QUOTA_SHARE: f64 = 95.0;
 
 /// `GET /v1/accounts/quotas` (P9): every configured account's allowance
@@ -555,7 +554,7 @@ pub async fn handle_account_signin(
             "missing provider (gemini or copilot)",
         );
     }
-    // `account` is accepted for magpie parity but unused: the account id
+    // `account` is accepted for wire compatibility but unused: the account id
     // is discovered from the flow result (gemini email / copilot hint).
 
     // A provider a plugin serves is named `plugin:<id>`, and the request
@@ -655,8 +654,8 @@ pub async fn handle_account_remove(
 /// The account's allowance as last read, **without any I/O**, kicking off a
 /// background refresh when it is missing or stale.
 ///
-/// The request path uses this: a quota read must never delay a request
-/// (magpie reads allowances in the background). `read_account_allowance`
+/// The request path uses this: a quota read must never delay a request.
+/// `read_account_allowance`
 /// stays for the quotas endpoint and the UI, where the user is asking.
 pub(crate) fn cached_account_allowance(
     state: &AppState,

@@ -267,9 +267,9 @@ function authCopy(key) {
 /**
  * Auth file key for a provider/account pair.
  *
- * OpenCode keys entries by provider; magpie (and the Rust `PluginAuthStore`)
- * key them `<provider>:<account>` so multiple accounts can coexist. We use
- * the latter, with a bare provider key when no account is given.
+ * OpenCode keys entries by provider; the Rust `PluginAuthStore` keys them
+ * `<provider>:<account>` so multiple accounts can coexist. We use the
+ * latter, with a bare provider key when no account is given.
  */
 function accountKey(provider, account) {
   return account ? `${provider}:${account}` : provider;
@@ -310,7 +310,7 @@ function removeProviderEntries(provider) {
 /**
  * The `client` handed to plugin factories.
  *
- * Mirrors magpie host.js `makeClient`: `client.auth.set({path:{id}, body})`
+ * The injected client: `client.auth.set({path:{id}, body})`
  * persists `body` under `id`, `client.auth.remove({path:{id}})` drops it.
  * Real OpenCode SDK calls that plugins use beyond auth are out of scope; the
  * `auth` hook is where request signing lives.
@@ -407,8 +407,7 @@ async function importPlugin(spec, target) {
 /**
  * The `auth` hooks for `provider`, or `undefined` when there is no match.
  *
- * A mismatch is tolerated when exactly one plugin is loaded (magpie-style
- * single-plugin setups where the provider id differs from the plugin name).
+ * A mismatch is tolerated when exactly one plugin is loaded.
  */
 function findAuth(provider) {
   const direct = state.providers.get(provider);
@@ -452,7 +451,7 @@ function credentialOf(result) {
 }
 
 /**
- * Declared provider metadata of a plugin (magpie `infoOf`): the second
+ * Declared provider metadata of a plugin: the second
  * argument of `auth.loader` and the `npm` fallback for `models`.
  *
  * OpenCode plugins declare the provider either as a plain id string or as
@@ -472,7 +471,7 @@ function providerInfo(provider) {
 
 /**
  * The auth methods of a provider as reported by `init`:
- * `[{type, label, prompts}]` (magpie host.js `methodsOf`).
+ * `[{type, label, prompts}]`.
  */
 function methodsOf(auth) {
   const methods = Array.isArray(auth.methods) ? auth.methods : [];
@@ -525,7 +524,7 @@ function clearLoaderCache(provider, account) {
 }
 
 // ---------------------------------------------------------------------------
-// RPC handlers (mirror magpie host.js `handlers`)
+// RPC handlers
 // ---------------------------------------------------------------------------
 
 /**
@@ -713,7 +712,7 @@ async function handleUsage(params) {
 
 /**
  * `load`: options the host needs to speak to an account, from the plugin's
- * `auth.loader` hook (magpie host.js `options()`).
+ * `auth.loader` hook.
  *
  * The loader runs at most once per `<provider>:<account>` and the result is
  * cached (dropped by `init`, `apiKey`, and `signOut`). It is called with
@@ -781,8 +780,8 @@ async function handleModels(params) {
       return {
         id: String(m.id),
         name: String(m.name ?? ""),
-        // magpie: `m.api?.npm ?? p.npm ?? ""`, with the openai-compatible
-        // package as the final default when the provider declares nothing.
+        // `m.api?.npm ?? p.npm ?? ""`, with the openai-compatible package
+        // as the final default when the provider declares nothing.
         npm: firstString(api.npm, p.npm, "@ai-sdk/openai-compatible"),
         url: String(api.url ?? ""),
         apiId: String(api.id ?? m.id),

@@ -1,6 +1,5 @@
 //! End-to-end tests for the GitHub Copilot wire (P7): the GitHub OAuth
-//! token → Copilot session exchange (a `GET` authenticated with `token`,
-//! per magpie `copilotToken`), the per-model `/chat/completions` vs
+//! token → Copilot session exchange, the per-model `/chat/completions` vs
 //! `/responses` dispatch, session caching, near-expiry re-exchange, and the
 //! refusal surface — all against fake GitHub and Copilot API endpoints.
 
@@ -146,7 +145,7 @@ impl FakeUpstream {
     }
 }
 
-/// The GitHub token exchange (magpie copilotToken): a `GET` answering
+/// The GitHub token exchange: a `GET` answering
 /// `{token, expires_at, endpoints: {api}}`.
 async fn token_exchange(
     AxumState(state): AxumState<Arc<FakeUpstream>>,

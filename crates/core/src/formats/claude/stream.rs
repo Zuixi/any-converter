@@ -96,7 +96,7 @@ fn parse_content_block_start(
         .map_err(|e| ConvertError::SseParse(format!("content_block_start parse error: {e}")))?;
 
     // redacted_thinking is no ClaudeStreamContentBlock variant: Anthropic seals it
-    // whole, so it crosses as-is (magpie ir.go KSealed).
+    // whole, so it crosses as-is.
     let sealed = value
         .get("content_block")
         .filter(|block| {

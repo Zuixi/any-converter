@@ -63,7 +63,7 @@ pub struct RequestLogContext {
     /// When the provider loop started its first try. `None` until then; this is
     /// the instant `own_ms` ends and the tries (and their pauses) begin.
     pub first_attempt_at: Option<Instant>,
-    /// magpie's split of the request's time, in milliseconds. `own_ms` is our
+    /// The split of the request's time, in milliseconds. `own_ms` is our
     /// own work before the first byte left, `sent_ms` adds the failed tries and
     /// the pauses after them, `queued_ms` is time spent waiting for a slot
     /// (0: there is no such queue yet), `masking_ms` is of `own_ms` spent
@@ -130,7 +130,7 @@ pub struct RequestLogRecord {
     pub decode_ms: u64,
     #[serde(default)]
     pub decode_out: u64,
-    /// magpie's time split, in milliseconds: our own work before the first byte
+    /// The time split, in milliseconds: our own work before the first byte
     /// left (`own_ms`), the same plus the failed tries and their pauses
     /// (`sent_ms`), the failed tries alone (`retried_ms`), time waiting for a
     /// concurrency/RPM slot (`queued_ms`), the masking part of `own_ms`
@@ -149,7 +149,7 @@ pub struct RequestLogRecord {
     #[serde(default)]
     pub flow_ms: u64,
     /// Zero-based index of the try that answered: 0 when the first provider
-    /// worked, 1 when it took a failover. magpie's `Tries` is this plus one.
+    /// worked, 1 when it took a failover.
     #[serde(default)]
     pub attempt: u32,
     /// The row of a try that failed and handed the request on. Reserved: this

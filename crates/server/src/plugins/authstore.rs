@@ -1,7 +1,7 @@
 //! OpenCode-shaped plugin auth storage (`plugin-auth.json`).
 //!
 //! Entries are keyed by `<provider>:<account>` and shaped exactly like
-//! OpenCode's auth file (see magpie host.js `save()`/`setAuth`):
+//! OpenCode's auth file:
 //!
 //! ```json
 //! {
@@ -11,7 +11,7 @@
 //! ```
 //!
 //! Unknown fields inside an entry are preserved on round-trip. Writes use the
-//! atomic pattern proven in magpie: `0600` temp file → fsync → rename, with a
+//! atomic pattern: `0600` temp file → fsync → rename, with a
 //! last-good `.bak` of the previous contents and a `<path>.lock` lock file
 //! (`0600`, `O_CREAT | O_EXCL`, stale takeover).
 
@@ -73,7 +73,7 @@ pub enum PluginAuth {
 pub struct PluginAuthStore {
     path: PathBuf,
     /// A lock file older than this is considered abandoned and may be taken
-    /// over (magpie's stale-lock judgment).
+    /// over.
     stale_after: Duration,
 }
 

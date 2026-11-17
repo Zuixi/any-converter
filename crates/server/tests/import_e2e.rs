@@ -1,6 +1,6 @@
 //! End-to-end tests for `accounts import` (P12): accounts from cswap /
 //! Sub2API / CLIProxyAPI export files imported into a file secret store,
-//! with magpie's newer-wins rule for claude-swap exports.
+//! with the newer-wins rule for claude-swap exports.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

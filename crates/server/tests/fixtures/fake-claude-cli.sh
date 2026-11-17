@@ -4,8 +4,7 @@
 #
 # Three roles, picked by the call shape:
 #   1. BROWSER shim: called with exactly one https:// page argument while
-#      ANY_CONVERTER_OPENED_URL is set (the real any-converter binary does
-#      the same, magpie TookOpenedURL) — writes the page there, exits.
+#      ANY_CONVERTER_OPENED_URL is set — writes the page there, exits.
 #   2. `auth status --json`: prints a fixed account status.
 #   3. `auth login --claudeai`: the sign-in, chosen by FAKE_CLAUDE:
 #        browser — calls $BROWSER once with the page URL, then waits for a

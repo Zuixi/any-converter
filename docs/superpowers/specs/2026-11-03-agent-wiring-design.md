@@ -13,7 +13,7 @@ keys, driven from CLI and WebUI/Desktop through a single server-owned REST API.
 ## Confirmed Decisions (from brainstorming)
 
 1. **Full catalog sync (A)** for all four agents.
-2. **magpie-grade restore fidelity (A)**: byte backup + semantic extraction +
+2. **Full restore fidelity (A)**: byte backup + semantic extraction +
    format-preserving editors.
 3. **Server owns all writes (A)**: `/v1/agents/*` is the only write path; CLI is a
    thin HTTP client; offline rescue = manual `.before-any-converter` copy (documented).
@@ -151,9 +151,7 @@ mapped from catalog (tier missing in catalog → key untouched).
 
 **Correction (red-team finding 1):** the provider table must use
 `requires_openai_auth = true` and the gateway key goes into `auth.json`'s
-`OPENAI_API_KEY` field (OAuth tokens are never touched; both magpie and cc-switch
-do this — with `false` and no env_key Codex sends no Authorization header and
-every request 401s).
+`OPENAI_API_KEY` field.
 
 Write: `model_provider = "any-converter"`, `model = <default>`,
 `[model_providers.any-converter]` (name, base_url `<gw>/v1`, wire_api "responses",
@@ -179,13 +177,12 @@ Dual-key: legacy `GOOGLE_API_KEY` handled like 3.1's `ANTHROPIC_API_KEY`.
 
 ### 3.4 Pi — `~/.pi/agent/settings.json` + `~/.pi/agent/models.json`
 
-Respect `PI_CODING_AGENT_DIR` with `~` expansion (magpie semantics).
+Respect `PI_CODING_AGENT_DIR` with `~` expansion.
 
 models.json: `providers.any-converter` block with full catalog (name, baseUrl
 `<gw>/v1`, apiKey, models map with name/reasoning/context/thinkingLevelMap per
 pi-ai schema). settings.json: `defaultProvider = "any-converter"`, `defaultModel`,
-and append our model refs to `enabledModels` when that list exists (magpie lesson:
-a default outside the enabled list never starts).
+and append our model refs to `enabledModels` when that list exists.
 
 Extraction: restore/remove the three settings keys; remove the provider block;
 strip `any-converter/` prefixed entries from `enabledModels` (delete the key when

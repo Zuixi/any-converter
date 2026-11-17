@@ -55,8 +55,7 @@ pub async fn handle_models(
             continue;
         };
         // Project discovery happens on the regular Code Assist host even for
-        // Antigravity, whose generation goes to the daily one (magpie
-        // `LoadBase`).
+        // Antigravity, whose generation goes to the daily one.
         let base = provider.code_assist_load_base();
         match state.accounts.list_models(account_id, &base).await {
             Ok(models) => {

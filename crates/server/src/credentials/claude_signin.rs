@@ -1,5 +1,5 @@
 //! Claude sign-in by delegating to Claude Code's own `claude auth login`
-//! (P15, magpie `internal/provider/claude_signin.go`).
+//!
 //!
 //! any-converter runs no OAuth of its own: it runs `claude auth login
 //! --claudeai` in a throwaway config directory and takes the link Claude
@@ -35,24 +35,22 @@ use tokio::task::JoinHandle;
 use super::gemini::SignInError;
 
 /// The environment variable the browser shim (the any-converter CLI run
-/// with a page URL) writes the page into; magpie's `MAGPIE_OPENED_URL`,
-/// named for this project.
+/// with a page URL) writes the page into.
 pub const CLAUDE_OPENED_URL_ENV: &str = "ANY_CONVERTER_OPENED_URL";
 
-/// What to say when no `claude` command line can be found (magpie's
-/// "install Claude Code first..." rewritten for any-converter).
+/// What to say when no `claude` command line can be found.
 pub const CLAUDE_INSTALL_HINT: &str = "install Claude Code first, the `claude` command line \
 (the Claude desktop app is not it): any-converter signs in to Claude through it; \
 see https://docs.anthropic.com/en/docs/claude-code/setup";
 
-/// How long `start` waits for a link before failing (magpie `linkWait`).
+/// How long `start` waits for a link before failing.
 const LINK_WAIT: Duration = Duration::from_secs(30);
 /// Once the CLI prints a link, how long the browser call may still take
-/// (magpie's 3-second grace after a printed link).
+///
 const LINK_GRACE: Duration = Duration::from_secs(3);
 /// How long `claude auth status --json` may take.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long `submit` gives the CLI's local callback server (magpie's 30s).
+/// How long `submit` gives the CLI's local callback server.
 const PASTE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Poll interval while `start` waits for the link.
 const POLL: Duration = Duration::from_millis(50);
@@ -60,8 +58,7 @@ const POLL: Duration = Duration::from_millis(50);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The environment entries a Claude Code running a sign-in must not
-/// inherit: anything pointing it at another config or browser (magpie
-/// `claudeSignInEnv` / `withoutClaudeWiring`).
+/// inherit: anything pointing it at another config or browser.
 const STRIPPED_ENV: &[&str] = &[
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_SECURESTORAGE_CONFIG_DIR",
@@ -71,13 +68,13 @@ const STRIPPED_ENV: &[&str] = &[
     CLAUDE_OPENED_URL_ENV,
 ];
 
-/// The `claude` command line a sign-in runs (magpie `claudeCLI`).
+/// The `claude` command line a sign-in runs.
 #[derive(Debug, Clone)]
 pub struct ClaudeCli {
     pub path: PathBuf,
 }
 
-/// Find `claude` on `PATH` (magpie `proc.FindTool("claude")`).
+/// Find `claude` on `PATH`.
 pub fn find_claude_cli(env: impl Fn(&str) -> Option<String>) -> Option<ClaudeCli> {
     let path = env("PATH")?;
     for dir in std::env::split_paths(&path) {
@@ -125,11 +122,11 @@ pub struct ClaudeStarted {
 }
 
 /// A fully signed-in Claude account, read back from what `claude auth
-/// login` kept (magpie `claudeLogin`).
+/// login` kept.
 #[derive(Debug, Clone)]
 pub struct ClaudeAccount {
     /// Display name: the email; a team/enterprise seat adds `" · <Org>"`
-    /// (magpie `claudeUser`).
+    ///
     pub user: String,
     /// The subscription plan (`pro`, `max`, `team`, `enterprise`, ...).
     pub plan: String,
@@ -162,8 +159,7 @@ struct Shared {
     printed: Mutex<Option<String>>,
 }
 
-/// One `claude auth login` running in a temp config dir (magpie
-/// `claudeCLISignIn`).
+/// One `claude auth login` running in a temp config dir.
 struct Running {
     /// The temp config dir (`.credentials.json` and friends live here);
     /// removed when the flow ends, whatever the outcome.
@@ -184,7 +180,7 @@ impl Drop for Running {
 }
 
 /// Drives one Claude sign-in by running Claude Code's own `claude auth
-/// login` (magpie `startClaudeSignIn` / `claudePaste` / `claudeSignedIn`).
+/// login`.
 ///
 /// Usage: `start()` → the user opens the URL → `submit(...)` with the
 /// page's code or the browser's final address → `wait(timeout)` collects
@@ -310,7 +306,7 @@ impl ClaudeSignIn {
 
             // (b) The CLI printed a link: give the browser call a short
             // grace (it may be on its way), then fall back to the printed
-            // link (magpie: the page + code flow).
+            // link.
             let printed = shared
                 .printed
                 .lock()
@@ -487,7 +483,7 @@ impl ClaudeSignIn {
 
     /// Paste what Claude's page left: the code it shows (typed into the
     /// CLI's stdin as `code#state`), or the address the browser ended on,
-    /// handed to the CLI's local callback server (magpie `claudePaste`).
+    /// handed to the CLI's local callback server.
     pub async fn submit(&self, input: &str) -> Result<(), SignInError> {
         let shared = self
             .running
@@ -599,7 +595,7 @@ impl ClaudeSignIn {
 }
 
 /// The account `claude auth login` signed in to in config directory `dir`,
-/// as kept here (magpie `claudeSignedIn`): the sign-in Claude Code kept,
+/// as kept here: the sign-in Claude Code kept,
 /// and who it says that is.
 async fn collect_account(
     cli: &ClaudeCli,
@@ -615,7 +611,7 @@ async fn collect_account(
     let profile = read_profile(&running.dir);
 
     // The profile (`oauthAccount`) wins; `claude auth status` fills what
-    // it lacks (magpie `claudeSignedIn`).
+    // it lacks.
     let mut email = profile.email_address.unwrap_or_default();
     if email.trim().is_empty() {
         email = status.email;
@@ -648,8 +644,8 @@ async fn collect_account(
 }
 
 /// The environment for a sign-in's Claude Code: the process environment
-/// minus the wiring that would point it elsewhere, plus `CLAUDE_CONFIG_DIR`
-/// (magpie `claudeSignInEnv`). Blank values count as unset.
+/// minus the wiring that would point it elsewhere, plus `CLAUDE_CONFIG_DIR`.
+/// Blank values count as unset.
 fn clean_claude_env() -> Vec<(String, String)> {
     std::env::vars()
         .filter(|(key, _)| !STRIPPED_ENV.contains(&key.as_str()))
@@ -665,7 +661,7 @@ fn set_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
 /// Spawn `claude auth login --claudeai` in `dir` (its working directory
 /// and `CLAUDE_CONFIG_DIR`), with `browser` as its browser and `opened` as
 /// the file the browser shim writes the page into; stderr is read into the
-/// same line scanner as stdout (magpie `cmd.Stderr = cmd.Stdout`).
+/// same line scanner as stdout.
 fn spawn_login(
     cli: &ClaudeCli,
     dir: &Path,
@@ -737,7 +733,7 @@ fn spawn_line_reader(
 }
 
 /// Take one printed line in: the link it may carry, and the last non-empty
-/// line (magpie's tail / `lastSaid`, the prompt prefix stripped).
+/// line.
 fn observe(shared: &Shared, line: &str) {
     let line = strip_ansi(line);
     if let Some(url) = find_https_url(&line) {
@@ -779,7 +775,7 @@ async fn drain_readers(readers: &mut Vec<JoinHandle<()>>) {
     }
 }
 
-/// The first `https://\S+` of a line (magpie `cursorLoginURL`).
+/// The first `https://\S+` of a line.
 fn find_https_url(line: &str) -> Option<String> {
     let start = line.find("https://")?;
     let rest = &line[start..];
@@ -791,7 +787,7 @@ fn find_https_url(line: &str) -> Option<String> {
 
 /// The loopback callback port a Claude sign-in page sends the browser back
 /// to, from the link's `redirect_uri`; `None` when it sends it elsewhere
-/// or names no port (magpie `claudeCallbackPort`).
+/// or names no port.
 fn callback_port(link: &str) -> Option<u16> {
     let url = reqwest::Url::parse(link).ok()?;
     let redirect = url.query_pairs().find(|(key, _)| key == "redirect_uri")?.1;
@@ -811,7 +807,7 @@ fn is_loopback(host: &str) -> bool {
 
 /// Name a Claude account: its email, and for a seat on a Team or
 /// Enterprise the organization too, so it reads apart from a personal
-/// subscription of the same email (magpie `claudeUser`).
+/// subscription of the same email.
 fn claude_user(email: &str, plan: &str, org: &str) -> String {
     if email.is_empty() || (plan != "team" && plan != "enterprise") {
         return email.to_string();
@@ -835,7 +831,7 @@ fn plan_label(plan: &str) -> String {
 }
 
 /// ANSI escape sequences out of a line, so colors never cut a URL in two
-/// (magpie strips them before looking at the line).
+///
 fn strip_ansi(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars();
@@ -869,8 +865,7 @@ fn strip_ansi(line: &str) -> String {
     out
 }
 
-/// `<root>/claude-signin-<pid>-<n>`, created `0700` (magpie MkdirTemp
-/// under `claudeDirsRoot`, the root itself made as needed).
+/// `<root>/claude-signin-<pid>-<n>`, created `0700`.
 fn sign_in_dir(root: &Path) -> std::io::Result<PathBuf> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     std::fs::create_dir_all(root)?;
@@ -922,9 +917,8 @@ fn read_credentials(dir: &Path) -> Option<ClaudeOAuth> {
     Some(oauth)
 }
 
-/// `claude auth status --json` in the sign-in's config dir, 15s timeout
-/// (magpie `claudeSignedIn`'s probe); a failure answers nothing, the
-/// profile still can.
+/// `claude auth status --json` in the sign-in's config dir, 15s timeout;
+/// a failure answers nothing, the profile still can.
 async fn auth_status(cli: &ClaudeCli, dir: &Path, extra_env: &[(String, String)]) -> ClaudeStatus {
     let mut env = clean_claude_env();
     env.extend(extra_env.iter().cloned());
@@ -955,7 +949,7 @@ fn read_profile(dir: &Path) -> ClaudeProfileAccount {
     profile.oauth_account.unwrap_or_default()
 }
 
-/// `~/.claude/.credentials.json` (magpie `claudeCredentials`), as the
+/// `~/.claude/.credentials.json`, as the
 /// sign-in dir keeps it.
 #[derive(serde::Deserialize)]
 struct ClaudeCredentials {

@@ -329,7 +329,7 @@ fn reasoning_item(text: String, claude_signature: Option<Signature>) -> Value {
 }
 
 /// A block an upstream sealed whole: no summary, the block itself in
-/// `encrypted_content` (magpie `renderResponses`' `sealedBy(sealAnthropic)`).
+/// `encrypted_content`.
 fn sealed_reasoning_item(raw: &Value) -> Value {
     serde_json::json!({
         "type": ITEM_TYPE_REASONING,
@@ -344,19 +344,18 @@ fn sealed_reasoning_item(raw: &Value) -> Value {
 // Claude signs each thinking block and seals a redacted_thinking block whole,
 // and Anthropic wants both back as they came. A Responses client with store
 // off keeps only what a reply's reasoning items carry, and of those only
-// `encrypted_content` is opaque, so the block rides there (magpie
-// internal/claudeseal, internal/gateway/claude_seal.go).
+// `encrypted_content` is opaque, so the block rides there.
 //
-// Deviation from magpie: magpie seals only when the request asked for
-// `include: ["reasoning.encrypted_content"]` (`asksSealing`);
-// `convert_response` never sees the request here, so we always seal.
+// Unlike an upstream that seals only when the request asked for
+// `include: ["reasoning.encrypted_content"]`, `convert_response` never sees
+// the request here, so we always seal.
 
 /// Begins the `encrypted_content` of a reasoning item carrying Claude's block.
-/// Same mark as magpie, so a session survives a gateway switch.
-const CLAUDE_SEAL_MARK: &str = "magpie-claude1:";
+/// A stable mark, so a sealed session survives a gateway switch.
+const CLAUDE_SEAL_MARK: &str = "ac-claude1:";
 
 /// `encrypted_content` for Claude's thinking block with its signature. The
-/// field order is Anthropic's, as magpie marshals it (`claudeThinking`).
+/// field order is Anthropic's.
 pub(super) fn seal_thinking(text: &str, signature: &str) -> String {
     let block = format!(
         r#"{{"type":"thinking","thinking":{},"signature":{}}}"#,
@@ -375,15 +374,15 @@ fn seal(block: &[u8]) -> String {
     format!("{CLAUDE_SEAL_MARK}{}", base64_encode(block))
 }
 
-/// The block an `encrypted_content` carries, for one magpie sealed: `None`
-/// when it is not ours or can't be read (magpie `claudeseal.Open`).
+/// The block an `encrypted_content` carries when it is one of ours: `None`
+/// when it is not ours or can't be read.
 pub(super) fn open_seal(encrypted: &str) -> Option<Value> {
     let b64 = encrypted.strip_prefix(CLAUDE_SEAL_MARK)?;
     serde_json::from_slice(&base64_decode(b64)?).ok()
 }
 
-/// Whether `encrypted_content` is one magpie sealed, readable or not
-/// (magpie `claudeseal.Is`).
+/// Whether `encrypted_content` is one of our sealed blocks, readable or not
+///
 pub(super) fn is_sealed(encrypted: &str) -> bool {
     encrypted.starts_with(CLAUDE_SEAL_MARK)
 }

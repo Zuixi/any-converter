@@ -1,6 +1,6 @@
 //! Request IR: one call to a model, whichever API it arrived in.
 //!
-//! Ported from magpie's `internal/gateway/ir.go` — see
+//! Ported from the original gateway's IR — see
 //! `docs/design/ir-hub-conversion.md` for field-by-field provenance.
 //! Readers (`formats/<fmt>/read.rs`) turn wire types into these; builders
 //! (`formats/<fmt>/build.rs`) turn them back into one format's wire type.
@@ -9,7 +9,7 @@
 //! * a `ToolCall` part's `id` matches the `call_id` of the `ToolResult`
 //!   that answers it (pairing/repair is the *target* format's builder job);
 //! * `Sealed` and `Thinking.signature` cross the hub untouched: only the
-//!   sealing API's builder may write them back out (magpie `Part.Sealed`).
+//!   sealing API's builder may write them back out.
 
 use serde_json::Value;
 
@@ -28,7 +28,7 @@ pub enum Role {
     Assistant,
 }
 
-/// One block of a message (magpie `Part`).
+/// One block of a message.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrPart {
     Text {
@@ -49,8 +49,7 @@ pub enum IrPart {
         name: String,
         args: Value,
         /// Gemini signs the first call of each step it thinks through and
-        /// refuses the next request without it (magpie gemini_signature.go,
-        /// #687): only Gemini's builder replays it
+        /// refuses the next request without it: only Gemini's builder replays it
         signature: Option<Signature>,
     },
     /// The output that answers a `ToolCall`; `content` holds text and images.
@@ -79,7 +78,7 @@ pub struct Signature {
     pub value: String,
 }
 
-/// A function the model may call (magpie `Tool`).
+/// A function the model may call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrTool {
     pub name: String,

@@ -5,7 +5,7 @@
 //
 // The server spawns plugin hosts through this binary (plugins/host.rs
 // `default_launch` reads ANY_CONVERTER_NODE, which the desktop app points
-// at the bundled copy) — the same job magpie gives its bundled Bun.
+// at the bundled copy).
 //
 // Usage:  node scripts/fetch-node.mjs [version]   (default: the LTS below)
 // Run it before `pnpm tauri build`; CI does the same.

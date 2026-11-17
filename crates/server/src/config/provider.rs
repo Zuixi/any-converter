@@ -15,7 +15,7 @@ use super::upstream_api::{UpstreamApi, WireCompat, copilot_api};
 /// base URL/API key, and its model list selects the wire protocol per model.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PluginRef {
-    /// npm spec or path, e.g. "@magpie-community/opencode-cursor-auth".
+    /// npm spec or path, e.g. "@scope/pkg@1.2.3".
     pub spec: String,
     /// Directory the spec resolves from ("" = process cwd).
     #[serde(default)]
@@ -76,7 +76,7 @@ pub struct ProviderConfig {
     pub plugin: Option<PluginRef>,
     /// Egress proxy for this provider's account traffic (sign-in, refresh,
     /// revocation). Wins over [`ServerSettings::proxy`]; `None` falls back
-    /// to the server-level proxy (P10, magpie `ProxyOfLogin`).
+    /// to the server-level proxy.
     #[serde(default)]
     pub proxy: Option<String>,
 }
@@ -217,8 +217,7 @@ impl ProviderConfig {
 
     /// Resolve the API for a specific upstream model.
     ///
-    /// Copilot accounts dispatch per model (P7, magpie `copilotAPI` via
-    /// [`copilot_api`]); every other provider speaks [`Self::effective_api`].
+    /// Copilot accounts dispatch per model; every other provider speaks [`Self::effective_api`].
     pub fn api_for(&self, model: &str) -> UpstreamApi {
         if self.is_copilot_account() {
             copilot_api(model)
@@ -244,8 +243,8 @@ impl ProviderConfig {
 
     /// The base Code Assist generation requests go to for this provider's
     /// accounts: the provider's own `base_url` when set, else the account
-    /// prefix's default — `antigravity:` accounts default to the daily host
-    /// (magpie `Base`), everything else to the regular host.
+    /// prefix's default — `antigravity:` accounts default to the daily host,
+    /// everything else to the regular host.
     pub fn code_assist_base(&self) -> String {
         if !self.base_url.trim().is_empty() {
             return self.base_url.clone();
@@ -261,11 +260,11 @@ impl ProviderConfig {
     }
 
     /// The base a Sign in with ChatGPT account's requests go to: OpenAI's
-    /// own API, where the token is good (`siwcAPI`, magpie chatgpt_api.go).
+    /// own API, where the token is good.
     ///
     /// Kept without the `/v1` the other providers' bases are written without:
     /// the request path already carries it (`/v1/responses`), so a base that
-    /// ends in `/v1` — magpie's own `siwcAPI` does — is trimmed here rather
+    /// ends in `/v1` is trimmed here rather
     /// than sending `/v1/v1/responses`.
     pub fn chatgpt_api_base(&self) -> String {
         let base = if self.base_url.trim().is_empty() {
@@ -279,8 +278,7 @@ impl ProviderConfig {
     /// The base `loadCodeAssist` project/flags discovery goes to for this
     /// provider's accounts: the provider's own `base_url` when set, else
     /// the regular Code Assist host — Antigravity accounts discover on the
-    /// regular host even though generation goes to the daily one (magpie
-    /// `LoadBase`).
+    /// regular host even though generation goes to the daily one.
     pub fn code_assist_load_base(&self) -> String {
         if !self.base_url.trim().is_empty() {
             return self.base_url.clone();
@@ -321,9 +319,8 @@ impl ProviderConfig {
 pub const GEMINI_CODE_ASSIST_BASE: &str = "https://cloudcode-pa.googleapis.com";
 
 /// Default Code Assist request base for Antigravity accounts: generation
-/// traffic is served on the `daily-` host (magpie `Base`), while
-/// `loadCodeAssist` discovery stays on the regular host (magpie
-/// `LoadBase`).
+/// traffic is served on the `daily-` host, while
+/// `loadCodeAssist` discovery stays on the regular host.
 pub const ANTIGRAVITY_CODE_ASSIST_BASE: &str = "https://daily-cloudcode-pa.googleapis.com";
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //! Pure-logic layer: no network access here. The refresh function is injected
 //! by the caller (T4/T5 will wire real endpoints).
 //!
-//! Lessons baked in from magpie:
+//! Three lessons baked into this layer:
 //! - Refresh 5 minutes early (token may be revoked server-side slightly
 //!   before local expiry).
 //! - Single-flight refresh: with refresh-token rotation, concurrent refreshes
@@ -71,8 +71,7 @@ pub struct OAuthTokens {
     pub expires_at: Option<Instant>,
 }
 
-/// 401 semantics classification (magpie `signin_revoked.go` /
-/// `codex_expired.go`).
+/// 401 semantics classification.
 ///
 /// Only `token_revoked` / `invalid_grant` / `refresh_token_reused` mean the
 /// credential is revoked. `token_expired` just means expired. Anything else is
@@ -447,8 +446,7 @@ mod tests {
         assert_eq!(classify_401("invalid_grant"), AuthErr401::Revoked);
         assert_eq!(classify_401("refresh_token_reused"), AuthErr401::Revoked);
         assert_eq!(classify_401("token_expired"), AuthErr401::Expired);
-        // Substring matching is the documented contract (magpie matches
-        // these markers inside larger JSON error bodies); a marker with a
+        // Substring matching is the documented contract; a marker with a
         // suffix is still matched, which is intended.
         assert_eq!(classify_401("token_revokedx"), AuthErr401::Revoked);
         assert_eq!(classify_401("unauthorized"), AuthErr401::Unknown);

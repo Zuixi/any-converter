@@ -376,7 +376,7 @@ fn read_reasoning_item(item: &mut Map<String, Value>) -> IrPart {
         // One of ours that can't be read keeps its summary, as it did before
         // a block rode in encrypted_content; a real Responses one is no other
         // API's to read, so it is carried byte-for-byte and only this format's
-        // builder writes it back (magpie `Part.Sealed`, `sealResponses`).
+        // builder writes it back.
         if !is_sealed(encrypted) {
             return IrPart::Sealed {
                 by: Format::OpenAIResponses,
@@ -390,10 +390,10 @@ fn read_reasoning_item(item: &mut Map<String, Value>) -> IrPart {
     }
 }
 
-/// The reasoning a block magpie sealed stands for: Claude's thinking, signed
+/// The reasoning a sealed block stands for: Claude's thinking, signed
 /// (to come back signed on the next turn of a tool loop), or its
 /// redacted_thinking whole; `None` for one we can't read, which leaves the
-/// item's own summary as its reasoning (magpie `claudePart`).
+/// item's own summary as its reasoning.
 fn claude_sealed_part(encrypted: &str) -> Option<IrPart> {
     let block = open_seal(encrypted)?;
     let text = |key: &str| {
@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn seal_opens_back_to_the_same_thinking() {
         let sealed = seal_thinking("deep thought \"quoted\"", "sig_abc");
-        assert!(sealed.starts_with("magpie-claude1:"));
+        assert!(sealed.starts_with("ac-claude1:"));
         assert_eq!(
             open_seal(&sealed),
             Some(serde_json::json!({
@@ -1092,7 +1092,7 @@ mod tests {
             raw: item,
         }])))
         .expect("serializes");
-        assert!(!wire.contains("magpie-claude1:"), "{wire}");
+        assert!(!wire.contains("ac-claude1:"), "{wire}");
         assert!(!wire.contains("encrypted_content"), "{wire}");
     }
 
@@ -1101,7 +1101,7 @@ mod tests {
         let ir = read(request(
             r#"{"model":"claude-sonnet-4","input":[{"type":"reasoning",
                 "summary":[{"type":"summary_text","text":"deep"}],
-                "encrypted_content":"magpie-claude1:not base64!"}]}"#,
+                "encrypted_content":"ac-claude1:not base64!"}]}"#,
         ));
         assert_eq!(
             ir.messages[0].parts,

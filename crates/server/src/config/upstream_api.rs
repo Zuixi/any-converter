@@ -1,12 +1,11 @@
-//! The API an upstream speaks — magpie's `Protocol` — and the legacy name a
-//! provider's configuration may still use for it.
+//! The API an upstream speaks, and the legacy name a provider's
+//! configuration may still use for it.
 
 use any_converter_core::convert::Format;
 use serde::{Deserialize, Serialize};
 
-/// The API an upstream speaks. Mirrors magpie's `Protocol` minus Copilot
-/// (which is an auth flavor returning Chat or Responses per model, not a
-/// protocol of its own: internal/provider/plugins.go copilotAPI).
+/// The API an upstream speaks. Copilot is not a protocol of its own: it is
+/// an auth flavor returning Chat or Responses per model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UpstreamApi {
     #[serde(rename = "chat")]
@@ -27,8 +26,7 @@ pub enum UpstreamApi {
 
 impl UpstreamApi {
     /// The client-format the wire is shaped as. [`Self::Copilot`] is not
-    /// reachable here (documented as OpenAIChat, mirroring magpie's
-    /// `copilotAPI` fallthrough).
+    /// reachable here.
     pub fn to_format(self) -> Format {
         match self {
             UpstreamApi::Chat | UpstreamApi::Copilot => Format::OpenAIChat,
@@ -38,7 +36,7 @@ impl UpstreamApi {
         }
     }
 
-    /// The path appended to the base (magpie `pathOf`, gateway.go:7520).
+    /// The path appended to the base.
     /// The `model` is only used by [`Self::Gemini`], whose path carries it.
     pub fn path(self, model: &str, streaming: bool) -> String {
         match self {
@@ -68,7 +66,7 @@ impl UpstreamApi {
     }
 
     /// The wire a plugin model is spoken to with, by its AI SDK package
-    /// (magpie pluginProtocol, internal/provider/plugins.go:200).
+    ///
     pub fn from_npm(npm: &str) -> UpstreamApi {
         match npm {
             "@ai-sdk/anthropic" | "@ai-sdk/google-vertex/anthropic" => UpstreamApi::Claude,
@@ -82,12 +80,12 @@ impl UpstreamApi {
     }
 }
 
-/// The wire a Copilot model is served on (magpie `copilotAPI`): gpt-5 and
+/// The wire a Copilot model is served on: gpt-5 and
 /// up — except `gpt-5-mini` — answer `/responses`; everything else
 /// (`claude-*`, earlier gpts) answers `/chat/completions`.
 ///
-/// Parsed by hand instead of adding a regex dependency: magpie's `^gpt-(\d+)`
-/// is `strip_prefix("gpt-")` followed by the leading digit run.
+/// Parsed by hand instead of adding a regex dependency: `strip_prefix("gpt-")`
+/// followed by the leading digit run.
 pub fn copilot_api(model: &str) -> UpstreamApi {
     let Some(rest) = model.strip_prefix("gpt-") else {
         return UpstreamApi::Chat;

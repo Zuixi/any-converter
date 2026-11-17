@@ -195,7 +195,7 @@ enum AccountsCommand {
         /// Provider name, or an account prefix like `gemini`
         provider: String,
         /// Account ids in the desired order; they move to the front, in
-        /// this order (magpie "Make first"). Does not write config.toml.
+        /// this order. Does not write config.toml.
         account_ids: Vec<String>,
         /// Path to config.toml (defaults to ./config.toml)
         #[arg(long)]
@@ -241,7 +241,7 @@ enum AccountsCommand {
 enum PluginCommand {
     /// Install a plugin package into any-converter's plugin directory
     Install {
-        /// npm package spec, e.g. @magpie-community/opencode-cursor-auth
+        /// npm package spec, e.g. @scope/pkg@1.2.3
         spec: String,
     },
     /// List installed plugins and the providers/methods they serve
@@ -299,8 +299,7 @@ enum AgentsCommand {
 
 /// Claude Code runs this executable as its browser (`BROWSER=<exe>`): the
 /// page it asks to open is written `0600` into the file
-/// `ANY_CONVERTER_OPENED_URL` names, and nothing else runs (magpie
-/// TookOpenedURL). `main` checks this before parsing any command-line
+/// `ANY_CONVERTER_OPENED_URL` names, and nothing else runs. `main` checks this before parsing any command-line
 /// arguments and returns straight away.
 pub fn took_opened_url(args: &[String], env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let file = match env(CLAUDE_OPENED_URL_ENV) {
@@ -645,8 +644,7 @@ async fn accounts_add(
                 GoogleApp::Gemini
             };
             // Google suspends Antigravity accounts used outside
-            // Antigravity: warn before the flow starts (magpie
-            // `AntigravityRisk`).
+            // Antigravity: warn before the flow starts.
             if matches!(app, GoogleApp::Antigravity) {
                 println!("{ANTIGRAVITY_RISK}");
             }
@@ -722,7 +720,7 @@ async fn accounts_add(
             println!("  {}", started.user_code);
             println!("Waiting up to 600s for the device flow to complete...");
             let account = sign_in.wait(&started, DEFAULT_SIGN_IN_TIMEOUT).await?;
-            // Named by its GitHub login (magpie CopilotAccountName), not by
+            // Named by its GitHub login, not by
             // the masked device code, which changes every sign-in.
             let account_id = account.account_id();
             store.put(
@@ -807,8 +805,7 @@ async fn accounts_add(
             println!("  account = \"{account_id}\"");
         }
         "claude" => {
-            // Claude Code's own sign-in, run by the `claude` CLI (magpie
-            // claude_signin.go); a machine without it gets the install hint.
+            // Claude Code's own sign-in, run by the `claude` CLI; a machine without it gets the install hint.
             let cli = find_claude_cli(|key| std::env::var(key).ok())
                 .ok_or_else(|| CLAUDE_INSTALL_HINT.to_string())?;
             let sign_in = ClaudeSignIn::new(cli);
@@ -1544,8 +1541,7 @@ fn accounts_remove(account_id: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// `accounts order`: validate that the given account ids all belong to the
-/// provider and preview the order they produce (magpie "Make first": the
-/// named ids move to the front in the given order, the rest keep theirs).
+/// provider and preview the order they produce.
 ///
 /// This command is read-only on purpose: config.toml is the user's file,
 /// and writing it back belongs to the P10 config editor.

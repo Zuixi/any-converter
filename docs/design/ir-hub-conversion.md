@@ -1,21 +1,20 @@
-# IR Hub 转换架构（对标 magpie）
+# IR Hub 转换架构
 
 状态：提案（未实施）
 日期：2026-11-02
-对标参照：magpie `internal/gateway/ir.go` 及其 reader/builder（`anthropic.go`、`chat.go`、`responses.go`）
 
 ## 1. 目标与非目标
 
 **目标**
 
 - 把 `converters/` 下 12 对两两直转（约 5500 行）折叠为 4 reader + 4 builder 的 IR hub
-- 移植 magpie 经大规模实践验证的三层结构：wire 解析 → 中间表示（IR）→ wire 构造
+- 采用经大规模实践验证的三层结构：wire 解析 → 中间表示（IR）→ wire 构造
 - 对外 API（`FormatConverter` trait、`get_converter`、server/web-bridge）零改动
 - 行为保持：现有 converter_matrix / roundtrip / property / fuzz 测试全绿
 
 **非目标**
 
-- 不移植 magpie 的 agent-bridge 概念（Claude 订阅桥、branch 会话、leanPrompt、envElsewhere、remoteCaller）——any-converter 是纯协议网关，不驱动 agent 二进制
+- 不引入 agent-bridge 概念（Claude 订阅桥、branch 会话、leanPrompt、envElsewhere、remoteCaller）——any-converter 是纯协议网关，不驱动 agent 二进制
 - 不移植 prompt-cache TTL 管理（`clientCache`/`hourMarks`）——`cache_control` 作为透传字段处理（见 §6）
 - 不新增 IR 能力以满足"将来可能"的需求：IR 只建模现有 12 对实际传递的内容
 
@@ -65,15 +64,15 @@ pub struct Signature { pub by: SealApi, pub value: String }
 pub enum SealApi { Anthropic, Responses, Gemini }   // 谁签的名，决定回给谁
 ```
 
-### 从 magpie ir.go 移植的关键语义（每条都有实战出处）
+### 关键语义（每条都有实战出处）
 
-| magpie 符号 | 移植为 | 出处/理由 |
+| 符号 | 移植为 | 出处/理由 |
 |---|---|---|
 | `Part.Sealed/SealedBy` | `IrPart::Sealed` | Anthropic `redacted_thinking`、Responses `encrypted_content`：**只有签发它的 API 的 builder 能原样写回**，其它格式视为无文本的 reasoning。字节级保留，禁止解释 |
 | `Part.Signature/SignedBy` | `Thinking.signature` | Claude thinking 签名跨轮回放，丢签名下一轮被拒 |
-| `joinSplitCalls`（ir.go:130） | claude builder 内 | Anthropic 上游把连续 assistant 消息当一个 turn；agent 拆开发的并行 tool_use 必须并回（magpie #1275） |
+| `joinSplitCalls`（ir.go:130） | claude builder 内 | Anthropic 上游把连续 assistant 消息当一个 turn；agent 拆开发的并行 tool_use 必须并回（issue #1275） |
 | `pairToolMessages`（chat.go:637） | openai_chat builder 内 | OpenAI 要求 tool 消息紧跟 tool_calls 并按 id 配对；孤儿/失序在 builder 修补 |
-| `thinkingOffUnlessAsked` | resp/chat reader + builder 约定 | 部分厂商 Anthropic 端点默认开思考，不显式关就白烧 token（magpie 经验） |
+| `thinkingOffUnlessAsked` | resp/chat reader + builder 约定 | 部分厂商 Anthropic 端点默认开思考，不显式关就白烧 token（实战经验） |
 | `Usage`（cache_read/write、reasoning） | 扩展现有 `ir::Usage` | 现有 Usage 缺 cache 字段，补齐 |
 
 ### 明确不移植
@@ -103,7 +102,7 @@ pub fn get_converter(from: Format, to: Format) -> Option<&'static dyn FormatConv
 
 ## 5. 流式事件补齐（`ir/stream.rs`）
 
-`CanonicalStreamEvent` 已是 hub，但对照 magpie `EventKind`（ir.go:353）缺三个事件，都是签名回放的流式半边：
+`CanonicalStreamEvent` 已是 hub，但对齐完整的流式事件集，还缺三个事件，都是签名回放的流式半边：
 
 ```rust
 pub enum CanonicalStreamEvent {
@@ -125,7 +124,7 @@ pub struct NamespacedExtra(Map<String, Value>);   // 键: "<seal_api>::<field>"
 - reader 把 IR 不建模的字段按 `厂商::字段名` 入袋（如 `anthropic::metadata`）
 - builder 只取**同厂商前缀**的条目；异厂商条目丢弃并 `tracing::debug!` 记录
 - 例外白名单显式列出（预计只有 `stream_options`、`user` 这类无语义冲突的通用字段）
-- `cache_control`（Claude prompt cache 标记）：随 part 走还是入袋，在实现 reader 前用 fixtures 验证——现有 12 对若透传它，则给 `IrPart` 加 `cache: Option<&'static str>`（magpie 的 `cache string` 字段）
+- `cache_control`（Claude prompt cache 标记）：随 part 走还是入袋，在实现 reader 前用 fixtures 验证——现有 12 对若透传它，则给 `IrPart` 加 `cache: Option<&'static str>`（对应 `cache string` 字段）
 
 ## 7. 迁移计划（绞杀者，一次一对）
 
@@ -155,6 +154,6 @@ pub struct NamespacedExtra(Map<String, Value>);   // 键: "<seal_api>::<field>"
 |---|---|
 | 行为漂移（12 对里的隐含 bug 被当成规范） | P0 golden + §7 triage 规则 |
 | IR 表达力不足 → 字段静默丢失 | `extra` 袋 + roundtrip/property 测试 + 丢弃时 debug 日志 |
-| IR 腐烂成厂商旗标堆 | 每个进 IR 的 vendor 字段必须带注释注明属于哪条边（magpie ir.go 的 `clientCache` 等先例：这不可避免，但要留痕） |
+| IR 腐烂成厂商旗标堆 | 每个进 IR 的 vendor 字段必须带注释注明属于哪条边（`clientCache` 等先例：这不可避免，但要留痕） |
 | 错误信息退化（不知哪层错） | IR 携带 `provenance: Format`；错误信息格式 `"<from>→IR→<to>: <阶段>失败"` |
 | 性能回归 | bench 门槛 + §8.5 红线 |

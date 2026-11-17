@@ -1,6 +1,6 @@
 //! Sign in with ChatGPT: a ChatGPT plan used through OpenAI's own API.
 //!
-//! Ported from magpie's `internal/provider/chatgpt_api.go`. OpenAI's page
+//! OpenAI's page
 //! registers the app as it signs in (`dynamic_agent_client`, no secret), so
 //! the browser comes back with the client id it issued beside the code; the
 //! code, every refresh and the sign-out all go with that id. `ext_agent_host_id`
@@ -17,7 +17,7 @@ use super::gemini::{
 };
 use super::siwc_store;
 
-/// What a token answer carries (magpie `siwcTokenReply`).
+/// What a token answer carries.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SiwcTokens {
     pub access: String,
@@ -27,7 +27,7 @@ pub struct SiwcTokens {
     pub scope: String,
 }
 
-/// A token endpoint's refusal, with its OAuth code (magpie `siwcTokenError`).
+/// A token endpoint's refusal, with its OAuth code.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SiwcTokenError {
     pub status: u16,
@@ -72,8 +72,7 @@ impl std::fmt::Display for SiwcError {
     }
 }
 
-/// The refusals of a refresh token that will never work again (magpie
-/// `siwcDead`).
+/// The refusals of a refresh token that will never work again.
 const SIWC_DEAD: &[&str] = &[
     "invalid_grant",
     "invalid_refresh_token",
@@ -84,7 +83,7 @@ const SIWC_DEAD: &[&str] = &[
 ];
 
 /// Endpoints and the app's constants; a struct so tests can point them at a
-/// local server (magpie's `siwc*` vars).
+/// local server.
 #[derive(Debug, Clone)]
 pub struct SiwcEndpoints {
     pub issuer: String,
@@ -108,11 +107,11 @@ impl Default for SiwcEndpoints {
     }
 }
 
-/// The app registers itself on the first sign-in (magpie `siwcDynamicClient`).
+/// The app registers itself on the first sign-in.
 pub const SIWC_DYNAMIC_CLIENT: &str = "dynamic_agent_client";
 /// The scope that lets the token be used against api.openai.com itself.
 pub const SIWC_DIRECT_SCOPE: &str = "chatgpt.tokens.use.direct";
-/// What the sign-in asks for (magpie `siwcScopes`).
+/// What the sign-in asks for.
 pub const SIWC_SCOPES: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 /// How long before it expires a token is refreshed.
@@ -121,8 +120,7 @@ pub const SIWC_MARGIN: Duration = Duration::from_secs(180);
 pub const SIWC_USAGE_URL: &str = "https://chatgpt.com/settings/usage";
 
 /// The callback the browser is sent back to first; another port when that
-/// one is busy (only the port of a loopback address may vary, magpie
-/// `siwcCallbackAddr`).
+/// one is busy.
 pub const SIWC_CALLBACK_PORT: u16 = 1455;
 
 /// A sign-in in flight: what the browser needs and what finishing needs.
@@ -346,7 +344,7 @@ impl SiwcSignIn {
     }
 
     /// The port the callback listens on: 1455 when it can be had, else a
-    /// free one (magpie `listenSIWCCallback`). The boolean says whether the
+    /// free one. The boolean says whether the
     /// port still has to be bound by the caller's listener, which every
     /// caller here does — so it is always true: the page may not reach this
     /// machine and the pasted address finishes the flow instead.
@@ -432,7 +430,7 @@ impl SiwcSignIn {
         self.finish(&code, &client_id, started).await
     }
 
-    /// POST the token endpoint and read its answer (magpie `siwcPostToken`).
+    /// POST the token endpoint and read its answer.
     async fn post_token(&self, form: &str) -> Result<SiwcTokens, SignInError> {
         let reply = self
             .http
@@ -470,7 +468,7 @@ impl SiwcSignIn {
         Ok(account)
     }
 
-    /// Renew a stored sign-in (magpie `siwcFresh`), given what is stored.
+    /// Renew a stored sign-in, given what is stored.
     ///
     /// `Ok(None)` means the token in hand still does: the endpoint was
     /// unreachable and the token has not expired yet, so the caller carries
@@ -532,7 +530,7 @@ impl SiwcSignIn {
     }
 
     /// Sign out: OpenAI revokes the refresh token at the endpoint it
-    /// publishes (magpie `siwcRevoke`). `None` when it publishes none.
+    /// publishes. `None` when it publishes none.
     pub async fn revoke(
         &self,
         account_id: &str,
@@ -591,7 +589,7 @@ impl SiwcSignIn {
     }
 
     /// The account's models: OpenAI's own list for its token
-    /// (magpie `siwcFetchModels`).
+    ///
     pub async fn models(&self, account_id: &str, access: &str) -> Result<Vec<String>, SiwcError> {
         let _ = account_id;
         let url = format!("{}/models", self.endpoints.api.trim_end_matches('/'));
@@ -621,7 +619,7 @@ impl SiwcSignIn {
     }
 }
 
-/// Parse a token endpoint's answer (magpie `siwcFromToken`'s checks).
+/// Parse a token endpoint's answer.
 fn parse_tokens(body: &str) -> Result<SiwcTokens, SignInError> {
     #[derive(serde::Deserialize)]
     struct Reply {
@@ -665,7 +663,7 @@ fn parse_tokens(body: &str) -> Result<SiwcTokens, SignInError> {
     })
 }
 
-/// A refused token answer, as the error says (magpie `siwcTokenError`).
+/// A refused token answer, as the error says.
 fn token_refusal(reply: &SiwcReply) -> SiwcTokenError {
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap_or_default();
     let mut code = String::new();
@@ -706,8 +704,7 @@ fn token_refusal(reply: &SiwcReply) -> SiwcTokenError {
     }
 }
 
-/// Which refresh refusals mean "sign in again" (magpie `siwcDead` and
-/// `invalid_client`).
+/// Which refresh refusals mean "sign in again".
 fn classify_refresh(refusal: &SiwcTokenError) -> SiwcError {
     if SIWC_DEAD.contains(&refusal.code.as_str()) {
         return SiwcError::SignInExpired;
@@ -726,8 +723,7 @@ fn classify_refresh(refusal: &SiwcTokenError) -> SiwcError {
     ))
 }
 
-/// The account a token answer describes (magpie `siwcSignedIn` +
-/// `siwcCheckID`).
+/// The account a token answer describes.
 fn account_from(
     tokens: &SiwcTokens,
     client_id: &str,
@@ -771,7 +767,7 @@ fn account_from(
 }
 
 /// The ID token must be this sign-in's, for this app, from OpenAI
-/// (magpie `siwcCheckID`: the signature is not checked, the claims are).
+///
 fn check_id_token(
     claims: &serde_json::Value,
     client_id: &str,
@@ -779,8 +775,7 @@ fn check_id_token(
     expected: &str,
 ) -> Result<(), SignInError> {
     // The issuer the endpoints name, not a constant: the endpoints are
-    // injectable, so the check must follow them (magpie compares against
-    // its `siwcIssuer` var for the same reason).
+    // injectable, so the check must follow them.
     let issuer = claim_string(claims, &["iss"]).unwrap_or_default();
     if issuer.trim_end_matches('/') != expected.trim_end_matches('/') {
         return Err(SignInError::Vendor(format!(
@@ -810,7 +805,7 @@ fn check_id_token(
     Ok(())
 }
 
-/// The plan, from the ID token or the access token (magpie `siwcPlan`).
+/// The plan, from the ID token or the access token.
 fn plan_of(id_claims: &serde_json::Value, access: &str) -> String {
     let from = |claims: &serde_json::Value| {
         claims
@@ -836,7 +831,7 @@ fn claim_string(claims: &serde_json::Value, keys: &[&str]) -> Option<String> {
     value.as_str().map(str::to_string)
 }
 
-/// Decode a JWT's payload without checking it (magpie `jwtClaims`).
+/// Decode a JWT's payload without checking it.
 pub fn jwt_claims(token: &str) -> Option<serde_json::Value> {
     let payload = token.split('.').nth(1)?;
     let bytes = base64url_decode(payload)?;

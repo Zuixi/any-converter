@@ -1,6 +1,6 @@
 // Minimal OpenCode-shaped plugin used by the `plugin-host.js` tests.
 //
-// It mirrors the real `@magpie-community/opencode-*` contract: the default
+// It mirrors the real OpenCode plugin contract: the default
 // export is an async factory that receives the injected OpenCode context and
 // returns `{ auth: { provider, methods, loader, models, fetch } }`. The host
 // is expected to drive it through `authorize` / `callback`; credentials are
@@ -50,11 +50,11 @@ export default async ({ client, directory, $ }) => {
           },
         },
       ],
-      // Loader (magpie `auth.loader`): the host calls it once per account
+      // Loader: the host calls it once per account
       // and caches the result. The counter exposes single-invocation to the
       // tests (`apiKey` stays `k-1` on a second `load`). For accounts whose
       // stored credential is a plain api key the apiKey is omitted so the
-      // host falls back to `stored.key` (magpie options()).
+      // host falls back to `stored.key`.
       loader: async (getAuth, info) => {
         globalThis.__loaderCalls = (globalThis.__loaderCalls ?? 0) + 1;
         void info; // provider metadata; the fixture does not need it

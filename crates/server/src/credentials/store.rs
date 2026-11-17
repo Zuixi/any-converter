@@ -2,7 +2,7 @@
 //!
 //! [`FileSecretStore`] persists credentials as a JSON map under the caller
 //! supplied path (e.g. `<config_dir>/secrets.json`) using the atomic write
-//! pattern proven in magpie's `writePrivate` (steady.WriteFile): serialize in
+//! pattern: serialize in
 //! full → write a `0600` temp file → rename over the target, keeping a
 //! `path.bak` copy of the previous contents for recovery when the main file
 //! is corrupted.

@@ -47,14 +47,14 @@ pub(crate) async fn classify_account_auth(
     let forbidden = status == StatusCode::FORBIDDEN;
     let already_retried = fo.retried();
     let has_next = fo.has_next();
-    // Refresh first, then judge — magpie's order ("a saved ChatGPT account
-    // is refreshed first, as Codex does on a 401, and a refresh that goes
-    // through marks nothing"). A 401 whose words say the sign-in is gone
+    // Refresh first, then judge: a saved ChatGPT account is refreshed
+    // first, as Codex does on a 401, and a refresh that goes through marks
+    // nothing. A 401 whose words say the sign-in is gone
     // still gets its one refresh: the words are the vendor's, the refresh is
     // ours to try, and only a refused refresh proves the sign-in dead.
     //
-    // A 403 is never a spent token — magpie marks nothing on one — so it
-    // takes no refresh and simply moves on.
+    // A 403 is never a spent token, so it takes no refresh and simply
+    // moves on.
     let body_says = classify_401(text);
     let mut refreshed = false;
     let mut refresh_refused: Option<String> = None;

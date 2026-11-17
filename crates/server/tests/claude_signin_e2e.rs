@@ -1,5 +1,5 @@
 //! End-to-end tests for the Claude sign-in (P15), which delegates to
-//! Claude Code's own `claude auth login` (magpie `claude_signin.go`).
+//! Claude Code's own `claude auth login`.
 //!
 //! Every test runs the fake CLI fixture
 //! (`tests/fixtures/fake-claude-cli.sh`) with an injected config root and

@@ -1,4 +1,4 @@
-//! Sign-out revocation (magpie `forgetSIWCLogin`, chatgpt_api.go:131).
+//! Sign-out revocation.
 //!
 //! Forgetting an account: read the stored token → ask the vendor to revoke
 //! the refresh token when it publishes a revocation endpoint → remove the
@@ -23,7 +23,7 @@ pub enum RevokeOutcome {
     /// The vendor publishes no revocation endpoint: nothing was sent.
     NotOffered,
     /// A revocation endpoint exists but the call failed; the account was
-    /// still removed locally (magpie `forgetSIWCLogin`).
+    /// still removed locally.
     Failed(String),
 }
 
@@ -42,7 +42,7 @@ fn revocation_endpoint(provider: &str) -> Option<&'static str> {
 
 /// Forget an account: ask the vendor to revoke the refresh token when it
 /// publishes a revocation endpoint, then remove it locally. A failed
-/// revocation never blocks the removal (magpie `forgetSIWCLogin`).
+/// revocation never blocks the removal.
 ///
 /// `proxy` is the account's egress proxy (provider.proxy > server.proxy),
 /// used for the revocation request the same way the account's own
@@ -54,11 +54,11 @@ pub async fn remove(
 ) -> Result<RevokeOutcome, String> {
     let provider = id.split(':').next().unwrap_or("");
 
-    // Read the token first, revoke, then delete — in that order (magpie).
+    // Read the token first, revoke, then delete — in that order.
     let credential = accounts.stored(id).map_err(|error| error.to_string())?;
 
     // A Sign in with ChatGPT account revokes at the endpoint OpenAI
-    // publishes in its OIDC metadata (magpie `siwcRevoke`), which is the
+    // publishes in its OIDC metadata, which is the
     // only place it is named.
     if provider == "chatgpt-api" {
         // Through the account's own exit, as every other request is: a

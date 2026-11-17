@@ -1,13 +1,12 @@
 //! Gemini CLI's model table and the experiment flags that pick from it
-//! (magpie `internal/provider/google.go`: `geminiModels`, `geminiFlags`,
-//! `flags`, `offered`).
+//!
 //!
 //! Code Assist decides which of these models an account is offered through
 //! four experiments; [`GeminiFlags`] records them, [`offered`] applies
 //! Gemini CLI's skip table, and [`flags_from_experiments`] parses the
 //! experiment list out of the `loadCodeAssist` reply.
 
-/// Gemini CLI's model table, in the CLI's order (magpie `geminiModels`).
+/// Gemini CLI's model table, in the CLI's order.
 pub const GEMINI_MODELS: &[(&str, &str)] = &[
     ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
     ("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
@@ -22,7 +21,7 @@ pub const GEMINI_MODELS: &[(&str, &str)] = &[
 ];
 
 /// The experiments Code Assist has the account in that decide which models
-/// Gemini CLI offers it (magpie `geminiFlags`).
+/// Gemini CLI offers it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct GeminiFlags {
     /// Gemini 3.1 Pro launched to the account.
@@ -41,7 +40,7 @@ pub const FLAG_PRO_NO_ACCESS: i64 = 45768879;
 pub const FLAG_LATEST_FLASH: i64 = 45842815;
 pub const FLAG_LATEST_FLASH_LITE: i64 = 45827489;
 
-/// The models those experiments offer the account (magpie `offered`):
+/// The models those experiments offer the account:
 /// previews only to an account with quota for one, 3.1 Pro in place of
 /// 3 Pro once launched to it, and one Flash and one Flash Lite — the
 /// latest where Google has rolled it out to the account.
@@ -70,8 +69,7 @@ pub fn offered(flags: GeminiFlags, preview: bool) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Parse Code Assist's experiment list into [`GeminiFlags`] (magpie
-/// `flags`). The `experiments` array is the one the `loadCodeAssist`
+/// Parse Code Assist's experiment list into [`GeminiFlags`]. The `experiments` array is the one the `loadCodeAssist`
 /// reply carries; its entries name the flag ids above, shaped like
 /// `listExperiments` flags (`flagId` + `boolValue`). Missing or unknown
 /// entries leave their flag off, as in the CLI.
@@ -301,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_flags_from_experiments_absent_bool_is_off() {
-        // magpie reads `BoolValue`; absent means off.
+        // The flag is read as a `BoolValue`; absent means off.
         let json = serde_json::json!({ "experiments": [{"flagId": 45842815}] });
         assert_eq!(flags_from_experiments(&json), GeminiFlags::default());
     }

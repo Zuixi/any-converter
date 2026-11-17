@@ -198,7 +198,7 @@ fn apply(conn: &rusqlite::Connection, version: i64) -> Result<(), rusqlite::Erro
         }
         // Failover visibility. `attempt` is the zero-based index of the try that
         // answered, so one row says "routing needed N+1 providers". `handed_on`
-        // reserves the shape for a row per abandoned try (magpie's `HandedOn`);
+        // reserves the shape for a row per abandoned try;
         // `error`/`err_type` describe that abandoned try and stay null on the
         // answering row.
         8 => {

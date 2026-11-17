@@ -36,9 +36,9 @@ function formatLatency(ms: number | null | undefined): string {
 }
 
 /**
- * The control tower, in magpie's page language: one quiet intro sentence,
- * chips for what needs attention, a single KPI card over the selected
- * range, and list cards for the rest.
+ * The control tower, in the app's page language: one quiet intro
+ * sentence, chips for what needs attention, a single KPI card over the
+ * selected range, and list cards for the rest.
  */
 export function DashboardPage() {
   const { t } = useI18n();

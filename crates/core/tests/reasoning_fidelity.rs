@@ -1,4 +1,4 @@
-//! End-to-end reasoning-fidelity proofs (magpie alignment):
+//! End-to-end reasoning-fidelity proofs:
 //! Claude's signed thinking survives a round trip through a Responses
 //! client (claudeseal, both directions, body and stream), Gemini's
 //! thoughtSignature stays Gemini's, and no vendor's signature leaks into
@@ -15,7 +15,7 @@ use serde_json::Value;
 
 fn open_seal(encrypted: &str) -> Value {
     let b64 = encrypted
-        .strip_prefix("magpie-claude1:")
+        .strip_prefix("ac-claude1:")
         .unwrap_or_else(|| panic!("not a seal: {encrypted}"));
     let raw = base64::engine::general_purpose::STANDARD
         .decode(b64)
@@ -216,5 +216,5 @@ fn claude_signature_drops_cleanly_to_chat() {
         "thinking text kept"
     );
     assert!(!json.contains("sig-abc123"), "signature leaked into chat");
-    assert!(!json.contains("magpie-claude1:"), "seal leaked into chat");
+    assert!(!json.contains("ac-claude1:"), "seal leaked into chat");
 }

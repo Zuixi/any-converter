@@ -12,8 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// What a ChatGPT API sign-in leaves besides the tokens
-/// (magpie `siwcCreds`, minus the tokens themselves).
+/// What a ChatGPT API sign-in leaves besides the tokens.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SiwcMeta {
     /// The client id OpenAI issued when the sign-in registered the app.
@@ -73,7 +72,7 @@ fn write(path: &Path, all: &BTreeMap<String, SiwcMeta>) -> Result<(), String> {
     crate::credentials::store::write_private(path, &json).map_err(|e| e.to_string())
 }
 
-/// This machine's id for OpenAI, made once and kept (magpie `siwcHostID`).
+/// This machine's id for OpenAI, made once and kept.
 ///
 /// The file is read when it holds a `urn:uuid:` id; anything else — a
 /// missing file, a half-written one — is replaced by a fresh one.

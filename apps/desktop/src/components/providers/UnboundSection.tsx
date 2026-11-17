@@ -9,11 +9,11 @@ import { Modal } from "./Modal";
 import { useProvidersStrings } from "./strings";
 
 /**
- * Zone 2: accounts stored but not bound to any provider. magpie has no
- * such state (its sign-ins are providers); ac keeps accounts standalone,
- * so they need a home between signing in and being routed — with a one
- * click attach that creates the provider the old page only told you to
- * go write into TOML.
+ * Zone 2: accounts stored but not bound to any provider. Other gateways
+ * tie a sign-in to a provider directly; ac keeps accounts standalone, so
+ * they need a home between signing in and being routed — with a one click
+ * attach that creates the provider the old page only told you to go write
+ * into TOML.
  */
 export function UnboundSection({
   unbound,

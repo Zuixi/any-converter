@@ -1,21 +1,20 @@
 //! Writing rotated tokens back to the `auth.json` a Codex sign-in lives in
 //! (P11b).
 //!
-//! Every write carries magpie's three protections (`codexStore.write`,
-//! `account.go`), in full:
+//! Every write carries three protections, in full:
 //!
 //! 1. **Never overwrite what could not be read.** A missing `auth.json` is
 //!    never created, and a file that exists but does not parse is refused
 //!    ("sign-ins that don't read are not written over") — a bad file is
 //!    never treated as an empty one and wiped.
 //! 2. **Last-good backup.** The pre-write bytes are copied to
-//!    `auth.json.bak` (magpie's lastgood generations), then the new
+//!    `auth.json.bak`, then the new
 //!    contents go through a `0600` temp file and a same-directory rename,
 //!    so a failure never leaves half a file.
 //! 3. **Cross-process lock.** The whole read-modify-write runs under a
-//!    [`crate::lockfile::FileLock`] at `auth.json.any-converter.lock`
-//!    (magpie's `logins.json.codex.lock`), because the server and the CLI
-//!    are separate processes: two processes refreshing the same sign-in
+//!    [`crate::lockfile::FileLock`] at `auth.json.any-converter.lock`,
+//!    because the server and the CLI are separate processes: two
+//!    processes refreshing the same sign-in
 //!    concurrently make the vendor answer `refresh_token_reused`, which
 //!    signs the user out of Codex.
 //!
@@ -83,9 +82,9 @@ pub fn codex_store(home: &Path) -> CodexStore {
         None | Some("file") => CodexStore::File(home.join("auth.json")),
         Some(store) => CodexStore::Refused(format!(
             "Codex is configured to keep this sign-in in `{store}` \
-             (cli_auth_credentials_store in {}), not in auth.json; magpie never \
-             writes keychains — set cli_auth_credentials_store = \"file\" in that \
-             file and sign in again in Codex, or leave the store alone",
+             (cli_auth_credentials_store in {}), not in auth.json; the gateway \
+             never writes keychains — set cli_auth_credentials_store = \"file\" \
+             in that file and sign in again in Codex, or leave the store alone",
             config.display()
         )),
     }
@@ -196,9 +195,8 @@ pub fn write_tokens_with_timeout(
     let out =
         serde_json::to_vec_pretty(&auth).map_err(|error| WriteBackError::Io(error.to_string()))?;
 
-    // Last-good backup: the bytes that were there before this write
-    // (magpie's lastgood generation), then the atomic 0600 temp +
-    // rename commit.
+    // Last-good backup: the bytes that were there before this write,
+    // then the atomic 0600 temp + rename commit.
     fs::copy(&auth_path, backup_path(&auth_path))
         .map_err(|error| WriteBackError::Io(error.to_string()))?;
     store::write_private(&auth_path, &out)
@@ -207,7 +205,7 @@ pub fn write_tokens_with_timeout(
 }
 
 /// The cross-process lock path: `auth.json.any-converter.lock`
-/// (magpie's `logins.json.codex.lock`).
+///
 fn lock_path(auth_path: &Path) -> PathBuf {
     let mut path = auth_path.as_os_str().to_owned();
     path.push(".any-converter.lock");

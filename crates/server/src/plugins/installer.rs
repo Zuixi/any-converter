@@ -1,11 +1,10 @@
 //! Installing and removing plugin packages into [`managed::plugins_dir`]
 //! with npm — the same flow the CLI's `plugin install` runs, so the GUI can
-//! subscribe to a plugin provider without shipping or invoking a CLI
-//! (magpie's add-sheet does the same through its own runtime).
+//! subscribe to a plugin provider without shipping or invoking a CLI.
 //!
 //! npm mutates `<plugins>/package.json` and `node_modules`, so every
 //! mutating command holds [`NPM_LOCK`]: two installs at once would corrupt
-//! the manifest the way magpie guards against with its own bun mutex.
+//! the manifest, so one lock guards every install.
 
 use std::path::Path;
 use std::time::Duration;
@@ -176,7 +175,6 @@ mod tests {
     fn test_valid_spec_accepts_npm_shapes_and_rejects_the_rest() {
         for spec in [
             "plugin-hello",
-            "@magpie-community/opencode-cursor-auth",
             "@scope/pkg@1.2.3",
             "pkg@latest",
             "./tests/fixtures/plugin-hello",

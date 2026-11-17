@@ -6,9 +6,9 @@ const compact = new Intl.NumberFormat(undefined, { notation: "compact" });
 const plain = new Intl.NumberFormat();
 
 /**
- * The magpie KPI strip: ONE card, four hairline-divided cells — a 20px
- * number, an 11px uppercase label, and a quiet sub-line each. Cells follow
- * magpie's usage page: tokens, cache read, reasoning, calls last.
+ * The KPI strip: ONE card, four hairline-divided cells — a 20px number,
+ * an 11px uppercase label, and a quiet sub-line each. Cells read tokens,
+ * cache read, reasoning, calls last.
  * Em-dash is the honest value for "no data": a stopped gateway shows
  * dashes, not zeros.
  */
@@ -81,8 +81,8 @@ export function StatsTiles({ stats }: { stats: DashboardStats }) {
 }
 
 /**
- * Daily calls over the window, magpie's bar chart: one flat-accent bar per
- * day, the y-max as a quiet label. Hidden when the window has no days with
+ * Daily calls over the window: one flat-accent bar per day, the y-max as
+ * a quiet label. Hidden when the window has no days with
  * traffic — an empty chart reads as broken, missing reads as calm.
  */
 export function TrendChart({ stats }: { stats: DashboardStats }) {

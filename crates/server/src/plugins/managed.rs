@@ -4,8 +4,7 @@
 //! One [`HostedPlugin`] subprocess per `{spec, target}` pair, spawned on
 //! first use and shared by every request; a dead process is restarted once
 //! when detected. The plugin's model list is cached per
-//! `{spec, target, account}` for 60 seconds (magpie keeps a similar
-//! short-lived cache) and invalidated on sign-in/sign-out.
+//! `{spec, target, account}` for 60 seconds and invalidated on sign-in/sign-out.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,7 +20,7 @@ use super::{
 };
 use crate::config::PluginRef;
 
-/// How long a plugin model list stays cached (magpie modelsTTL).
+/// How long a plugin model list stays cached.
 const MODELS_TTL: Duration = Duration::from_secs(60);
 
 /// Cache key for one plugin process: the spec/target pair.
@@ -69,7 +68,7 @@ pub struct InstalledPlugin {
 }
 
 /// What a package was found to serve, and the state of its directory when
-/// we found it (`plugin-providers.json`, as magpie keeps it).
+/// we found it.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Known {
     /// Modification time and size of the package directory, so an upgrade
@@ -266,8 +265,7 @@ impl ManagedHosts {
     /// Listing must not start a process per package: an account page that
     /// spawns ten Node runtimes before it can draw is not a listing, it is a
     /// stampede. What each package serves is therefore remembered in
-    /// `plugin-providers.json` (magpie keeps the same file for the same
-    /// reason) and only a package we have never loaded — or one whose
+    /// `plugin-providers.json` and only a package we have never loaded — or one whose
     /// directory has changed since — is started. A package that won't load
     /// is reported with why, never skipped silently.
     pub async fn installed(&self, dir: &std::path::Path) -> Vec<InstalledPlugin> {

@@ -54,7 +54,7 @@ pub enum Credential {
         /// OpenAI issued at sign-in, this machine's id, the last ID token
         /// and the granted scopes. Kept in the same entry as the tokens on
         /// purpose: two ledgers drift, and a lost client id is an account
-        /// that can never refresh again (magpie keeps one `siwcCreds`).
+        /// that can never refresh again.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         siwc: Option<crate::credentials::SiwcMeta>,
     },

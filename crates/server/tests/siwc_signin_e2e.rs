@@ -395,7 +395,7 @@ async fn refresh_hiccup_keeps_the_token_in_hand() {
     let dir = tempfile::tempdir().unwrap();
     let mock = Mock::default();
     // The token endpoint is unreachable, but the stored token is still
-    // valid: magpie keeps using it rather than failing the request.
+    // valid: it is kept in use rather than failing the request.
     let sign_in = SiwcSignIn::with_http(SiwcEndpoints::default(), Arc::new(mock))
         .with_meta_path(dir.path().join("siwc-accounts.json"));
     let id = "chatgpt-api:me@example.com".to_string();
