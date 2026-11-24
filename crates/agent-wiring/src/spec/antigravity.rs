@@ -81,6 +81,7 @@ impl AgentSpec for AntigravitySpec {
 
     fn connect(&self, ctx: &HomeCtx, wiring: &WiringCtx<'_>) -> Result<Vec<PathBuf>, WiringError> {
         let list_source = gateway_path(wiring.gateway_url, "v1/models?format=antigravity");
+        let default_model = default_model_id(wiring);
         let gateway = json!({
             "enabled": true,
             "url": wiring.gateway_url,
@@ -104,7 +105,7 @@ impl AgentSpec for AntigravitySpec {
                 &[
                     KV::new(GATEWAY, gateway.clone()),
                     KV::new(LIST_SOURCE, json!(list_source)),
-                    KV::new(DEFAULT_MODEL, json!(wiring.default_model)),
+                    KV::new(DEFAULT_MODEL, json!(default_model)),
                 ],
             )?;
             next = json::del(&next, &[LEGACY_LIST])?;
@@ -191,6 +192,25 @@ impl AgentSpec for AntigravitySpec {
         }
         values
     }
+}
+
+/// The model id Antigravity starts on, as its served catalog lists it.
+///
+/// A reasoning model is listed once per effort level (`<id>:<level>`), never
+/// by its bare id; an id the app's catalog does not list starts the app on its
+/// first model instead. Per-model level lists are not part of the catalog we
+/// receive, so `medium` — the level the app's own picker and the gateway's
+/// catalog default to — is the safe choice. A non-reasoning model has no
+/// levels and is listed by its bare id.
+fn default_model_id(wiring: &WiringCtx<'_>) -> String {
+    let reasoning = wiring
+        .catalog
+        .find(wiring.default_model)
+        .is_some_and(|model| model.reasoning);
+    if !reasoning {
+        return wiring.default_model.to_owned();
+    }
+    format!("{}:medium", wiring.default_model)
 }
 
 fn restore(text: &str, path: &str, old: Option<&String>) -> Result<String, WiringError> {

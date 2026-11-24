@@ -130,6 +130,148 @@ impl SqliteStorage {
         let conn = self.pool.get()?;
         Ok(conn.query_row("pragma user_version", [], |row| row.get(0))?)
     }
+    /// Sessions the client named, newest activity first.
+    ///
+    /// Reads `request_logs` only. A request with no `client_id` or no
+    /// `session_id` is not a session. `query` matches the title, the session
+    /// id, or the client; empty matches everything. An empty session — nothing
+    /// answered and nothing spent — is left out.
+    pub fn session_page(
+        &self,
+        query: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<crate::sessions::SessionPage, StorageError> {
+        let conn = self.pool.get()?;
+        let like = if query.trim().is_empty() {
+            None
+        } else {
+            Some(format!(
+                "%{}%",
+                query
+                    .trim()
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            ))
+        };
+        let total: i64 = conn.query_row(
+            r#"
+            select count(*) from (
+                select 1
+                from request_logs
+                where client_id is not null and client_id != ''
+                  and session_id is not null and session_id != ''
+                  and (
+                      ?1 is null
+                      or title like ?1 escape '\'
+                      or session_id like ?1 escape '\'
+                      or client_id like ?1 escape '\'
+                  )
+                group by client_id, session_id
+                having sum(case when response_status between 200 and 399 then 1 else 0 end) > 0
+                    or sum(input_tokens + output_tokens) > 0
+            )
+            "#,
+            [&like],
+            |row| row.get(0),
+        )?;
+        let mut stmt = conn.prepare(
+            r#"
+            select
+                client_id,
+                session_id,
+                coalesce(
+                    (select l2.title from request_logs l2
+                      where l2.client_id = request_logs.client_id
+                        and l2.session_id = request_logs.session_id
+                        and l2.title is not null and l2.title != ''
+                      order by l2.timestamp asc, l2.id asc limit 1),
+                    ''
+                ),
+                min(timestamp),
+                max(timestamp),
+                count(*),
+                sum(input_tokens),
+                sum(output_tokens),
+                sum(coalesce(cache_read_tokens, 0)),
+                sum(coalesce(cost_usd, 0)),
+                sum(case when response_status >= 400 then 1 else 0 end),
+                (select l3.client_model from request_logs l3
+                  where l3.client_id = request_logs.client_id
+                    and l3.session_id = request_logs.session_id
+                  order by l3.timestamp desc, l3.id desc limit 1)
+            from request_logs
+            where client_id is not null and client_id != ''
+              and session_id is not null and session_id != ''
+              and (
+                  ?1 is null
+                  or title like ?1 escape '\'
+                  or session_id like ?1 escape '\'
+                  or client_id like ?1 escape '\'
+              )
+            group by client_id, session_id
+            having sum(case when response_status between 200 and 399 then 1 else 0 end) > 0
+                or sum(input_tokens + output_tokens) > 0
+            order by max(timestamp) desc
+            limit ?2 offset ?3
+            "#,
+        )?;
+        let rows = stmt.query_map(params![like, to_i64(limit), to_i64(offset)], |row| {
+            Ok(crate::sessions::SessionSummary {
+                client_id: row.get(0)?,
+                session_id: row.get(1)?,
+                title: row.get(2)?,
+                started: row.get(3)?,
+                last: row.get(4)?,
+                requests: u64_column(row, 5)?,
+                input_tokens: u64_column(row, 6)?,
+                output_tokens: u64_column(row, 7)?,
+                cache_read_tokens: u64_column(row, 8)?,
+                cost_usd: row.get(9)?,
+                errors: u64_column(row, 10)?,
+                model: row.get(11)?,
+            })
+        })?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row?);
+        }
+        Ok(crate::sessions::SessionPage {
+            sessions,
+            total: u64::try_from(total).unwrap_or(0),
+        })
+    }
+
+    /// The bodies of one session, oldest first, at most `limit` of the newest.
+    pub fn session_records(
+        &self,
+        client_id: &str,
+        session_id: &str,
+        limit: u64,
+    ) -> Result<Vec<RequestLogRecord>, StorageError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            r#"
+            select b.record_json
+            from request_logs l
+            join request_bodies b on b.request_id = l.request_id
+            where l.client_id = ?1 and l.session_id = ?2
+            order by l.timestamp desc, l.id desc
+            limit ?3
+            "#,
+        )?;
+        let rows = stmt.query_map(params![client_id, session_id, to_i64(limit)], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(serde_json::from_str(&row?)?);
+        }
+        records.reverse();
+        Ok(records)
+    }
+
     pub fn recent_request_logs(&self, limit: u64) -> Result<Vec<RequestLogRecord>, StorageError> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(

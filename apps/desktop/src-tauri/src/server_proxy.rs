@@ -127,6 +127,10 @@ pub fn validate_request(method: &str, path: &str) -> Result<(), ProxyError> {
         ("PATCH", ["v1", "admin", "config"]) => true,
         ("GET", ["v1", "admin", "server", "status"]) => true,
         ("GET", ["v1", "admin", "logs"]) => true,
+        ("GET", ["v1", "admin", "sessions"]) => true,
+        ("GET", ["v1", "admin", "sessions", client, session]) => {
+            safe_segment(client) && safe_segment(session)
+        }
         ("GET", ["v1", "admin", "usage"]) => true,
         ("GET", ["v1", "admin", "status"]) => true,
         ("POST", ["v1", "admin", "convert"]) => true,
@@ -347,6 +351,9 @@ mod tests {
     #[test]
     fn validate_request_accepts_the_ui_data_routes() {
         assert!(validate_request("GET", "/v1/admin/logs").is_ok());
+        assert!(validate_request("GET", "/v1/admin/sessions").is_ok());
+        assert!(validate_request("GET", "/v1/admin/sessions/claude/sess-1").is_ok());
+        assert!(validate_request("GET", "/v1/admin/sessions/a%2Fb/sess").is_err());
         assert!(validate_request("GET", "/v1/admin/usage?ledger=1&format=csv").is_ok());
         assert!(validate_request("GET", "/v1/admin/status").is_ok());
         assert!(validate_request("POST", "/v1/admin/convert").is_ok());

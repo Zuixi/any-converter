@@ -29,8 +29,9 @@ use crate::handlers::{
     handle_account_plugins, handle_account_quotas, handle_account_release, handle_account_remove,
     handle_account_signin, handle_account_signin_cancel, handle_account_signin_status,
     handle_account_signin_submit, handle_accounts, handle_admin_convert, handle_admin_logs,
-    handle_admin_status, handle_admin_usage, handle_claude, handle_count_tokens, handle_gemini,
-    handle_health, handle_model_retrieve, handle_models, handle_openai_chat, handle_plugin_install,
+    handle_admin_session_transcript, handle_admin_sessions, handle_admin_status,
+    handle_admin_usage, handle_claude, handle_count_tokens, handle_gemini, handle_health,
+    handle_model_retrieve, handle_models, handle_openai_chat, handle_plugin_install,
     handle_plugin_uninstall, handle_responses, handle_usage_api,
 };
 use crate::plugins::{ManagedHosts, PluginAuthStore};
@@ -172,7 +173,7 @@ pub fn build_app_state(config: ServerConfig) -> Arc<AppState> {
     ));
     agents.set_catalog(catalog_from_config(&config));
     Arc::new(AppState {
-        config,
+        config: crate::handlers::LiveConfig::new(config),
         client,
         accounts,
         copilot,
@@ -197,7 +198,9 @@ pub fn create_router_with_state(state: Arc<AppState>) -> Router {
 
 fn legacy_runtime(state: &AppState) -> AdminRuntime {
     AdminRuntime {
-        authority: ManagementAuthority::from_legacy_key(state.config.server.api_key.as_deref()),
+        authority: ManagementAuthority::from_legacy_key(
+            state.config.get().server.api_key.as_deref(),
+        ),
         control_plane: None,
         web_auth: None,
         discoveries: std::sync::Arc::new(crate::model_discovery::DiscoveryCache::default()),
@@ -256,7 +259,7 @@ fn create_router_with_runtime(state: Arc<AppState>, runtime: AdminRuntime) -> Ro
     // uptime counter (see `handlers::data::note_start_time`).
     crate::handlers::data::note_start_time();
     let sign_ins = SignInTasks::init(
-        state.config.server.proxy.clone(),
+        state.config.get().server.proxy.clone(),
         Some(Arc::clone(&state.hosts)),
     );
     // Embedded when the frontend was built, `ANY_CONVERTER_WEB_DIR` when
@@ -282,6 +285,11 @@ fn create_router_with_runtime(state: Arc<AppState>, runtime: AdminRuntime) -> Ro
     let management = Router::new()
         .route("/v1/usage", get(handle_usage_api))
         .route("/v1/admin/logs", get(handle_admin_logs))
+        .route("/v1/admin/sessions", get(handle_admin_sessions))
+        .route(
+            "/v1/admin/sessions/{client_id}/{session_id}",
+            get(handle_admin_session_transcript),
+        )
         .route("/v1/admin/usage", get(handle_admin_usage))
         .route("/v1/admin/status", get(handle_admin_status))
         .route("/v1/admin/convert", post(handle_admin_convert))

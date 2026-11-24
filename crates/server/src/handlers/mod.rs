@@ -20,7 +20,10 @@ pub use accounts::{
 pub use chat::{
     handle_claude, handle_count_tokens, handle_gemini, handle_openai_chat, handle_responses,
 };
-pub use data::{handle_admin_convert, handle_admin_logs, handle_admin_status};
+pub use data::{
+    handle_admin_convert, handle_admin_logs, handle_admin_session_transcript,
+    handle_admin_sessions, handle_admin_status,
+};
 pub use models::{handle_model_retrieve, handle_models};
 pub use usage::{handle_admin_usage, handle_usage_api};
 
@@ -35,7 +38,7 @@ pub(crate) use respond::{
 };
 pub(crate) use stream::is_streaming_request;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::agents::AgentRegistry;
 use crate::config::ServerConfig;
@@ -50,9 +53,45 @@ use reqwest::Client;
 // Nothing is re-exported for the sibling modules: each of them writes its
 // own imports, so a module's dependencies are visible where it is read.
 
+/// The configuration the process is actually serving.
+///
+/// The control plane validates a patch and writes it to disk; the admin
+/// handler then swaps this snapshot. Every read path — inference routing,
+/// `/v1/models`, and agent wiring — goes through here, so none of them can
+/// disagree with what was just saved. Resources built once at start-up
+/// (the upstream client and its proxy, loggers, plugin hosts, the agent
+/// registry's gateway address) keep their original settings and still need
+/// a restart to change.
+#[derive(Clone)]
+pub struct LiveConfig(Arc<RwLock<Arc<ServerConfig>>>);
+
+impl LiveConfig {
+    pub fn new(config: ServerConfig) -> Self {
+        Self(Arc::new(RwLock::new(Arc::new(config))))
+    }
+
+    /// The current snapshot; cloning one `Arc` per request.
+    pub fn get(&self) -> Arc<ServerConfig> {
+        Arc::clone(
+            &self
+                .0
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
+    /// Replace the served snapshot after a validated config write.
+    pub fn set(&self, config: ServerConfig) {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(config);
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
-    pub config: ServerConfig,
+    pub config: LiveConfig,
     pub client: Client,
     /// First-class OAuth accounts (e.g. Gemini Code Assist sign-ins).
     pub accounts: Arc<AccountResolver>,

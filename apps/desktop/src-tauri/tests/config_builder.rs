@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used)]
 
 use any_converter_core::convert::Format;
-use any_converter_desktop::db::DesktopDb;
-use any_converter_desktop::state::seed_defaults;
+use any_converter_desktop_lib::db::DesktopDb;
+use any_converter_desktop_lib::state::seed_defaults;
 use std::path::PathBuf;
 
 fn desktop_tauri_dir() -> PathBuf {

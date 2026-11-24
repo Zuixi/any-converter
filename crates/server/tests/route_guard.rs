@@ -13,7 +13,7 @@ use any_converter_server::config::{
     ServerConfig, ServerSettings,
 };
 use any_converter_server::credentials::AccountResolver;
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::router::{create_router_with_state, detect_format_from_path};
 use axum::Router;
 use axum::body::Body;
@@ -175,6 +175,7 @@ fn make_app_with_log_dir(base_url: &str, api_key: Option<&str>, log_dir: Option<
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -185,7 +186,7 @@ fn make_app_with_log_dir(base_url: &str, api_key: Option<&str>, log_dir: Option<
         },
     };
     create_router_with_state(Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         client: Client::builder().no_proxy().build().unwrap(),
         accounts: AccountResolver::with_default_store(Client::new()),
         copilot_allowances: Arc::new(

@@ -32,6 +32,10 @@ pub const OUR_KEYS: &[&str] = &[
 
 const GROUP_NAME: &str = "Any Converter";
 const DEFAULT_MODEL: &str = "chat\\.defaultModel";
+/// Output budget written when the catalog knows no per-model limit. VS Code
+/// keeps the output budget out of the window it fills with the prompt, so a
+/// model whose output limit neared its window would leave the prompt no room.
+const OUTPUT_TOKENS: u64 = 16_384;
 /// Products in the order VS Code's own "stable" install prefers them.
 const VARIANTS: &[&str] = &["Code", "Code - Insiders", "VSCodium"];
 
@@ -308,16 +312,35 @@ fn group(dir: &Path, wiring: &WiringCtx<'_>) -> Value {
         .models
         .iter()
         .map(|model| {
+            // The catalog carries no image flag, so every entry is text-only.
+            let context = model.context_tokens.filter(|window| *window > 0);
+            // The output budget is unknown: 16384 is the conservative value,
+            // capped at a quarter of a known window so the prompt keeps room.
+            let output = context.map_or(OUTPUT_TOKENS, |window| {
+                OUTPUT_TOKENS.min((window / 4).max(1))
+            });
             let mut entry = serde_json::Map::new();
             entry.insert("id".to_owned(), json!(model.id));
             entry.insert("name".to_owned(), json!(model.name));
             entry.insert("url".to_owned(), json!(url));
             entry.insert("toolCalling".to_owned(), json!(true));
             entry.insert("vision".to_owned(), json!(false));
-            if let Some(context) = model.context_tokens {
-                entry.insert("maxInputTokens".to_owned(), json!(context));
+            if vscodium {
+                // VSCodium's customoai vendor counts its window as
+                // `maxInputTokens + maxOutputTokens`; there is no
+                // `contextWindow` field.
+                if let Some(window) = context {
+                    entry.insert(
+                        "maxInputTokens".to_owned(),
+                        json!(window.saturating_sub(output)),
+                    );
+                }
+            } else if let Some(window) = context {
+                // The Custom Endpoint vendor takes the whole window here;
+                // `maxInputTokens` is not one of its fields.
+                entry.insert("contextWindow".to_owned(), json!(window));
             }
-            entry.insert("maxOutputTokens".to_owned(), json!(8192));
+            entry.insert("maxOutputTokens".to_owned(), json!(output));
             entry.insert("requestHeaders".to_owned(), headers.clone());
             Value::Object(entry)
         })

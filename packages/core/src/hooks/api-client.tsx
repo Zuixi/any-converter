@@ -10,6 +10,8 @@ import type {
   LedgerPage,
   RequestLogRecord,
   ServerConfig,
+  SessionPage,
+  SessionTranscript,
   StatusData,
   UsageQuery,
   UsageSummary,
@@ -18,6 +20,8 @@ import type {
 export interface ApiClient {
   convert(request: ConvertApiRequest): Promise<ConvertApiResponse>;
   getLogs(limit?: number): Promise<RequestLogRecord[]>;
+  getSessions(query?: string, offset?: number): Promise<SessionPage>;
+  getSessionTranscript(clientId: string, sessionId: string): Promise<SessionTranscript>;
   getUsage(query: UsageQuery): Promise<UsageSummary>;
   getHeatmap(filter: LedgerFilter): Promise<Heatmap>;
   getLedger(filter: LedgerFilter, cursor?: number, limit?: number): Promise<LedgerPage>;

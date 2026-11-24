@@ -45,7 +45,8 @@ pub async fn handle_usage_api(
         }
     };
 
-    let Some(dir) = state.config.logging.dir.as_deref() else {
+    let config = state.config.get();
+    let Some(dir) = config.logging.dir.as_deref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({ "error": "logging is not configured" })),
@@ -92,7 +93,7 @@ pub async fn handle_admin_usage(
         }
     };
     let granularity = granularity_from(params.get("granularity").map(String::as_str));
-    let dir = state.config.logging.dir.clone();
+    let dir = state.config.get().logging.dir.clone();
 
     // The calendar has its own 53-week span, so the resolved range only has to
     // be a valid one for the request to reach this branch.

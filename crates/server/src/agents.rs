@@ -140,7 +140,9 @@ impl From<agent_wiring::WiringError> for ApiError {
 
 /// `GET /v1/agents`
 pub async fn handle_agents_list(State(state): State<Arc<AppState>>) -> Response {
-    state.agents.set_catalog(catalog_from_config(&state.config));
+    state
+        .agents
+        .set_catalog(catalog_from_config(&state.config.get()));
     let home = state.agents.home();
     let agents = state.agents.list(&home).await;
     Json(json!({ "agents": agents })).into_response()
@@ -180,7 +182,9 @@ pub async fn handle_agent_connect(
             }
         }
     };
-    state.agents.set_catalog(catalog_from_config(&state.config));
+    state
+        .agents
+        .set_catalog(catalog_from_config(&state.config.get()));
     let home = state.agents.home();
     match state.agents.connect(&id, options, &home).await {
         Ok(report) => Json(json!({
@@ -229,7 +233,9 @@ pub async fn handle_agent_sync(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    state.agents.set_catalog(catalog_from_config(&state.config));
+    state
+        .agents
+        .set_catalog(catalog_from_config(&state.config.get()));
     let home = state.agents.home();
     match state.agents.sync(&id, &home).await {
         Ok(()) => Json(json!({
@@ -247,7 +253,9 @@ pub async fn handle_agent_rotate_key(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    state.agents.set_catalog(catalog_from_config(&state.config));
+    state
+        .agents
+        .set_catalog(catalog_from_config(&state.config.get()));
     let home = state.agents.home();
     match state.agents.rotate_key(&id, &home).await {
         Ok(key_id) => Json(json!({ "agent": id, "key_id": key_id })).into_response(),

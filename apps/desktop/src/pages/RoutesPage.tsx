@@ -1,48 +1,55 @@
 import { useMemo, useState } from "react";
 import { useI18n } from "@any-converter/core";
-import {
-  Button,
-  Card,
-  CardContent,
-  Input,
-  Label,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@any-converter/ui";
+import { Badge, Button, Card } from "@any-converter/ui";
 
+import { DeleteRouteDialog } from "../components/routes/DeleteRouteDialog";
+import { RouteEditor } from "../components/routes/RouteEditor";
+import {
+  draftFromRoute,
+  emptyDraft,
+  isWildcard,
+  type ProviderLite,
+  type RouteDraft,
+  type UpstreamOption,
+} from "../components/routes/types";
 import { ErrorBanner } from "../components/layout/ErrorBanner";
-import { Field } from "../components/layout/Field";
 import { Header } from "../components/layout/Header";
-import { Table } from "../components/layout/Table";
 import { useAsyncState } from "../hooks/useAsyncState";
 import {
   management,
   useServerRequest,
   type AdminConfigView,
+  type CatalogModel,
   type CatalogView,
+  type ConfigPatch,
 } from "../lib/management";
+
+type EditorState = { mode: "create"; draft: RouteDraft } | { mode: "edit"; original: string; draft: RouteDraft };
 
 export function RoutesPage() {
   const { t } = useI18n();
   const { describeError } = useServerRequest();
-  const [config, setConfig, loadError] = useAsyncState<AdminConfigView>(() =>
+  const [config, setConfig, loadError, , configLoading] = useAsyncState<AdminConfigView>(() =>
     management.getConfig().catch((cause) => {
       throw new Error(describeError(cause));
     }),
   );
-  const [catalog] = useAsyncState<CatalogView>(() =>
-    management.getCatalog().catch(() => ({ revision: "", providers: [], models: [] })),
-  );
-  const [form, setForm] = useState({ pattern: "*", upstream_model: "", strategy: "priority" });
-  const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
+  const [catalog, , catalogError, , catalogLoading] = useAsyncState<CatalogView>(() => management.getCatalog());
+
+  const [editor, setEditor] = useState<EditorState | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
 
+  const routes = config?.model_routes ?? [];
+  const providers: ProviderLite[] = (config?.providers ?? []).map((provider) => ({
+    name: provider.name,
+    format: provider.format,
+  }));
+
   // Route patterns match the model ids clients send. Offer the ids the
-  // gateway already exposes, so a route is never typed blind.
-  const suggestions = useMemo(() => {
+  // gateway already exposes, so a pattern is never typed blind.
+  const patternOptions = useMemo(() => {
     const ids = new Set<string>();
     for (const model of catalog?.models ?? []) {
       if (model.exposed) {
@@ -51,7 +58,7 @@ export function RoutesPage() {
     }
     for (const provider of config?.providers ?? []) {
       for (const model of Object.keys(provider.model_map)) {
-        if (!model.includes("*") && !model.includes("?")) {
+        if (!isWildcard(model)) {
           ids.add(model);
         }
       }
@@ -59,33 +66,132 @@ export function RoutesPage() {
     return [...ids].sort();
   }, [catalog, config]);
 
-  const toggleProvider = (name: string) => {
-    setSelectedProviders((current) =>
-      current.includes(name) ? current.filter((value) => value !== name) : [...current, name],
-    );
+  // Upstream ids are associated with their providers so each route member
+  // can pick a model valid for that provider.
+  const allUpstream = useMemo<UpstreamOption[]>(() => {
+    const owners = new Map<string, Set<string>>();
+    const add = (upstream: string | null | undefined, provider: string) => {
+      if (!upstream) {
+        return;
+      }
+      const set = owners.get(upstream) ?? new Set<string>();
+      set.add(provider);
+      owners.set(upstream, set);
+    };
+
+    for (const provider of config?.providers ?? []) {
+      for (const upstream of Object.values(provider.model_map)) {
+        add(upstream, provider.name);
+      }
+    }
+    const catalogModels: CatalogModel[] = catalog?.models ?? [];
+    for (const model of catalogModels) {
+      if (model.source === "upstream") {
+        add(model.upstream, model.provider);
+      }
+    }
+
+    return [...owners.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([value, set]) => ({ value, providers: [...set].sort() }));
+  }, [catalog, config]);
+
+  // A save is keyed by pattern, so a colliding pattern silently replaces
+  // another route. Surface that before the write, never after.
+  const editorOriginal = editor?.mode === "edit" ? editor.original : null;
+  const collidesWith =
+    editor && editor.draft.pattern.trim()
+      ? (routes.find((route) => route.pattern === editor.draft.pattern.trim() && route.pattern !== editorOriginal)
+          ?.pattern ?? null)
+      : null;
+
+  const updateDraft = (draft: RouteDraft) => {
+    setEditor((current) => {
+      if (!current) {
+        return current;
+      }
+      return current.mode === "create"
+        ? { mode: "create", draft }
+        : { mode: "edit", original: current.original, draft };
+    });
   };
 
-  const create = async () => {
+  const startCreate = () => {
+    setActionError(undefined);
+    setEditor({ mode: "create", draft: emptyDraft() });
+  };
+
+  const startEdit = (route: AdminConfigView["model_routes"][number]) => {
+    setActionError(undefined);
+    setEditor({ mode: "edit", original: route.pattern, draft: draftFromRoute(route) });
+  };
+
+  const save = async () => {
+    if (!editor) {
+      return;
+    }
+    const pattern = editor.draft.pattern.trim();
+    if (!pattern || !editor.draft.members.some((member) => member.enabled)) {
+      return;
+    }
+    setBusy(true);
+    setActionError(undefined);
     try {
       // The mutation's precondition must be the revision observed right
       // before the write, not one cached when the page first loaded.
       const current = await management.getConfig();
-      const next = await management.patchConfig(current.revision, {
+      const patch: ConfigPatch = {
         upsert_model_routes: [
           {
-            pattern: form.pattern,
-            providers: selectedProviders,
-            upstream_model: form.upstream_model || null,
-            strategy: form.strategy === "round_robin" ? "round_robin" : "priority",
+            pattern,
+            members: editor.draft.members.map((member) => ({
+              provider: member.provider,
+              model: member.model.trim() || null,
+              weight: member.weight,
+              enabled: member.enabled,
+              fallback: member.fallback,
+            })),
+            strategy: editor.draft.strategy,
           },
         ],
-      });
+      };
+      // Renaming a route means its pattern — the server-side identity —
+      // changes; drop the old entry in the same patch. Skip the removal if
+      // another client already deleted it, so the save still lands.
+      if (
+        editor.mode === "edit" &&
+        editor.original !== pattern &&
+        current.model_routes.some((route) => route.pattern === editor.original)
+      ) {
+        patch.remove_model_routes = [editor.original];
+      }
+      const next = await management.patchConfig(current.revision, patch);
       setConfig(next);
-      setForm({ pattern: "*", upstream_model: "", strategy: "priority" });
-      setSelectedProviders([]);
-      setActionError(undefined);
+      setEditor(null);
     } catch (cause) {
       setActionError(describeError(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (pendingDelete === null) {
+      return;
+    }
+    setBusy(true);
+    setActionError(undefined);
+    try {
+      const current = await management.getConfig();
+      const next = await management.patchConfig(current.revision, {
+        remove_model_routes: [pendingDelete],
+      });
+      setConfig(next);
+      setPendingDelete(null);
+    } catch (cause) {
+      setActionError(describeError(cause));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -96,91 +202,165 @@ export function RoutesPage() {
       {config?.restart_required && (
         <p className="text-sm text-muted-foreground">{t("desktop.config.restartRequired")}</p>
       )}
-      <Card>
-        <CardContent className="grid gap-4 pt-6">
-          <div className="grid gap-4 md:grid-cols-3">
-            <Field
-              label={t("desktop.routes.pattern")}
-              help={`${t("desktop.routes.patternHelp")} ${t("desktop.routes.modelSuggestionsHelp")}`}
-            >
-              <Input
-                list="route-model-suggestions"
-                value={form.pattern}
-                onChange={(event) => setForm({ ...form, pattern: event.target.value })}
-              />
-              <datalist id="route-model-suggestions">
-                {suggestions.map((model) => (
-                  <option key={model} value={model} />
-                ))}
-              </datalist>
-            </Field>
-            <Field label={t("desktop.routes.upstream")} help={t("desktop.routes.upstreamHelp")}>
-              <Input
-                value={form.upstream_model}
-                onChange={(event) => setForm({ ...form, upstream_model: event.target.value })}
-              />
-            </Field>
-            <Field
-              label={t("desktop.routes.strategy")}
-              help={
-                form.strategy === "priority" ? t("desktop.routes.priorityHelp") : t("desktop.routes.roundRobinHelp")
-              }
-            >
-              <Select value={form.strategy} onValueChange={(strategy) => setForm({ ...form, strategy })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="priority">{t("desktop.routes.priority")}</SelectItem>
-                  <SelectItem value="round_robin">{t("desktop.routes.roundRobin")}</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
-          <div className="grid gap-2">
-            <Label>{t("desktop.routes.providerPool")}</Label>
-            {(config?.providers ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">{t("desktop.routes.noProviders")}</p>
-            ) : (
-              <div className="flex flex-wrap gap-4">
-                {(config?.providers ?? []).map((provider) => (
-                  <label key={provider.name} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 accent-primary"
-                      checked={selectedProviders.includes(provider.name)}
-                      onChange={() => toggleProvider(provider.name)}
-                    />
-                    {provider.name} ({provider.format})
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-          <Button
-            className="w-fit"
-            onClick={() => void create()}
-            disabled={selectedProviders.length === 0 || !form.pattern}
-          >
-            {t("desktop.routes.add")}
-          </Button>
-        </CardContent>
-      </Card>
-      <Table
-        emptyText={t("desktop.routes.empty")}
-        headers={[
-          t("desktop.routes.pattern"),
-          t("desktop.routes.providers"),
-          t("desktop.routes.upstreamColumn"),
-          t("desktop.routes.strategy"),
-        ]}
-        rows={(config?.model_routes ?? []).map((route) => [
-          route.pattern,
-          route.providers.join(", "),
-          route.upstream_model ?? "",
-          route.strategy,
-        ])}
-      />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-sm text-muted-foreground">
+          {config ? `${routes.length} ${t("desktop.routes.routeCount")}` : "—"}
+        </span>
+        <span className="grow" />
+        <Button onClick={startCreate} disabled={editor !== null || configLoading || !config}>
+          {t("desktop.routes.add")}
+        </Button>
+      </div>
+
+      {catalogLoading && <p className="text-xs text-muted-foreground">{t("desktop.routes.catalogLoading")}</p>}
+      {catalogError && <p className="text-xs text-muted-foreground">{t("desktop.routes.catalogUnavailable")}</p>}
+
+      {editor?.mode === "create" && (
+        <RouteEditor
+          mode="create"
+          draft={editor.draft}
+          onChange={updateDraft}
+          providers={providers}
+          patternOptions={patternOptions}
+          allUpstream={allUpstream}
+          collidesWith={collidesWith}
+          busy={busy}
+          onCancel={() => setEditor(null)}
+          onSave={() => void save()}
+        />
+      )}
+
+      <p className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs leading-5 text-muted-foreground">
+        <span aria-hidden="true">ℹ</span>
+        {t("desktop.routes.matchingHint")}
+      </p>
+
+      {routes.length === 0 ? (
+        <Card className="px-5 py-8 text-center">
+          <p className="text-sm text-muted-foreground">
+            {configLoading
+              ? t("desktop.routes.loading")
+              : loadError
+                ? t("desktop.routes.loadError")
+                : t("desktop.routes.empty")}
+          </p>
+        </Card>
+      ) : (
+        <div className="grid gap-3">
+          {routes.map((route) => {
+            const editing = editor?.mode === "edit" && editor.original === route.pattern;
+            if (editing) {
+              return (
+                <RouteEditor
+                  key={route.pattern}
+                  mode="edit"
+                  draft={editor.draft}
+                  onChange={updateDraft}
+                  providers={providers}
+                  patternOptions={patternOptions}
+                  allUpstream={allUpstream}
+                  collidesWith={collidesWith}
+                  busy={busy}
+                  onCancel={() => setEditor(null)}
+                  onSave={() => void save()}
+                />
+              );
+            }
+            const displayMembers = [
+              ...route.members.filter((member) => !member.fallback),
+              ...route.members.filter((member) => member.fallback),
+            ];
+            const memberSummary = displayMembers
+              .filter((member) => member.enabled)
+              .map((member) => `${member.provider}/${member.model || "auto"}`)
+              .join(" → ");
+            return (
+              <Card key={route.pattern} className="grid gap-3 p-4 transition-colors hover:border-primary/30">
+                <div className="flex flex-wrap items-start gap-3">
+                  <div
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-muted text-sm font-semibold"
+                    aria-hidden="true"
+                  >
+                    {route.members.length}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <code className="font-mono text-sm font-semibold">{route.pattern}</code>
+                      <Badge variant="outline">
+                        {isWildcard(route.pattern) ? t("desktop.routes.wildcard") : t("desktop.routes.exact")}
+                      </Badge>
+                      <Badge variant="secondary">
+                        {route.strategy === "priority"
+                          ? t("desktop.routes.priority")
+                          : route.strategy === "round_robin"
+                            ? t("desktop.routes.roundRobin")
+                            : t("desktop.routes.weighted")}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 truncate text-sm text-muted-foreground" title={memberSummary}>
+                      {memberSummary || t("desktop.routes.membersEmpty")}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={editor !== null || busy}
+                      onClick={() => startEdit(route)}
+                    >
+                      {t("desktop.routes.edit")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-muted-foreground hover:text-destructive"
+                      disabled={editor !== null || busy}
+                      onClick={() => {
+                        setActionError(undefined);
+                        setPendingDelete(route.pattern);
+                      }}
+                    >
+                      {t("desktop.routes.delete")}
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid gap-2 border-t pt-3">
+                  {displayMembers.map((member, index) => (
+                    <div
+                      key={`${member.provider}-${index}`}
+                      className={`flex flex-wrap items-center gap-2 text-sm ${member.enabled ? "" : "opacity-50"}`}
+                    >
+                      <span className="grid h-6 w-6 place-items-center rounded-full bg-muted text-xs font-semibold">
+                        {index + 1}
+                      </span>
+                      <span className="font-medium">{member.provider}</span>
+                      <span className="text-muted-foreground">/</span>
+                      <code className="font-mono text-xs">{member.model || t("desktop.routes.autoBadge")}</code>
+                      <span className="text-xs text-muted-foreground">×{member.weight}</span>
+                      {member.fallback && <Badge variant="outline">{t("desktop.routes.fallback")}</Badge>}
+                      {!member.enabled && <Badge variant="outline">{t("desktop.routes.disabled")}</Badge>}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {pendingDelete !== null && (
+        <DeleteRouteDialog
+          pattern={pendingDelete}
+          busy={busy}
+          onCancel={() => {
+            if (!busy) {
+              setPendingDelete(null);
+            }
+          }}
+          onConfirm={() => void remove()}
+        />
+      )}
     </section>
   );
 }

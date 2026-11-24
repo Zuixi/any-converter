@@ -47,13 +47,14 @@ pub(crate) async fn convert_and_build_upstream(
         provider,
         api,
         route_info,
+        upstream_model,
     } = att;
     let api = *api;
     // Code Assist always speaks Gemini on the wire: conversion targets Gemini
     // (not `provider.format`) and the body rides inside the request envelope.
     let to_format = api.to_format();
 
-    if state.config.logging.conversion_log {
+    if state.config.get().logging.conversion_log {
         debug!(
             target: "conversion",
             "request_original request_id={} client_format={} provider_format={} body={}",
@@ -63,7 +64,7 @@ pub(crate) async fn convert_and_build_upstream(
 
     let converted_body = match safe_convert_request(body, route_info.client_format, to_format) {
         Ok(mut bytes) => {
-            if state.config.logging.conversion_log {
+            if state.config.get().logging.conversion_log {
                 debug!(
                     target: "conversion",
                     "request_converted request_id={} body={}",
@@ -73,7 +74,7 @@ pub(crate) async fn convert_and_build_upstream(
             if api == UpstreamApi::CodeAssist {
                 // The model id rides in the Code Assist envelope, not in the
                 // Gemini body or URL.
-                crate::wire::wrap_code_assist(&bytes, &ctx.upstream_model).map_err(|err| {
+                crate::wire::wrap_code_assist(&bytes, upstream_model).map_err(|err| {
                     error!(
                         "code assist envelope failed request_id={} error={err}",
                         ctx.req_id
@@ -81,9 +82,7 @@ pub(crate) async fn convert_and_build_upstream(
                     Box::new(conversion_error_response(HandlerError::Envelope(err)))
                 })?
             } else {
-                if let Err(err) =
-                    patch_model_in_body(&mut bytes, api.to_format(), &ctx.upstream_model)
-                {
+                if let Err(err) = patch_model_in_body(&mut bytes, api.to_format(), upstream_model) {
                     error!("failed to patch model: {err} request_id={}", ctx.req_id);
                 }
                 bytes
@@ -164,7 +163,7 @@ pub(crate) async fn convert_and_build_upstream(
         } else {
             session.api_base.as_str()
         };
-        let path = api.path(&ctx.upstream_model, ctx.streaming);
+        let path = api.path(upstream_model, ctx.streaming);
         let path = path.strip_prefix("/v1").unwrap_or(&path);
         format!("{}{path}", base.trim_end_matches('/'))
     } else if provider.plugin.is_some() {
@@ -184,7 +183,7 @@ pub(crate) async fn convert_and_build_upstream(
                 crate::proxy::build_upstream_url(
                     Format::OpenAIResponses,
                     &provider.chatgpt_api_base(),
-                    &ctx.upstream_model,
+                    upstream_model,
                     ctx.streaming,
                 )
             }
@@ -193,10 +192,10 @@ pub(crate) async fn convert_and_build_upstream(
                 // Antigravity's generation host is the daily one; a provider
                 // that names its own base keeps it.
                 &provider.code_assist_base(),
-                &ctx.upstream_model,
+                upstream_model,
                 ctx.streaming,
             ),
-            _ => build_upstream_url_for_provider(provider, &ctx.upstream_model, ctx.streaming),
+            _ => build_upstream_url_for_provider(provider, upstream_model, ctx.streaming),
         }
     };
 
@@ -254,10 +253,10 @@ pub(crate) async fn convert_and_build_upstream(
     let upstream_headers = crate::proxy::build_upstream_headers(
         headers,
         &auth_headers,
-        &state.config.server.pass_through_headers,
+        &state.config.get().server.pass_through_headers,
     );
 
-    if state.config.logging.upstream_headers_log {
+    if state.config.get().logging.upstream_headers_log {
         info!(
             target: "upstream_headers",
             "upstream request headers request_id={} provider={} {}",
@@ -269,6 +268,7 @@ pub(crate) async fn convert_and_build_upstream(
 
     if let Some(ref mut log_ctx) = ctx.log_ctx {
         log_ctx.provider_name = provider.name.clone();
+        log_ctx.upstream_model = upstream_model.to_string();
         log_ctx.upstream_url = url.clone();
         log_ctx.upstream_request_body = converted_body.clone();
     }
@@ -291,9 +291,10 @@ pub(crate) fn build_non_streaming_response(
         state,
         provider,
         route_info,
+        upstream_model,
         ..
     } = att;
-    if state.config.logging.conversion_log {
+    if state.config.get().logging.conversion_log {
         debug!(
             target: "conversion",
             "response_original request_id={} status={} body={}",
@@ -306,7 +307,7 @@ pub(crate) fn build_non_streaming_response(
 
     patch_response_namespaces(&mut converted, &ctx.ns_map);
 
-    if state.config.logging.conversion_log {
+    if state.config.get().logging.conversion_log {
         debug!(
             target: "conversion",
             "response_converted request_id={} body={}",
@@ -322,7 +323,7 @@ pub(crate) fn build_non_streaming_response(
             client_format: route_info.client_format.to_string(),
             provider: provider.name.clone(),
             client_model: ctx.client_model.clone(),
-            upstream_model: ctx.upstream_model.clone(),
+            upstream_model: upstream_model.to_string(),
             input_tokens,
             output_tokens,
             total_tokens: input_tokens + output_tokens,
@@ -341,7 +342,7 @@ pub(crate) fn build_non_streaming_response(
                 &converted,
                 status,
                 from_format,
-                &state.config.logging.request_log,
+                &state.config.get().logging.request_log,
             );
         }
     }

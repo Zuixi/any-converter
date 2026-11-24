@@ -41,6 +41,36 @@ fn detect_expands_pi_coding_agent_dir() {
 }
 
 #[test]
+fn relative_pi_coding_agent_dir_is_ignored() {
+    let dir = tempdir().unwrap();
+    let agent = dir.path().join(".pi/agent");
+    fs::create_dir_all(&agent).unwrap();
+    let ctx = common::home_with(dir.path(), &[("PI_CODING_AGENT_DIR", "rel/pi".to_owned())]);
+    // A relative value is the agent's working directory's, which we cannot
+    // know, so the default location wins (magpie pi_dir_test.go).
+    assert_eq!(
+        PiSpec.detect(&ctx),
+        DetectResult::Detected { config_dir: agent }
+    );
+}
+
+#[test]
+fn enabled_models_glob_covers_our_reference() {
+    let dir = tempdir().unwrap();
+    let ctx = common::home(dir.path());
+    let settings = dir.path().join(".pi/agent/settings.json");
+    common::write(&settings, "{\"enabledModels\": [\"any-converter/*\"]}\n");
+    let catalog = common::catalog();
+    PiSpec.connect(&ctx, &wiring_ctx(&catalog)).unwrap();
+
+    // The glob already takes every wired model in, so nothing is appended.
+    assert_eq!(
+        json::get(&common::read(&settings), "enabledModels").as_deref(),
+        Some("[\"any-converter/*\"]")
+    );
+}
+
+#[test]
 fn detect_uses_default_pi_agent_dir() {
     let dir = tempdir().unwrap();
     let ctx = common::home(dir.path());
@@ -74,24 +104,50 @@ fn connect_writes_provider_and_settings() {
         Some("http://127.0.0.1:8787/v1")
     );
     assert_eq!(
-        json::get(&models_text, "providers.any-converter.apiKey").as_deref(),
-        Some(common::AGENT_KEY)
+        json::get(&models_text, "providers.any-converter.api").as_deref(),
+        Some("openai-completions")
     );
     assert_eq!(
         json::get(
             &models_text,
-            "providers.any-converter.models.claude-sonnet-4-5.name"
-        )
-        .as_deref(),
-        Some("Claude Sonnet 4.5")
-    );
-    assert_eq!(
-        json::get(
-            &models_text,
-            "providers.any-converter.models.claude-sonnet-4-5.reasoning"
+            "providers.any-converter.compat.sendSessionAffinityHeaders"
         )
         .as_deref(),
         Some("true")
+    );
+    assert_eq!(
+        json::get(&models_text, "providers.any-converter.apiKey").as_deref(),
+        Some(common::AGENT_KEY)
+    );
+    // `models` is an array of entries carrying an `id`, not an id-keyed map.
+    assert_eq!(
+        json::get(&models_text, "providers.any-converter.models.0.id").as_deref(),
+        Some("claude-opus-4-5")
+    );
+    assert_eq!(
+        json::get(&models_text, "providers.any-converter.models.1.id").as_deref(),
+        Some("claude-sonnet-4-5")
+    );
+    assert_eq!(
+        json::get(&models_text, "providers.any-converter.models.1.name").as_deref(),
+        Some("Claude Sonnet 4.5")
+    );
+    assert_eq!(
+        json::get(&models_text, "providers.any-converter.models.1.reasoning").as_deref(),
+        Some("true")
+    );
+    // The window key is `contextWindow`, not `context`.
+    assert_eq!(
+        json::get(
+            &models_text,
+            "providers.any-converter.models.1.contextWindow"
+        )
+        .as_deref(),
+        Some("200000")
+    );
+    assert_eq!(
+        json::get(&models_text, "providers.any-converter.models.1.context"),
+        None
     );
 
     let settings_text = common::read(&settings);

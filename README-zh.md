@@ -198,7 +198,25 @@ upstream_model = "gpt-4.1-mini"
 
 - `priority` 按顺序依次尝试 provider
 - `round_robin` 会轮换起始 provider，同时保留 failover
-- `upstream_model` 可以强制指定最终发给上游的模型名
+- `weighted` 按成员权重选择首个主成员，之后按故障转移顺序尝试
+- 旧版 `providers` / `upstream_model` 配置仍然兼容
+
+当不同 provider 使用不同的上游模型名时，可改用成员配置。省略 `model`
+（或设为空字符串）时，会使用该 provider 的 `model_map`，再回退到客户端模型名。
+备用成员只会在主成员失败后尝试；停用成员会保留在配置中但不会接收请求。
+
+```toml
+[[model_routes]]
+pattern = "coding-*"
+strategy = "weighted"
+members = [
+  { provider = "openai", model = "gpt-4.1", weight = 3 },
+  { provider = "deepseek", model = "deepseek-chat", weight = 1 },
+  { provider = "anthropic", model = "claude-sonnet-4", fallback = true },
+]
+```
+
+成员路由也可使用 `priority` 和 `round_robin`。轮询只在主成员间轮换；备用成员仍排在主成员之后。
 
 ## 模型映射
 

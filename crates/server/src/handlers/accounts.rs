@@ -34,7 +34,7 @@ pub async fn handle_account_quotas(State(state): State<Arc<AppState>>) -> Respon
     // The user asked for these, so they are read for real — but side by
     // side, so a pool of N accounts costs one round trip rather than N.
     let mut wanted = Vec::new();
-    for provider in &state.config.providers {
+    for provider in &state.config.get().providers {
         for account_id in provider.account_ids() {
             wanted.push((provider.clone(), account_id.to_string()));
         }
@@ -192,30 +192,36 @@ pub async fn handle_accounts(State(state): State<Arc<AppState>>) -> Response {
 /// The provider that actually names this account. This is the only signal
 /// that requests for the account can be routed through a configured
 /// provider; a provider merely called `chatgpt-api` does not bind it.
-fn bound_provider<'a>(
-    state: &'a AppState,
+fn bound_provider(
+    state: &AppState,
     account: &ListedAccount,
-) -> Option<&'a crate::config::ProviderConfig> {
+) -> Option<crate::config::ProviderConfig> {
+    // The served config is swapped by Arc, so a borrow cannot outlive the
+    // snapshot; the provider is returned owned (configs are small).
     state
         .config
+        .get()
         .providers
         .iter()
         .find(|provider| provider.account_ids().contains(&account.id.as_str()))
+        .cloned()
 }
 
 /// A provider whose `base_url` can inform discovery. Exact account binding
 /// wins; the name fallback exists for unbound sign-ins (and test/fake
 /// endpoints), but must never be reported as a binding.
-fn provider_hint<'a>(
-    state: &'a AppState,
+fn provider_hint(
+    state: &AppState,
     account: &ListedAccount,
-) -> Option<&'a crate::config::ProviderConfig> {
+) -> Option<crate::config::ProviderConfig> {
     bound_provider(state, account).or_else(|| {
         state
             .config
+            .get()
             .providers
             .iter()
             .find(|provider| provider.name == account.provider || provider.name == account.id)
+            .cloned()
     })
 }
 
@@ -233,7 +239,7 @@ fn configured_models(
             models.push((id.clone(), id.clone()));
         }
     }
-    for route in &state.config.model_routes {
+    for route in &state.config.get().model_routes {
         let named = route
             .provider_names()
             .iter()
@@ -359,7 +365,8 @@ async fn plugin_for_account(
     state: &AppState,
     account: &ListedAccount,
 ) -> Option<crate::config::PluginRef> {
-    if let Some(provider) = state.config.providers.iter().find(|provider| {
+    let config = state.config.get();
+    if let Some(provider) = config.providers.iter().find(|provider| {
         provider.plugin.is_some() && provider.account_ids().contains(&account.id.as_str())
     }) {
         return provider.plugin.clone();
@@ -454,6 +461,7 @@ pub async fn handle_account_models(
         }
         .to_string();
         let base = hint
+            .as_ref()
             .map(crate::config::ProviderConfig::code_assist_load_base)
             .unwrap_or_else(|| crate::config::GEMINI_CODE_ASSIST_BASE.to_string());
         match state.accounts.discover_models(&account.id, &base).await {
@@ -468,7 +476,7 @@ pub async fn handle_account_models(
         }
     } else if account.provider == "chatgpt-api" {
         source = "chatgpt-api".to_string();
-        match discover_chatgpt_models(&state, &account, hint).await {
+        match discover_chatgpt_models(&state, &account, hint.as_ref()).await {
             Ok(found) => merge_models(&mut models, &mut seen, found, &source),
             Err(err) => {
                 warn!(
@@ -495,7 +503,7 @@ pub async fn handle_account_models(
     // A configured provider is also a useful fallback when discovery is not
     // available (Codex/Claude today) or failed. It is merged, not substituted:
     // an empty discovered list must not erase literal configured aliases.
-    if let Some(provider) = bound {
+    if let Some(provider) = &bound {
         let configured = configured_models(&state, provider);
         if source == "unsupported" && !configured.is_empty() {
             source = "configured".to_string();
@@ -527,16 +535,17 @@ pub async fn handle_account_models(
 /// The egress proxy for one provider's account traffic: the provider's own
 /// `proxy` field, else the server-level one, else none (P10).
 pub(super) fn account_proxy(state: &AppState, provider: &str) -> Option<String> {
-    let by_account = state.config.providers.iter().find(|p| {
+    let config = state.config.get();
+    let by_account = config.providers.iter().find(|p| {
         p.account_ids()
             .iter()
             .any(|id| id.split(':').next() == Some(provider))
     });
-    let provider_config = by_account.or_else(|| state.config.find_provider(provider));
+    let provider_config = by_account.or_else(|| config.find_provider(provider));
     provider_config
-        .and_then(|p| p.proxy_for(state.config.server.proxy.as_deref()))
+        .and_then(|p| p.proxy_for(config.server.proxy.as_deref()))
         .map(String::from)
-        .or_else(|| state.config.server.proxy.clone())
+        .or_else(|| config.server.proxy.clone())
 }
 
 /// `POST /v1/accounts/signin` (P10): start a gemini/copilot sign-in task

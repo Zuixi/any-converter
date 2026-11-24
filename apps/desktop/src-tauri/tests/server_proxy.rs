@@ -2,8 +2,8 @@
 
 //! The proxy is an allowlisted management client, not a generic HTTP bridge.
 
-use any_converter_desktop::server_manager::ServerManager;
-use any_converter_desktop::server_proxy::{self, ProxyError};
+use any_converter_desktop_lib::server_manager::ServerManager;
+use any_converter_desktop_lib::server_proxy::{self, ProxyError};
 use any_converter_server::home::Home;
 
 #[tokio::test]

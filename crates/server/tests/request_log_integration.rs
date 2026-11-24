@@ -9,7 +9,7 @@ use any_converter_server::config::{
     RouteStrategy, ServerConfig, ServerSettings,
 };
 use any_converter_server::credentials::AccountResolver;
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -55,6 +55,7 @@ fn test_config(base_url: &str, log_path: PathBuf) -> ServerConfig {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -125,7 +126,7 @@ async fn request_log_non_streaming_captures_body_usage_latency() {
     let base = format!("http://{addr}");
     let config = test_config(&base, log_path.clone());
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         client: Client::builder().no_proxy().build().unwrap(),
         accounts: AccountResolver::with_default_store(Client::new()),
         copilot_allowances: Arc::new(
@@ -241,7 +242,7 @@ async fn request_log_streaming_captures_ttfb_and_sse_lines() {
     let base = format!("http://{addr}");
     let config = test_config(&base, log_path.clone());
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         client: Client::builder().no_proxy().build().unwrap(),
         accounts: AccountResolver::with_default_store(Client::new()),
         copilot_allowances: Arc::new(

@@ -17,7 +17,7 @@ use any_converter_server::config::{
 use any_converter_server::credentials::{
     AccountResolver, Credential, FileSecretStore, SecretStore,
 };
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::lockfile::{FileLock, LockError};
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
@@ -239,6 +239,7 @@ fn server_config(provider: ProviderConfig) -> ServerConfig {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -287,7 +288,12 @@ impl TestEnv {
             format!("{base}/token"),
         ));
         let state = Arc::new(AppState {
-            config: server_config(code_assist_provider("gemini-oauth", &base, format, account)),
+            config: LiveConfig::new(server_config(code_assist_provider(
+                "gemini-oauth",
+                &base,
+                format,
+                account,
+            ))),
             client,
             accounts: Arc::clone(&accounts),
             copilot_allowances: Arc::new(
@@ -562,7 +568,7 @@ async fn revoked_401_marks_account_and_fails_over() {
     ));
 
     let state = Arc::new(AppState {
-        config: ServerConfig {
+        config: LiveConfig::new(ServerConfig {
             server: ServerSettings {
                 host: "127.0.0.1".into(),
                 port: 8080,
@@ -585,12 +591,13 @@ async fn revoked_401_marks_account_and_fails_over() {
                 providers: vec!["revoked-upstream".into(), "healthy-upstream".into()],
                 upstream_model: None,
                 strategy: RouteStrategy::Priority,
+                members: vec![],
             }],
             routes: vec![],
             model_metadata: Default::default(),
             pricing: Default::default(),
             logging: Default::default(),
-        },
+        }),
         client,
         accounts,
         copilot_allowances: Arc::new(

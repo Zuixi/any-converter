@@ -17,7 +17,7 @@ use any_converter_server::credentials::copilot::CopilotSessions;
 use any_converter_server::credentials::{
     AccountResolver, Credential, FileSecretStore, SecretStore, SiwcMeta,
 };
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::home::Home;
 use any_converter_server::plugins::{ManagedHosts, PluginAuth, PluginAuthStore};
 use any_converter_server::router::create_router_with_control_plane;
@@ -58,7 +58,7 @@ fn provider(name: &str, accounts: Vec<String>) -> ProviderConfig {
 fn app(dir: &std::path::Path, accounts: Vec<String>) -> axum::Router {
     let store = FileSecretStore::new(dir.join("secrets.json"));
     let state = Arc::new(AppState {
-        config: ServerConfig {
+        config: LiveConfig::new(ServerConfig {
             pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
@@ -72,7 +72,7 @@ fn app(dir: &std::path::Path, accounts: Vec<String>) -> axum::Router {
             routes: vec![],
             model_metadata: Default::default(),
             logging: Default::default(),
-        },
+        }),
         client: Client::new(),
         accounts: Arc::new(AccountResolver::new(store, Client::new())),
         copilot: Arc::new(any_converter_server::credentials::CopilotSessions::new(
@@ -126,7 +126,7 @@ fn app_with_config(
         None => copilot,
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         client,
         accounts,
         copilot: Arc::new(copilot),
@@ -312,6 +312,7 @@ fn route_to(pattern: &str, provider: &str) -> ModelRouteConfig {
         providers: Vec::new(),
         upstream_model: None,
         strategy: RouteStrategy::Priority,
+        members: vec![],
     }
 }
 
@@ -776,7 +777,7 @@ fn app_with_plugins(dir: &std::path::Path) -> axum::Router {
         dir.join("plugin-auth.json"),
     ))));
     let state = Arc::new(AppState {
-        config: ServerConfig {
+        config: LiveConfig::new(ServerConfig {
             pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
@@ -790,7 +791,7 @@ fn app_with_plugins(dir: &std::path::Path) -> axum::Router {
             routes: vec![],
             model_metadata: Default::default(),
             logging: Default::default(),
-        },
+        }),
         client: Client::new(),
         accounts: Arc::new(AccountResolver::new(store, Client::new())),
         copilot: Arc::new(any_converter_server::credentials::CopilotSessions::new(

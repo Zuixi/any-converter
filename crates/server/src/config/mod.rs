@@ -19,7 +19,10 @@ pub use provider::{
     ANTIGRAVITY_CODE_ASSIST_BASE, AuthScheme, GEMINI_CODE_ASSIST_BASE, PluginRef,
     ProviderAuthConfig, ProviderConfig, ProviderEndpointConfig,
 };
-pub use routes::{ModelMetadata, ModelRouteConfig, ResolvedRoute, RouteConfig, RouteStrategy};
+pub use routes::{
+    ModelMetadata, ModelRouteConfig, ResolvedMember, ResolvedRoute, RouteConfig, RouteMemberConfig,
+    RouteStrategy,
+};
 pub use upstream_api::{UpstreamApi, WireCompat, copilot_api};
 
 use logging::{
@@ -282,20 +285,52 @@ impl ServerConfig {
                     continue;
                 }
                 if glob_match(&mr.pattern, client_model) {
-                    let names = mr.provider_names();
-                    if names.is_empty() {
+                    let members: Vec<ResolvedMember> = if mr.members.is_empty() {
+                        // Preserve legacy behavior exactly: one model is
+                        // resolved through the first provider and sent to
+                        // every provider in the pool.
+                        let names = mr.provider_names();
+                        let upstream_model = mr.upstream_model.clone().unwrap_or_else(|| {
+                            names
+                                .first()
+                                .and_then(|name| self.find_provider(name))
+                                .map(|provider| provider.resolve_model(client_model))
+                                .unwrap_or_else(|| client_model.to_string())
+                        });
+                        names
+                            .into_iter()
+                            .map(|provider| ResolvedMember {
+                                provider,
+                                upstream_model: upstream_model.clone(),
+                                weight: 1,
+                                fallback: false,
+                            })
+                            .collect()
+                    } else {
+                        mr.enabled_members()
+                            .into_iter()
+                            .filter_map(|member| {
+                                let provider = self.find_provider(&member.provider)?;
+                                let upstream_model = member
+                                    .model
+                                    .clone()
+                                    .filter(|model| !model.trim().is_empty())
+                                    .unwrap_or_else(|| provider.resolve_model(client_model));
+                                Some(ResolvedMember {
+                                    provider: member.provider.clone(),
+                                    upstream_model,
+                                    weight: member.weight(),
+                                    fallback: member.is_fallback(),
+                                })
+                            })
+                            .collect()
+                    };
+                    let Some(first) = members.first() else {
                         continue;
-                    }
-                    let upstream = mr.upstream_model.clone().unwrap_or_else(|| {
-                        if let Some(provider) = self.find_provider(&names[0]) {
-                            provider.resolve_model(client_model)
-                        } else {
-                            client_model.to_string()
-                        }
-                    });
+                    };
                     return Some(ResolvedRoute {
-                        provider_names: names,
-                        upstream_model: upstream,
+                        upstream_model: first.upstream_model.clone(),
+                        members,
                         strategy: mr.strategy.clone(),
                     });
                 }
@@ -308,19 +343,24 @@ impl ServerConfig {
     /// catalog id as the passthrough name: the upstream never wants the
     /// `provider/` prefix.
     fn rebase_upstream(
-        resolved: ResolvedRoute,
+        mut resolved: ResolvedRoute,
         client_model: &str,
         bare_model: &str,
     ) -> ResolvedRoute {
-        if resolved.upstream_model == client_model {
-            ResolvedRoute {
-                provider_names: resolved.provider_names,
-                upstream_model: bare_model.to_string(),
-                strategy: resolved.strategy,
+        // A bare-model match kept the catalog id as the passthrough name;
+        // rewrite every member that inherited it, and the default.
+        for member in &mut resolved.members {
+            if member.upstream_model == client_model {
+                member.upstream_model = bare_model.to_string();
             }
-        } else {
-            resolved
         }
+        if resolved.upstream_model == client_model {
+            resolved.upstream_model = bare_model.to_string();
+        }
+        if let Some(first) = resolved.members.first() {
+            resolved.upstream_model = first.upstream_model.clone();
+        }
+        resolved
     }
     pub fn find_provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.name == name)
@@ -363,6 +403,11 @@ impl ServerConfig {
             if mr.provider_names().is_empty() {
                 errors.push(format!(
                     "model_routes[{}] (pattern=\"{}\"): no provider specified",
+                    i, mr.pattern
+                ));
+            } else if mr.enabled_members().is_empty() {
+                errors.push(format!(
+                    "model_routes[{}] (pattern=\"{}\"): every member is disabled",
                     i, mr.pattern
                 ));
             }
@@ -1127,6 +1172,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     providers: vec![],
                     upstream_model: None,
                     strategy: RouteStrategy::Priority,
+                    members: vec![],
                 },
                 ModelRouteConfig {
                     pattern: "gpt-*".into(),
@@ -1134,6 +1180,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     providers: vec![],
                     upstream_model: None,
                     strategy: RouteStrategy::Priority,
+                    members: vec![],
                 },
                 ModelRouteConfig {
                     pattern: "*".into(),
@@ -1141,6 +1188,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     providers: vec![],
                     upstream_model: Some("gpt-4.1-mini".into()),
                     strategy: RouteStrategy::Priority,
+                    members: vec![],
                 },
             ],
             routes: vec![],
@@ -1150,16 +1198,16 @@ headers = { "x-ms-client-request-id" = "test-client" }
         };
 
         let r = config.resolve_provider("claude-sonnet-4").unwrap();
-        assert_eq!(r.provider_names, vec!["anthropic"]);
+        assert_eq!(r.provider_names(), vec!["anthropic"]);
         assert_eq!(r.upstream_model, "claude-sonnet-4");
 
         let r = config.resolve_provider("gpt-4.1").unwrap();
-        assert_eq!(r.provider_names, vec!["openai"]);
+        assert_eq!(r.provider_names(), vec!["openai"]);
         assert_eq!(r.upstream_model, "gpt-4.1");
 
         // Wildcard fallback with upstream_model override
         let r = config.resolve_provider("unknown-model").unwrap();
-        assert_eq!(r.provider_names, vec!["openai"]);
+        assert_eq!(r.provider_names(), vec!["openai"]);
         assert_eq!(r.upstream_model, "gpt-4.1-mini");
     }
 
@@ -1198,6 +1246,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 providers: vec![],
                 upstream_model: None,
                 strategy: RouteStrategy::Priority,
+                members: vec![],
             }],
             routes: vec![RouteConfig {
                 client_format: Format::Claude,
@@ -1208,7 +1257,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
             logging: LoggingConfig::default(),
         };
         let r = config.resolve_provider("claude-sonnet-4").unwrap();
-        assert_eq!(r.provider_names, vec!["openai"]);
+        assert_eq!(r.provider_names(), vec!["openai"]);
         assert_eq!(r.upstream_model, "gpt-4.1");
 
         // Only legacy routes: no resolution at all.
@@ -1267,6 +1316,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 providers: vec!["primary".into(), "backup".into()],
                 upstream_model: None,
                 strategy: RouteStrategy::Priority,
+                members: vec![],
             }],
             routes: vec![],
             model_metadata: HashMap::new(),
@@ -1275,8 +1325,68 @@ headers = { "x-ms-client-request-id" = "test-client" }
         };
 
         let r = config.resolve_provider("gpt-4.1").unwrap();
-        assert_eq!(r.provider_names, vec!["primary", "backup"]);
+        assert_eq!(r.provider_names(), vec!["primary", "backup"]);
         assert_eq!(r.strategy, RouteStrategy::Priority);
+    }
+
+    #[test]
+    fn member_routes_resolve_independent_models_and_fallbacks() {
+        let config = ServerConfig::from_toml(
+            r#"
+[server]
+host = "127.0.0.1"
+
+[[providers]]
+name = "primary"
+format = "openai_chat"
+base_url = "https://primary.example"
+api_key = "key"
+
+[[providers]]
+name = "backup"
+format = "openai_chat"
+base_url = "https://backup.example"
+api_key = "key"
+
+[[providers]]
+name = "disabled"
+format = "openai_chat"
+base_url = "https://disabled.example"
+api_key = "key"
+
+[[model_routes]]
+pattern = "client-model"
+strategy = "weighted"
+members = [
+  { provider = "backup", model = "backup-model", fallback = true, weight = 4 },
+  { provider = "primary", model = "primary-model", weight = 2 },
+  { provider = "disabled", enabled = false },
+]
+"#,
+        )
+        .unwrap();
+
+        let resolved = config.resolve_provider("client-model").unwrap();
+        assert_eq!(resolved.strategy, RouteStrategy::Weighted);
+        assert_eq!(
+            resolved
+                .members
+                .iter()
+                .map(|member| {
+                    (
+                        member.provider.as_str(),
+                        member.upstream_model.as_str(),
+                        member.fallback,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("primary", "primary-model", false),
+                ("backup", "backup-model", true),
+            ]
+        );
+        assert_eq!(resolved.members[0].weight, 2);
+        assert_eq!(resolved.members[1].weight, 4);
     }
 
     #[test]
@@ -1296,6 +1406,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                 providers: vec![],
                 upstream_model: None,
                 strategy: RouteStrategy::Priority,
+                members: vec![],
             }],
             routes: vec![RouteConfig {
                 client_format: Format::Claude,
@@ -1344,6 +1455,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     providers: vec![],
                     upstream_model: None,
                     strategy: RouteStrategy::Priority,
+                    members: vec![],
                 },
                 ModelRouteConfig {
                     pattern: "claude-*".into(),
@@ -1351,6 +1463,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     providers: vec![],
                     upstream_model: None,
                     strategy: RouteStrategy::Priority,
+                    members: vec![],
                 },
                 ModelRouteConfig {
                     pattern: "*".into(),
@@ -1358,6 +1471,7 @@ headers = { "x-ms-client-request-id" = "test-client" }
                     providers: vec![],
                     upstream_model: None,
                     strategy: RouteStrategy::Priority,
+                    members: vec![],
                 },
             ],
             routes: vec![],

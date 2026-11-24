@@ -96,16 +96,12 @@ export function ProviderCard({
           className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-destructive"
           onClick={(event) => {
             event.stopPropagation();
-            if (window.confirm(s.deleteConfirm)) {
-              onDelete();
-            }
+            onDelete();
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") {
               event.stopPropagation();
-              if (window.confirm(s.deleteConfirm)) {
-                onDelete();
-              }
+              onDelete();
             }
           }}
         >

@@ -27,7 +27,7 @@ use any_converter_server::config::{
     ServerConfig, ServerSettings,
 };
 use any_converter_server::credentials::AccountResolver;
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::plugins::{
     ApiKeyParams, ManagedHosts, PluginAuth, PluginAuthStore, ProviderPlugin,
 };
@@ -137,13 +137,14 @@ impl Harness {
                 providers: names,
                 upstream_model: None,
                 strategy: RouteStrategy::Priority,
+                members: vec![],
             }],
             routes: vec![],
             model_metadata: HashMap::new(),
             logging: Default::default(),
         };
         let state = Arc::new(AppState {
-            config,
+            config: LiveConfig::new(config),
             client: Client::builder().no_proxy().build().unwrap(),
             accounts: AccountResolver::with_default_store(Client::new()),
             copilot_allowances: Arc::new(

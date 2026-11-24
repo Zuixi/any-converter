@@ -39,6 +39,7 @@ pub(crate) async fn forward_via_plugin(
         provider,
         api,
         route_info,
+        upstream_model,
     } = att;
     let api = *api;
     let account = provider.account.clone().unwrap_or_default();
@@ -92,9 +93,9 @@ pub(crate) async fn forward_via_plugin(
             };
         }
     };
-    let matched = models.iter().find(|m| {
-        m.id == ctx.upstream_model || (!m.api_id.is_empty() && m.api_id == ctx.upstream_model)
-    });
+    let matched = models
+        .iter()
+        .find(|m| m.id == *upstream_model || (!m.api_id.is_empty() && m.api_id == *upstream_model));
 
     // base = loader.base_url (trailing slash trimmed), else the model's own
     // `url`; an empty base means the plugin cannot send requests at all.
@@ -127,7 +128,7 @@ pub(crate) async fn forward_via_plugin(
     // loader base of https://api.githubcopilot.com asks for
     // /chat/completions, and one of https://api.anthropic.com/v1 must not
     // become /v1/v1/messages.
-    let path = api.path(&ctx.upstream_model, ctx.streaming);
+    let path = api.path(upstream_model, ctx.streaming);
     let path = path.strip_prefix("/v1").unwrap_or(&path);
     let url = format!("{base}{path}");
     // Same-host guard: credentialed requests must stay
@@ -148,6 +149,7 @@ pub(crate) async fn forward_via_plugin(
     }
 
     if let Some(ref mut log_ctx) = ctx.log_ctx {
+        log_ctx.upstream_model = upstream_model.to_string();
         log_ctx.upstream_url = url.clone();
     }
 
@@ -158,7 +160,7 @@ pub(crate) async fn forward_via_plugin(
         body: String::from_utf8_lossy(&converted_body).into_owned(),
         provider: provider_id,
         account,
-        model: ctx.upstream_model.clone(),
+        model: upstream_model.to_string(),
         npm: matched.map(|m| m.npm.clone()).unwrap_or_default(),
     };
 

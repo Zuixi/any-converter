@@ -20,7 +20,7 @@ use crate::credentials::{Allowance, ApiKeySource, TokenSource};
 use crate::model::{extract_model_from_body, patch_model_in_body};
 use crate::provider_pool::order_accounts;
 use crate::request_log::RequestLogContext;
-use crate::route_strategy::order_provider_names;
+use crate::route_strategy::order_members;
 use crate::router::RouteInfo;
 
 use super::accounts::{QUOTA_SHARE, cached_account_allowance};
@@ -148,7 +148,7 @@ pub async fn handle_count_tokens(
     // Global or per-agent gateway key (attribution + lazy agent sync).
     if let Err(err) = state
         .agents
-        .authenticate(state.config.server.api_key.as_deref(), auth_header)
+        .authenticate(state.config.get().server.api_key.as_deref(), auth_header)
         .await
     {
         return auth_error_response(err);
@@ -186,19 +186,20 @@ async fn forward_count_tokens(
     body: &[u8],
     client_model: &str,
 ) -> Option<Response> {
-    let resolved = state.config.resolve_provider(client_model)?;
-    let provider = resolved
-        .provider_names
-        .first()
-        .and_then(|name| state.config.find_provider(name))?;
+    // Hold one snapshot for the whole read: a patch may swap it at any time,
+    // and the resolution and the provider lookup must describe the same one.
+    let config = state.config.get();
+    let resolved = config.resolve_provider(client_model)?;
+    let member = resolved.members.first()?;
+    let provider = config.find_provider(&member.provider)?;
     if provider.format != Format::Claude {
         return None;
     }
 
     let mut forward_body = body.to_vec();
-    if resolved.upstream_model != client_model {
+    if member.upstream_model != client_model {
         if let Err(err) =
-            patch_model_in_body(&mut forward_body, Format::Claude, &resolved.upstream_model)
+            patch_model_in_body(&mut forward_body, Format::Claude, &member.upstream_model)
         {
             warn!(
                 "failed to patch model for count_tokens provider={} error={err}",
@@ -271,10 +272,9 @@ pub(crate) struct RequestContext {
     req_id: uuid::Uuid,
     start_time: std::time::Instant,
     client_model: String,
-    upstream_model: String,
     ns_map: std::collections::HashMap<String, (String, String)>,
     streaming: bool,
-    provider_names: Vec<String>,
+    members: Vec<crate::config::ResolvedMember>,
     strategy: RouteStrategy,
     log_ctx: Option<RequestLogContext>,
 }
@@ -291,6 +291,7 @@ pub(crate) struct Attempt<'a> {
     pub provider: &'a ProviderConfig,
     pub api: UpstreamApi,
     pub route_info: RouteInfo,
+    pub upstream_model: &'a str,
 }
 
 /// Where the failover loop stands: which target it is on, whether this
@@ -334,24 +335,26 @@ impl Failover {
 pub(crate) async fn build_plan(
     state: &AppState,
     ctx: &RequestContext,
-    provider_names: &[String],
-) -> Result<(Vec<(ProviderConfig, UpstreamApi)>, Option<String>), Box<Response>> {
+    members: &[crate::config::ResolvedMember],
+) -> Result<(Vec<(ProviderConfig, UpstreamApi, String)>, Option<String>), Box<Response>> {
     // P9: flatten providers × accounts into one stable attempt plan. Each
     // provider contributes its accounts in the user's order, with the ones
     // past their quota line moved last rather than reordered
     // (provider_pool); a provider with no accounts contributes a single
     // api_key slot. The same account is never tried twice in one request.
-    let mut plan: Vec<(crate::config::ProviderConfig, UpstreamApi)> = Vec::new();
+    let mut plan: Vec<(crate::config::ProviderConfig, UpstreamApi, String)> = Vec::new();
     let mut plan_error: Option<String> = None;
-    for provider_name in provider_names {
-        let provider = match state.config.find_provider(provider_name) {
+    // One snapshot for the whole plan: provider references below borrow it.
+    let config = state.config.get();
+    for member in members {
+        let provider = match config.find_provider(&member.provider) {
             Some(p) => p,
             None => {
                 error!(
                     "provider not found: {} request_id={}",
-                    provider_name, ctx.req_id
+                    member.provider, ctx.req_id
                 );
-                plan_error = Some(format!("provider not found: {provider_name}"));
+                plan_error = Some(format!("provider not found: {}", member.provider));
                 continue;
             }
         };
@@ -394,7 +397,7 @@ pub(crate) async fn build_plan(
             order_accounts(
                 &ids,
                 &allowance_map,
-                &ctx.upstream_model,
+                &member.upstream_model,
                 QUOTA_SHARE,
                 std::time::SystemTime::now(),
             )
@@ -419,11 +422,11 @@ pub(crate) async fn build_plan(
             }
             let mut effective = provider.clone();
             effective.account = account;
-            let api = match resolve_upstream_api(state, &effective, &ctx.upstream_model).await {
+            let api = match resolve_upstream_api(state, &effective, &member.upstream_model).await {
                 Ok(api) => api,
                 Err(response) => return Err(response),
             };
-            plan.push((effective, api));
+            plan.push((effective, api, member.upstream_model.clone()));
         }
     }
 
@@ -446,7 +449,7 @@ pub(crate) async fn process_request(
     // the request path beyond the key lookup).
     if let Err(err) = state
         .agents
-        .authenticate(state.config.server.api_key.as_deref(), auth_header)
+        .authenticate(state.config.get().server.api_key.as_deref(), auth_header)
         .await
     {
         return auth_error_response(err);
@@ -459,9 +462,9 @@ pub(crate) async fn process_request(
             Err(response) => return *response,
         };
 
-    let provider_names = order_provider_names(&ctx.provider_names, &ctx.strategy);
+    let members = order_members(&ctx.members, &ctx.strategy);
 
-    let (plan, plan_error) = match build_plan(state, &ctx, &provider_names).await {
+    let (plan, plan_error) = match build_plan(state, &ctx, &members).await {
         Ok(built) => built,
         Err(response) => return *response,
     };
@@ -476,12 +479,13 @@ pub(crate) async fn process_request(
     }
 
     while fo.attempt < plan.len() {
-        let (provider, api) = &plan[fo.attempt];
+        let (provider, api, upstream_model) = &plan[fo.attempt];
         let att = Attempt {
             state,
             provider,
             api: *api,
             route_info,
+            upstream_model,
         };
 
         let (converted_body, url, upstream_headers) =
@@ -518,7 +522,7 @@ pub(crate) async fn process_request(
             ctx.req_id,
             route_info.client_format,
             provider.name,
-            ctx.upstream_model,
+            upstream_model,
             ctx.streaming,
             fo.attempt + 1
         );
@@ -568,16 +572,21 @@ pub(crate) async fn process_request(
                 converted_body,
                 &upstream_headers,
                 headers,
-                &state.config.server.pass_through_headers,
+                &state.config.get().server.pass_through_headers,
                 response_format,
                 route_info.client_format,
                 *api,
                 &ctx.ns_map,
                 ctx.log_ctx.clone(),
                 state.request_logger.clone(),
-                state.config.logging.request_log.max_capture_bytes,
-                state.config.logging.request_log.trace_enabled,
-                state.config.logging.request_log.trace_max_preview_bytes,
+                state.config.get().logging.request_log.max_capture_bytes,
+                state.config.get().logging.request_log.trace_enabled,
+                state
+                    .config
+                    .get()
+                    .logging
+                    .request_log
+                    .trace_max_preview_bytes,
             )
             .await
             {
@@ -650,7 +659,7 @@ pub(crate) async fn process_request(
             converted_body,
             &upstream_headers,
             headers,
-            &state.config.server.pass_through_headers,
+            &state.config.get().server.pass_through_headers,
             *api,
         )
         .await

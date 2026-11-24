@@ -7,13 +7,13 @@ use any_converter_server::config::{
     ModelRouteConfig, PassThroughHeadersConfig, ProviderConfig, RouteStrategy, ServerConfig,
     ServerSettings,
 };
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::{Router, routing::post};
 use reqwest::Client;
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn oai_provider(name: &str, base_url: &str) -> ProviderConfig {
@@ -51,6 +51,7 @@ fn make_config(providers: Vec<ProviderConfig>) -> ServerConfig {
             providers: names,
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -61,7 +62,7 @@ fn make_config(providers: Vec<ProviderConfig>) -> ServerConfig {
 
 fn make_app(config: ServerConfig) -> axum::Router {
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         client: Client::builder().no_proxy().build().unwrap(),
         accounts: any_converter_server::credentials::AccountResolver::with_default_store(
             Client::new(),
@@ -122,6 +123,47 @@ fn rate_limited_upstream(hits: Arc<AtomicUsize>) -> Router {
                         }
                     })),
                 )
+            }
+        }),
+    )
+}
+
+fn model_specific_upstream(
+    expected_model: &'static str,
+    status: StatusCode,
+    hits: Arc<AtomicUsize>,
+) -> Router {
+    use axum::extract::Json;
+    use axum::response::IntoResponse;
+
+    Router::new().route(
+        "/v1/chat/completions",
+        post(move |Json(body): Json<Value>| {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(body["model"], expected_model);
+                if status.is_success() {
+                    (
+                        status,
+                        Json(json!({
+                            "id": "member-route",
+                            "object": "chat.completion",
+                            "model": expected_model,
+                            "choices": [{"index": 0, "message": {"role": "assistant", "content": "member"}, "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                        })),
+                    )
+                        .into_response()
+                } else {
+                    (
+                        status,
+                        Json(json!({
+                            "error": {"message": "rate limited", "type": "rate_limit_error"}
+                        })),
+                    )
+                        .into_response()
+                }
             }
         }),
     )
@@ -195,6 +237,49 @@ async fn failover_retries_second_provider_after_429() {
         .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(val["choices"][0]["message"]["content"], "from-b");
+    assert_eq!(hits_a.load(Ordering::SeqCst), 1);
+    assert_eq!(hits_b.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn member_failover_uses_each_members_upstream_model() {
+    use any_converter_server::config::RouteMemberConfig;
+
+    let hits_a = Arc::new(AtomicUsize::new(0));
+    let hits_b = Arc::new(AtomicUsize::new(0));
+    let base_a = spawn_upstream(model_specific_upstream(
+        "provider-a-model",
+        StatusCode::TOO_MANY_REQUESTS,
+        hits_a.clone(),
+    ))
+    .await;
+    let base_b = spawn_upstream(model_specific_upstream(
+        "provider-b-model",
+        StatusCode::OK,
+        hits_b.clone(),
+    ))
+    .await;
+
+    let mut config = make_config(vec![oai_provider("a", &base_a), oai_provider("b", &base_b)]);
+    let route = &mut config.model_routes[0];
+    route.provider = None;
+    route.providers.clear();
+    route.members = vec![
+        RouteMemberConfig {
+            provider: "a".into(),
+            model: Some("provider-a-model".into()),
+            ..Default::default()
+        },
+        RouteMemberConfig {
+            provider: "b".into(),
+            model: Some("provider-b-model".into()),
+            ..Default::default()
+        },
+    ];
+
+    let app = make_app(config);
+    let response = app.oneshot(chat_request(false)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(hits_a.load(Ordering::SeqCst), 1);
     assert_eq!(hits_b.load(Ordering::SeqCst), 1);
 }

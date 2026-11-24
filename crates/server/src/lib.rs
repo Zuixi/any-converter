@@ -25,6 +25,7 @@ pub mod request_log;
 pub(crate) mod route_strategy;
 pub mod router;
 pub mod secrets;
+pub mod sessions;
 pub mod signin_task;
 pub mod storage;
 pub mod usage;

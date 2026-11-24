@@ -18,7 +18,7 @@ use any_converter_server::credentials::copilot::CopilotSessions;
 use any_converter_server::credentials::{
     AccountResolver, Credential, FileSecretStore, SecretStore,
 };
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
 use axum::extract::Request as AxumRequest;
@@ -305,6 +305,7 @@ fn server_config() -> ServerConfig {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -334,7 +335,7 @@ impl TestEnv {
                 .with_token_url(&format!("{base}/copilot_internal/v2/token")),
         );
         let state = Arc::new(AppState {
-            config: server_config(),
+            config: LiveConfig::new(server_config()),
             client,
             accounts,
             copilot,

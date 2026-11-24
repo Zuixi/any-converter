@@ -260,7 +260,28 @@ Notes:
 
 - `priority` tries providers in order
 - `round_robin` rotates the starting provider while keeping failover
-- `upstream_model` lets you pin the final model sent upstream
+- `weighted` chooses a starting primary by its member weight, then fails over
+- legacy `providers` / `upstream_model` routes remain supported
+
+For providers that use different model ids, define route members instead of a
+shared provider pool. `model = ""` (or omitting `model`) uses that provider's
+`model_map` and then passes the client model through. Fallback members are only
+tried after primary members fail; disabled members stay configured but are
+skipped.
+
+```toml
+[[model_routes]]
+pattern = "coding-*"
+strategy = "weighted"
+members = [
+  { provider = "openai", model = "gpt-4.1", weight = 3 },
+  { provider = "deepseek", model = "deepseek-chat", weight = 1 },
+  { provider = "anthropic", model = "claude-sonnet-4", fallback = true },
+]
+```
+
+`priority` and `round_robin` are also available to member-based routes. Round
+robin rotates among primary members; fallback members remain after primaries.
 
 ## Model mapping
 

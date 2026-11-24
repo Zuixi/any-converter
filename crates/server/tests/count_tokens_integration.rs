@@ -8,7 +8,7 @@ use any_converter_server::config::{
     ModelRouteConfig, PassThroughHeadersConfig, ProviderConfig, RouteStrategy, ServerConfig,
     ServerSettings,
 };
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
 use axum::extract::Request as AxumRequest;
@@ -56,6 +56,7 @@ fn make_app(providers: Vec<ProviderConfig>, route_provider: &str, api_key: Optio
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -63,7 +64,7 @@ fn make_app(providers: Vec<ProviderConfig>, route_provider: &str, api_key: Optio
         logging: Default::default(),
     };
     create_router_with_state(Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         client: Client::builder().no_proxy().build().unwrap(),
         accounts: any_converter_server::credentials::AccountResolver::with_default_store(
             Client::new(),

@@ -246,6 +246,16 @@ pattern = "*"
 providers = ["openai"]
 ```
 
+New routes may instead use a `members` array. Each member selects one
+provider and may specify its own upstream `model`, `weight`, `enabled`, and
+`fallback` fields. The legacy `providers` and route-level `upstream_model`
+fields remain readable; member routes resolve the upstream model separately
+for each provider.
+
+Supported route strategies are `priority`, `round_robin`, and `weighted`.
+Fallback members are ordered after primary members and are attempted only
+after all primary attempts fail.
+
 **Model resolution priority:** exact match → wildcard `*` → passthrough (original name).
 
 ### 4.2 Router

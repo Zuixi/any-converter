@@ -6,17 +6,55 @@
 //! stashes, and drift audits.
 
 pub mod agy;
+pub mod ante;
 pub mod antigravity;
+pub mod atomcode;
 pub mod claude;
+pub mod claude_science;
+pub mod codebuddy;
 pub mod codex;
+pub mod commandcode;
+pub mod copilot;
+pub mod copilot_jb;
+pub mod craft_agents;
+pub mod crush;
 pub mod cursor;
 pub mod droid;
+pub mod empryo;
+pub mod fx;
 pub mod gemini;
+pub mod goose;
+pub mod grok;
 pub mod hermes;
+pub mod kimi;
+pub mod liveagent;
+pub mod minimax_code;
+pub mod miniq;
+pub mod morph;
+pub mod mothx;
+pub mod muse;
+pub mod nanobot;
+pub mod omp;
+pub mod openbot;
+pub mod openchamber;
+pub mod openclaw;
 pub mod opencode;
+pub mod opencode_family;
+pub mod openmausbot;
+pub mod openpencil;
+pub mod paimon;
+pub mod pencil;
 pub mod pi;
+pub mod pi_family;
+pub mod qoder;
 pub mod qwen;
+pub mod qwenpaw;
+pub mod snow;
+pub mod stepcode;
+pub mod support;
+pub mod tuanjie_cowork;
 pub mod vscode;
+pub mod workbuddy;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -158,13 +196,55 @@ pub fn all_specs() -> Vec<Box<dyn AgentSpec>> {
         Box::new(droid::DroidSpec),
         Box::new(gemini::GeminiSpec),
         Box::new(pi::PiSpec),
+        Box::new(pi_family::omo()),
+        Box::new(pi_family::prime_agent()),
+        Box::new(pi_family::mu()),
         Box::new(qwen::QwenSpec),
         Box::new(opencode::OpenCodeSpec),
+        Box::new(opencode_family::mimocode()),
+        Box::new(opencode_family::deveco()),
         Box::new(vscode::VSCodeSpec),
         Box::new(antigravity::AntigravitySpec),
         Box::new(agy::AgySpec),
         Box::new(cursor::CursorSpec),
         Box::new(hermes::HermesSpec),
+        Box::new(stepcode::StepcodeSpec),
+        Box::new(mothx::MothxSpec),
+        Box::new(omp::OmpSpec),
+        Box::new(morph::MorphSpec),
+        Box::new(minimax_code::MinimaxCodeSpec),
+        Box::new(liveagent::LiveagentSpec),
+        Box::new(openchamber::OpenChamberSpec),
+        Box::new(goose::GooseSpec),
+        Box::new(crush::CrushSpec),
+        Box::new(openclaw::OpenClawSpec),
+        Box::new(snow::SnowSpec),
+        Box::new(qwenpaw::QwenPawSpec),
+        Box::new(commandcode::CommandCodeSpec),
+        Box::new(fx::FxSpec),
+        Box::new(empryo::EmpryoSpec),
+        Box::new(nanobot::NanobotSpec),
+        Box::new(miniq::MiniqSpec),
+        Box::new(paimon::PaimonSpec),
+        Box::new(ante::AnteSpec),
+        Box::new(muse::MuseSpec),
+        Box::new(qoder::qoder()),
+        Box::new(qoder::qoder_cn()),
+        Box::new(copilot::CopilotSpec),
+        Box::new(copilot_jb::CopilotJetBrainsSpec),
+        Box::new(kimi::KimiSpec),
+        Box::new(grok::GrokSpec),
+        Box::new(atomcode::AtomCodeSpec),
+        Box::new(pencil::PencilSpec),
+        Box::new(openpencil::OpenPencilSpec),
+        Box::new(openbot::OpenBotSpec),
+        Box::new(craft_agents::CraftAgentsSpec),
+        Box::new(tuanjie_cowork::TuanjieCoworkSpec),
+        Box::new(workbuddy::workbuddy()),
+        Box::new(workbuddy::workbuddy_ai()),
+        Box::new(codebuddy::CodeBuddySpec),
+        Box::new(claude_science::ClaudeScienceSpec),
+        Box::new(openmausbot::OpenMausBotSpec),
     ]
 }
 
@@ -317,6 +397,24 @@ pub(crate) fn app_data_dir(ctx: &HomeCtx) -> PathBuf {
     {
         env_dir(ctx, "APPDATA", |ctx| {
             join_relative(&ctx.home, "AppData/Roaming")
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        join_relative(&ctx.home, "Library/Application Support")
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        xdg_config_home(ctx)
+    }
+}
+
+/// The local (non-roaming) application data directory for the platform.
+pub(crate) fn local_app_data_dir(ctx: &HomeCtx) -> PathBuf {
+    #[cfg(windows)]
+    {
+        env_dir(ctx, "LOCALAPPDATA", |ctx| {
+            join_relative(&ctx.home, "AppData/Local")
         })
     }
     #[cfg(target_os = "macos")]

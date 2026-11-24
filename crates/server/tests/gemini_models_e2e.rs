@@ -17,7 +17,7 @@ use any_converter_server::config::{
 use any_converter_server::credentials::{
     AccountError, AccountResolver, Credential, FileSecretStore, GEMINI_MODELS, SecretStore,
 };
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
 use axum::extract::Request as AxumRequest;
@@ -218,7 +218,7 @@ impl TestEnv {
         ));
 
         let state = Arc::new(AppState {
-            config: ServerConfig {
+            config: LiveConfig::new(ServerConfig {
                 pricing: Default::default(),
                 server: ServerSettings {
                     host: "127.0.0.1".into(),
@@ -234,11 +234,12 @@ impl TestEnv {
                     providers: vec![],
                     upstream_model: None,
                     strategy: RouteStrategy::Priority,
+                    members: vec![],
                 }],
                 routes: vec![],
                 model_metadata: Default::default(),
                 logging: Default::default(),
-            },
+            }),
             client,
             accounts: Arc::clone(&accounts),
             copilot_allowances: Arc::new(

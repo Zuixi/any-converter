@@ -542,13 +542,14 @@ impl AgentRegistry {
             .cloned()
             .ok_or_else(|| ApiError::NotConnected(agent_id.to_owned()))?;
         let default_model = resolve_model(&catalog, None, entry.default_model.as_deref())?;
+        let role_models = resolve_roles(spec.as_ref(), &catalog, None, &entry.role_models)?;
         let wiring_ctx = WiringCtx {
             gateway_url: &self.gateway_url,
             agent_key: &key.key,
             catalog: &catalog,
             default_model: &default_model,
             effort: entry.effort.as_deref(),
-            roles: &entry.role_models,
+            roles: &role_models,
         };
         let wiring = Wiring::new(&self.data_dir);
         wiring.connect(spec.as_ref(), &home_ctx, &wiring_ctx)?;
@@ -563,7 +564,7 @@ impl AgentRegistry {
                 catalog_digest: Some(catalog.digest()),
                 home: Some(home.display().to_string()),
                 effort: entry.effort,
-                role_models: entry.role_models,
+                role_models,
             },
         );
         self.save_state(&inner.state)?;
@@ -896,7 +897,11 @@ fn resolve_roles(
     stored: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, ApiError> {
     let Some(requested) = requested else {
-        return Ok(stored.clone());
+        return Ok(stored
+            .iter()
+            .filter(|(_, model)| catalog.find(model).is_some())
+            .map(|(role, model)| (role.clone(), model.clone()))
+            .collect());
     };
     if spec.roles().is_empty() {
         if requested.values().all(String::is_empty) {

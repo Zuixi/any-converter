@@ -3,6 +3,7 @@ import { Badge, Button } from "@any-converter/ui";
 import { useI18n, type TranslationKey } from "@any-converter/core";
 
 import { agentMeta, formatTimestamp, shortKeyId, STATUS_TONE } from "../../lib/agents";
+import { AgentIcon } from "./AgentIcon";
 import type {
   AgentAction as ManagementAction,
   AgentConnectOptions,
@@ -115,10 +116,17 @@ export function AgentRow({
 
   // Each row owns its model choice: the stored one when wired, the catalog's
   // first model otherwise. A successful connect refreshes `agent.model`.
+  //
+  // The stored model can outlive its provider (a provider deleted while this
+  // agent stayed wired). Sending that dead id makes the server reject the
+  // connect with `model_not_found` and the agent keeps its old config, so a
+  // stored model no longer in the catalog is treated as no choice at all.
   const [selected, setSelected] = useState("");
   useEffect(() => {
     setSelected((current) => {
-      if (agent.model && agent.model !== current) return agent.model;
+      if (agent.model && models.includes(agent.model) && agent.model !== current) {
+        return agent.model;
+      }
       if ((!current || !models.includes(current)) && models.length > 0) return models[0] ?? "";
       return current;
     });
@@ -147,6 +155,18 @@ export function AgentRow({
       return differs ? stored : current;
     });
   }, [roleKey]);
+
+  // A stored per-role model can outlive its provider just like `selected`.
+  // Sending one the catalog no longer lists makes the server reject the
+  // whole connect, so drop those selections instead of echoing them back.
+  useEffect(() => {
+    setRoles((current) => {
+      const valid = Object.fromEntries(
+        Object.entries(current).filter(([, id]) => !id || models.includes(id)),
+      );
+      return Object.keys(valid).length === Object.keys(current).length ? current : valid;
+    });
+  }, [models]);
 
   const apply = () =>
     onAction("connect", {
@@ -178,9 +198,9 @@ export function AgentRow({
         >
           <span
             aria-hidden="true"
-            className={`flex h-10 w-10 flex-none items-center justify-center rounded-lg text-xs font-bold ${meta.accent}`}
+            className={`flex h-10 w-10 flex-none items-center justify-center rounded-lg p-2 ${meta.accent}`}
           >
-            {meta.monogram}
+            <AgentIcon id={agent.id} className="h-full w-full" />
           </span>
           <span className="grid min-w-0 flex-1 gap-0.5">
             <span className="flex min-w-0 items-baseline gap-2">

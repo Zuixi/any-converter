@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde_json::json;
 
 use super::{
-    AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, gw_base_match, load_stash,
+    AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, env_dir, gw_base_match, load_stash,
     read_config, record_old_values, save_stash, write_config,
 };
 use crate::edit::{KV, json};
@@ -16,7 +16,11 @@ use crate::error::WiringError;
 pub const OUR_KEYS: &[&str] = &[
     "env.ANTHROPIC_BASE_URL",
     "env.ANTHROPIC_AUTH_TOKEN",
+    // Not written any more; removed on connect and restored on disconnect.
+    // `env.ANTHROPIC_MODEL` outranks the top-level `model`, so a `/model` pick
+    // would never persist.
     "env.ANTHROPIC_MODEL",
+    "model",
     "env.ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "env.ANTHROPIC_DEFAULT_SONNET_MODEL",
     "env.ANTHROPIC_DEFAULT_OPUS_MODEL",
@@ -48,8 +52,17 @@ fn role_key(role: &str) -> &'static str {
 pub struct ClaudeSpec;
 
 impl ClaudeSpec {
+    /// Claude Code's configuration directory.
+    ///
+    /// With `CLAUDE_CONFIG_DIR` set, Claude Code keeps everything there and
+    /// never creates `~/.claude`; the settings file it reads is the one under
+    /// that directory.
+    fn config_dir(ctx: &HomeCtx) -> PathBuf {
+        env_dir(ctx, "CLAUDE_CONFIG_DIR", |home| home.home.join(".claude"))
+    }
+
     fn settings_path(ctx: &HomeCtx) -> PathBuf {
-        ctx.home.join(".claude").join("settings.json")
+        Self::config_dir(ctx).join("settings.json")
     }
 }
 
@@ -63,7 +76,7 @@ impl AgentSpec for ClaudeSpec {
     }
 
     fn detect(&self, ctx: &HomeCtx) -> DetectResult {
-        let config_dir = ctx.home.join(".claude");
+        let config_dir = Self::config_dir(ctx);
         let settings = Self::settings_path(ctx);
         if settings.exists() || config_dir.is_dir() {
             DetectResult::Detected { config_dir }
@@ -103,10 +116,13 @@ impl AgentSpec for ClaudeSpec {
         }
         record_old_values(&mut stash, self.id(), old);
 
+        // The model goes in settings.json's top-level `model`, which is the
+        // value `/model` reads and writes. `env.ANTHROPIC_MODEL` outranks it,
+        // so it is removed on connect (and restored on disconnect).
         let mut kvs = vec![
             KV::new("env.ANTHROPIC_BASE_URL", json!(wiring.gateway_url)),
             KV::new("env.ANTHROPIC_AUTH_TOKEN", json!(wiring.agent_key)),
-            KV::new("env.ANTHROPIC_MODEL", json!(wiring.default_model)),
+            KV::new("model", json!(wiring.default_model)),
         ];
 
         // A role the user picked wins; otherwise keep the catalog's tier
@@ -129,7 +145,17 @@ impl AgentSpec for ClaudeSpec {
         }
 
         let mut text = json::set(&current, &kvs)?;
-        text = json::del(&text, &["env.ANTHROPIC_API_KEY"])?;
+        let stale_roles: Vec<&str> = ROLES
+            .iter()
+            .filter_map(|role| {
+                let key = role_key(role);
+                json::get(&text, key)
+                    .filter(|model| wiring.catalog.find(model).is_none())
+                    .map(|_| key)
+            })
+            .collect();
+        text = json::del(&text, &stale_roles)?;
+        text = json::del(&text, &["env.ANTHROPIC_MODEL", "env.ANTHROPIC_API_KEY"])?;
         text = apply_effort(&text, wiring.effort, model_effort_key.as_deref())?;
         let written = write_config(&path, &text)?;
         save_stash(ctx, &stash)?;
@@ -155,7 +181,7 @@ impl AgentSpec for ClaudeSpec {
         // The model-specific effort key only entered the stash when a value
         // predated the connect. When it did not, restore must still delete
         // the one our connect wrote, derived from the model we wired.
-        if let Some(name) = json::get(&current, "env.ANTHROPIC_MODEL")
+        if let Some(name) = json::get(&current, "model")
             .as_deref()
             .and_then(claude_name)
         {
@@ -261,11 +287,14 @@ fn apply_effort(
 /// The Claude model name an id names (`claude-opus-4-6`), when it is one.
 ///
 /// Gateway ids are `<provider>/<model>`; Claude Code keys `modelSettings` by
-/// the bare model name without a date suffix.
-fn claude_name(model: &str) -> Option<String> {
+/// the bare model name without a date suffix. A version written with a dot
+/// (`claude-opus-4.6`) is the name Claude Code is given with dashes, so dots
+/// become dashes before parsing.
+pub(crate) fn claude_name(model: &str) -> Option<String> {
     let lower = model.to_ascii_lowercase();
     let start = lower.find("claude-")?;
-    let mut parts = lower[start + "claude-".len()..].split(['-', '/', ':']);
+    let rest = lower[start + "claude-".len()..].replace('.', "-");
+    let mut parts = rest.split(['-', '/', ':']);
     let tier = parts.next()?;
     if !matches!(tier, "opus" | "sonnet" | "haiku" | "fable") {
         return None;

@@ -275,6 +275,7 @@ fn legacy_patch(home: &Home, legacy: &any_converter_server::config::ServerConfig
                 providers: route.provider_names(),
                 upstream_model: route.upstream_model.clone(),
                 strategy: Some(route.strategy.clone()),
+                members: None,
             })
             .collect(),
         remove_model_routes: Vec::new(),

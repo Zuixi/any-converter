@@ -20,7 +20,7 @@ use any_converter_server::control_plane::ControlPlane;
 use any_converter_server::credentials::{
     AccountResolver, Credential, FileSecretStore, SecretStore,
 };
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::home::Home;
 use any_converter_server::router::create_router_with_control_plane;
 use any_converter_server::secrets::{ApiKeyStore, KEYCHAIN_SERVICE, MemoryKeychain};
@@ -257,7 +257,7 @@ fn make_app(
     let client = Client::builder().no_proxy().build().unwrap();
     let accounts = Arc::new(AccountResolver::new(store, client.clone()));
     let state = Arc::new(AppState {
-        config: ServerConfig {
+        config: LiveConfig::new(ServerConfig {
             pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
@@ -273,11 +273,12 @@ fn make_app(
                 providers: names,
                 upstream_model: None,
                 strategy: RouteStrategy::Priority,
+                members: vec![],
             }],
             routes: vec![],
             model_metadata: HashMap::new(),
             logging: Default::default(),
-        },
+        }),
         client,
         accounts,
         copilot_allowances: Arc::new(

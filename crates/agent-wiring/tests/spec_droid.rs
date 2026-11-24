@@ -71,6 +71,42 @@ fn connect_appends_custom_models_and_sets_default() {
 }
 
 #[test]
+fn entries_use_the_provider_their_model_name_reads_as() {
+    let dir = tempdir().unwrap();
+    let ctx = common::home(dir.path());
+    let settings = dir.path().join(".factory/settings.json");
+    common::write(&settings, "{}");
+    let catalog = common::catalog();
+    DroidSpec.connect(&ctx, &wiring_ctx(&catalog)).unwrap();
+
+    let value: serde_json::Value = serde_json::from_str(&common::read(&settings)).unwrap();
+    let entry = |id: &str| {
+        value["customModels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["model"] == id)
+            .unwrap()
+    };
+    // Claude names: the Anthropic client adds `/v1` itself, so the base is
+    // the gateway root.
+    let claude = entry("claude-sonnet-4-5");
+    assert_eq!(claude["provider"], "anthropic");
+    assert_eq!(claude["baseUrl"], common::GATEWAY);
+    // GPT names: the OpenAI SDK joins `/v1` itself.
+    let gpt = entry("gpt-5-codex");
+    assert_eq!(gpt["provider"], "openai");
+    assert_eq!(gpt["baseUrl"], format!("{}/v1", common::GATEWAY));
+    // Everything else stays on the generic Chat Completions provider.
+    let other = entry("gemini-3-pro");
+    assert_eq!(other["provider"], "generic-chat-completion-api");
+    assert_eq!(other["baseUrl"], format!("{}/v1", common::GATEWAY));
+    for id in ["claude-sonnet-4-5", "gpt-5-codex", "gemini-3-pro"] {
+        assert_eq!(entry(id)["noImageSupport"], true);
+    }
+}
+
+#[test]
 fn disconnect_restores_user_entries_and_default() {
     let dir = tempdir().unwrap();
     let ctx = common::home(dir.path());

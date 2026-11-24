@@ -14,7 +14,9 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use toml_edit::{Array, ArrayOfTables, Document, InlineTable, Item, Table, Value};
 
-use crate::config::{AuthScheme, DEFAULT_PORT, ModelRouteConfig, RouteStrategy, ServerConfig};
+use crate::config::{
+    AuthScheme, DEFAULT_PORT, ModelRouteConfig, RouteMemberConfig, RouteStrategy, ServerConfig,
+};
 use crate::config_store::{ConfigDocument, ConfigRevision, ConfigStore, ConfigStoreError};
 use crate::home::Home;
 use crate::secrets::{
@@ -173,6 +175,18 @@ impl ControlPlane {
     pub fn config_snapshot(&self) -> Result<(ConfigRevision, ServerConfig), ControlPlaneError> {
         let document = self.store.load()?;
         Ok((document.revision().clone(), document.config().clone()))
+    }
+
+    /// The current document and the configuration the process should serve.
+    ///
+    /// Same snapshot, but with keychain references resolved the way
+    /// [`Self::prepare`] resolves them at start-up. Callers that keep the
+    /// running process in step with disk must use this, not
+    /// [`Self::config_snapshot`]: a reference in `api_key` is not a key.
+    pub fn runtime_config(&self) -> Result<(ConfigRevision, ServerConfig), ControlPlaneError> {
+        let (revision, mut config) = self.config_snapshot()?;
+        resolve_runtime_secrets(&mut config, &self.keys)?;
+        Ok((revision, config))
     }
 
     /// Resolve one provider's connection details for an upstream call.
@@ -657,6 +671,16 @@ pub struct AdminModelRouteView {
     pub providers: Vec<String>,
     pub upstream_model: Option<String>,
     pub strategy: RouteStrategy,
+    pub members: Vec<AdminRouteMemberView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminRouteMemberView {
+    pub provider: String,
+    pub model: Option<String>,
+    pub weight: u32,
+    pub enabled: bool,
+    pub fallback: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -713,6 +737,11 @@ fn config_view(document: &ConfigDocument, restart_required: bool) -> AdminConfig
                 providers: route.provider_names(),
                 upstream_model: route.upstream_model.clone(),
                 strategy: route.strategy.clone(),
+                members: route
+                    .configured_members()
+                    .iter()
+                    .map(admin_route_member)
+                    .collect(),
             })
             .collect(),
         logging: AdminLoggingView {
@@ -732,6 +761,10 @@ pub struct ConfigPatch {
     pub logging: Option<LoggingPatch>,
     #[serde(default)]
     pub upsert_providers: Vec<ProviderPatch>,
+    /// Providers to delete by name. Deleting one also prunes its name from
+    /// every `[[model_routes]]` entry; a route left with no provider is
+    /// removed with it, so a delete cannot be blocked by a dangling
+    /// reference it created.
     #[serde(default)]
     pub remove_providers: Vec<String>,
     #[serde(default)]
@@ -780,6 +813,18 @@ pub struct ModelRoutePatch {
     pub providers: Vec<String>,
     pub upstream_model: Option<String>,
     pub strategy: Option<RouteStrategy>,
+    #[serde(default)]
+    pub members: Option<Vec<RouteMemberConfig>>,
+}
+
+fn admin_route_member(member: &RouteMemberConfig) -> AdminRouteMemberView {
+    AdminRouteMemberView {
+        provider: member.provider.clone(),
+        model: member.model.clone(),
+        weight: member.weight(),
+        enabled: member.is_enabled(),
+        fallback: member.is_fallback(),
+    }
 }
 
 fn apply_patch(
@@ -993,7 +1038,64 @@ fn remove_provider(document: &mut Document, provider: &str) -> Result<(), Config
             "provider \"{provider}\" does not exist"
         )));
     }
+    // Deleting a provider must leave every reference to it valid: routes are
+    // the only config entity that names providers, and a dangling reference
+    // would make `validate` reject the whole write (the provider could then
+    // never be deleted). Prune in the same document mutation so the delete
+    // stays atomic.
+    prune_provider_references(document, provider);
     Ok(())
+}
+
+/// Drop every `[[model_routes]]` reference to a deleted provider, including
+/// member-based routes. Routes left without any members are removed atomically.
+fn prune_provider_references(document: &mut Document, provider: &str) {
+    let Some(routes) = document
+        .get_mut("model_routes")
+        .and_then(Item::as_array_of_tables_mut)
+    else {
+        return;
+    };
+
+    for route in routes.iter_mut() {
+        if route.get("provider").and_then(Item::as_str) == Some(provider) {
+            route.remove("provider");
+        }
+        if let Some(names) = route.get_mut("providers").and_then(Item::as_array_mut) {
+            names.retain(|name| name.as_str() != Some(provider));
+        }
+        if let Some(members) = route.get_mut("members") {
+            if let Some(members) = members.as_array_mut() {
+                members.retain(|member| {
+                    member
+                        .as_inline_table()
+                        .and_then(|table| table.get("provider"))
+                        .and_then(Value::as_str)
+                        != Some(provider)
+                });
+            } else if let Some(members) = members.as_array_of_tables_mut() {
+                members.retain(|member| {
+                    member.get("provider").and_then(Item::as_str) != Some(provider)
+                });
+            }
+        }
+    }
+
+    routes.retain(|route| {
+        route.get("provider").and_then(Item::as_str).is_some()
+            || route
+                .get("providers")
+                .and_then(Item::as_array)
+                .is_some_and(|names| !names.is_empty())
+            || route
+                .get("members")
+                .and_then(Item::as_array)
+                .is_some_and(|members| !members.is_empty())
+            || route
+                .get("members")
+                .and_then(Item::as_array_of_tables)
+                .is_some_and(|members| !members.is_empty())
+    });
 }
 
 fn upsert_route(document: &mut Document, route: ModelRoutePatch) -> Result<(), ConfigStoreError> {
@@ -1002,9 +1104,14 @@ fn upsert_route(document: &mut Document, route: ModelRoutePatch) -> Result<(), C
             "model route pattern cannot be empty".to_owned(),
         ));
     }
-    if route.providers.is_empty() {
+    let members = route.members;
+    let legacy_providers = route.providers;
+    if members
+        .as_ref()
+        .map_or(legacy_providers.is_empty(), Vec::is_empty)
+    {
         return Err(ConfigStoreError::Mutation(format!(
-            "model route \"{}\" requires at least one provider",
+            "model route \"{}\" requires at least one member",
             route.pattern
         )));
     }
@@ -1024,21 +1131,48 @@ fn upsert_route(document: &mut Document, route: ModelRoutePatch) -> Result<(), C
                 .ok_or_else(|| ConfigStoreError::Mutation("route insert failed".to_owned()))?
         }
     };
-    let mut providers = Array::new();
-    for provider in route.providers {
-        providers.push(provider);
-    }
-    table["providers"] = toml_edit::value(Value::Array(providers));
-    table.remove("provider");
-    match route.upstream_model {
-        Some(model) if !model.is_empty() => table["upstream_model"] = toml_edit::value(model),
-        _ => {
-            table.remove("upstream_model");
+    if let Some(members) = members {
+        let mut values = Array::new();
+        for member in members {
+            let mut item = InlineTable::new();
+            item.insert("provider", Value::from(member.provider));
+            if let Some(model) = member.model.filter(|model| !model.is_empty()) {
+                item.insert("model", Value::from(model));
+            }
+            if let Some(weight) = member.weight {
+                item.insert("weight", Value::from(i64::from(weight)));
+            }
+            if let Some(enabled) = member.enabled {
+                item.insert("enabled", Value::from(enabled));
+            }
+            if let Some(fallback) = member.fallback {
+                item.insert("fallback", Value::from(fallback));
+            }
+            values.push(Value::InlineTable(item));
+        }
+        table["members"] = toml_edit::value(Value::Array(values));
+        table.remove("provider");
+        table.remove("providers");
+        table.remove("upstream_model");
+    } else {
+        let mut providers = Array::new();
+        for provider in legacy_providers {
+            providers.push(provider);
+        }
+        table["providers"] = toml_edit::value(Value::Array(providers));
+        table.remove("provider");
+        table.remove("members");
+        match route.upstream_model {
+            Some(model) if !model.is_empty() => table["upstream_model"] = toml_edit::value(model),
+            _ => {
+                table.remove("upstream_model");
+            }
         }
     }
     table["strategy"] = toml_edit::value(match route.strategy.unwrap_or_default() {
         RouteStrategy::Priority => "priority",
         RouteStrategy::RoundRobin => "round_robin",
+        RouteStrategy::Weighted => "weighted",
     });
     Ok(())
 }
@@ -1355,6 +1489,11 @@ pub fn admin_route_from_config(route: &ModelRouteConfig) -> AdminModelRouteView 
         providers: route.provider_names(),
         upstream_model: route.upstream_model.clone(),
         strategy: route.strategy.clone(),
+        members: route
+            .configured_members()
+            .iter()
+            .map(admin_route_member)
+            .collect(),
     }
 }
 
@@ -1690,6 +1829,7 @@ api_key = "sk-upstream"
                         providers: vec!["openai".into()],
                         upstream_model: None,
                         strategy: None,
+                        members: None,
                     }],
                     remove_model_routes: vec![],
                 },
@@ -1843,5 +1983,192 @@ auth = { headers = { X-Extra = "1" } }
         );
         assert_eq!(std::fs::read_to_string(path).unwrap(), before);
         let _ = std::fs::remove_dir_all(backup);
+    }
+
+    fn provider_patch(name: &str) -> ProviderPatch {
+        ProviderPatch {
+            name: name.into(),
+            format: Some(Format::OpenAIChat),
+            base_url: Some("https://api.example.test".into()),
+            api_key_ref: None,
+            model_map: None,
+            account: None,
+            accounts: None,
+            auth_scheme: None,
+            proxy: None,
+        }
+    }
+
+    fn route_patch(pattern: &str, providers: &[&str]) -> ModelRoutePatch {
+        ModelRoutePatch {
+            pattern: pattern.into(),
+            providers: providers.iter().map(|name| (*name).to_owned()).collect(),
+            upstream_model: None,
+            strategy: None,
+            members: None,
+        }
+    }
+
+    #[test]
+    fn removing_provider_prunes_routes_that_would_dangle() {
+        let (home, root) = temp_home("remove-provider-route");
+        let (keys, _) = keys();
+        let prepared = ControlPlane::prepare(home, keys).unwrap();
+
+        let created = prepared
+            .control_plane
+            .patch_config(
+                &prepared.control_plane.config_view().unwrap().revision,
+                ConfigPatch {
+                    upsert_providers: vec![provider_patch("mm")],
+                    upsert_model_routes: vec![route_patch("*", &["mm"])],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(created.model_routes.len(), 1);
+
+        // The regression: the route references "mm", so removing the provider
+        // used to fail validation with `provider "mm" not found`.
+        let view = prepared
+            .control_plane
+            .patch_config(
+                &created.revision,
+                ConfigPatch {
+                    remove_providers: vec!["mm".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert!(view.providers.is_empty());
+        assert!(view.model_routes.is_empty(), "empty route must be removed");
+        let source = std::fs::read_to_string(root.join("config.toml")).unwrap();
+        assert!(!source.contains("model_routes"), "{source}");
+    }
+
+    #[test]
+    fn removing_provider_keeps_other_providers_in_a_shared_route() {
+        let (home, _) = temp_home("remove-provider-shared-route");
+        let (keys, _) = keys();
+        let prepared = ControlPlane::prepare(home, keys).unwrap();
+
+        let created = prepared
+            .control_plane
+            .patch_config(
+                &prepared.control_plane.config_view().unwrap().revision,
+                ConfigPatch {
+                    upsert_providers: vec![provider_patch("mm"), provider_patch("other")],
+                    upsert_model_routes: vec![route_patch("*", &["mm", "other"])],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let view = prepared
+            .control_plane
+            .patch_config(
+                &created.revision,
+                ConfigPatch {
+                    remove_providers: vec!["mm".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(view.providers.len(), 1);
+        assert_eq!(view.providers[0].name, "other");
+        assert_eq!(view.model_routes.len(), 1);
+        assert_eq!(view.model_routes[0].providers, vec!["other".to_owned()]);
+    }
+
+    #[test]
+    fn removing_provider_prunes_the_legacy_singular_route_field() {
+        let source = r#"
+[server]
+host = "127.0.0.1"
+port = 3028
+
+[[providers]]
+name = "mm"
+format = "openai_chat"
+base_url = "https://api.example.test"
+api_key = ""
+
+[[model_routes]]
+pattern = "*"
+provider = "mm"
+"#;
+        let mut document: Document = source.parse().unwrap();
+
+        remove_provider(&mut document, "mm").unwrap();
+
+        let written = document.to_string();
+        assert!(!written.contains("model_routes"), "{written}");
+        assert!(!written.contains("name = \"mm\""), "{written}");
+    }
+
+    #[test]
+    fn member_route_patch_round_trips_member_fields_and_prunes_provider() {
+        let (home, root) = temp_home("member-route-patch");
+        let (keys, _) = keys();
+        let prepared = ControlPlane::prepare(home, keys).unwrap();
+        let view = prepared
+            .control_plane
+            .patch_config(
+                &prepared.control_plane.config_view().unwrap().revision,
+                ConfigPatch {
+                    upsert_providers: vec![provider_patch("primary"), provider_patch("backup")],
+                    upsert_model_routes: vec![ModelRoutePatch {
+                        pattern: "client-*".into(),
+                        providers: vec![],
+                        upstream_model: None,
+                        strategy: Some(RouteStrategy::Weighted),
+                        members: Some(vec![
+                            RouteMemberConfig {
+                                provider: "primary".into(),
+                                model: Some("upstream-a".into()),
+                                weight: Some(3),
+                                enabled: Some(true),
+                                fallback: Some(false),
+                            },
+                            RouteMemberConfig {
+                                provider: "backup".into(),
+                                model: Some("upstream-b".into()),
+                                weight: Some(1),
+                                enabled: Some(true),
+                                fallback: Some(true),
+                            },
+                        ]),
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let route = &view.model_routes[0];
+        assert_eq!(route.strategy, RouteStrategy::Weighted);
+        assert_eq!(route.members.len(), 2);
+        assert_eq!(route.members[0].model.as_deref(), Some("upstream-a"));
+        assert_eq!(route.members[0].weight, 3);
+        assert!(!route.members[0].fallback);
+        assert!(route.members[1].fallback);
+
+        let source = std::fs::read_to_string(root.join("config.toml")).unwrap();
+        let parsed = ServerConfig::from_toml(&source).unwrap();
+        assert_eq!(parsed.model_routes[0].members.len(), 2);
+
+        let after_delete = prepared
+            .control_plane
+            .patch_config(
+                &view.revision,
+                ConfigPatch {
+                    remove_providers: vec!["primary".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(after_delete.model_routes[0].members.len(), 1);
+        assert_eq!(after_delete.model_routes[0].members[0].provider, "backup");
     }
 }

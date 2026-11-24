@@ -97,7 +97,7 @@ pub(crate) fn prepare_request(
     // `process_request` before this function is reached, which also passes
     // the key snapshot in (no lock is taken on this path).
     auth::validate_client_keys(
-        state.config.server.api_key.as_deref(),
+        state.config.get().server.api_key.as_deref(),
         agent_keys.iter().map(String::as_str),
         auth_header,
     )
@@ -115,6 +115,7 @@ pub(crate) fn prepare_request(
 
     let resolved = state
         .config
+        .get()
         .resolve_provider(&client_model)
         .ok_or_else(|| {
             error!(
@@ -189,10 +190,9 @@ pub(crate) fn prepare_request(
             req_id,
             start_time,
             client_model,
-            upstream_model: resolved.upstream_model,
             ns_map,
             streaming,
-            provider_names: resolved.provider_names,
+            members: resolved.members,
             strategy: resolved.strategy,
             log_ctx,
         },

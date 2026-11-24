@@ -21,6 +21,7 @@ use serde::Deserialize;
 
 use super::{AppState, data_error_response, safe_convert_request, safe_convert_response};
 use crate::request_log::RequestLogRecord;
+use crate::sessions::{self, SESSION_PAGE};
 use crate::storage::{SqliteStorage, StorageError};
 
 /// Default page of logs the UI loads.
@@ -37,6 +38,98 @@ static STARTED: OnceLock<Instant> = OnceLock::new();
 /// router build; the first call wins.
 pub(crate) fn note_start_time() {
     STARTED.get_or_init(Instant::now);
+}
+
+/// `GET /v1/admin/sessions?q=&offset=` — one page of named sessions.
+///
+/// A session is `client_id` plus the `session_id` the client sent. The reply
+/// is the narrow columns of `request_logs`; bodies are not read.
+pub async fn handle_admin_sessions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let offset = match parse_offset(params.get("offset").map(String::as_str)) {
+        Ok(offset) => offset,
+        Err(InvalidLimit) => {
+            return data_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_offset",
+                "offset must be a non-negative integer",
+            );
+        }
+    };
+    let query = params.get("q").map(String::as_str).unwrap_or("");
+    let Some(dir) = state.config.get().logging.dir.clone() else {
+        return data_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "logging_not_configured",
+            "logging is not configured",
+        );
+    };
+    let db_path = Path::new(&dir).join("any-converter.sqlite3");
+    if !db_path.exists() {
+        return Json(serde_json::json!({ "sessions": [], "total": 0 })).into_response();
+    }
+    match SqliteStorage::open_readonly_in_log_dir(&dir)
+        .and_then(|storage| storage.session_page(query, offset, SESSION_PAGE))
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(err) if err.is_missing_table() => {
+            Json(serde_json::json!({ "sessions": [], "total": 0 })).into_response()
+        }
+        Err(err) => {
+            error!("session list failed dir={dir}: {err}");
+            data_error_response(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", err)
+        }
+    }
+}
+
+/// `GET /v1/admin/sessions/{client_id}/{session_id}` — what was said.
+///
+/// Bodies of this one session only. Replayed history is removed and the reply
+/// is bounded; `cut` says something was left off.
+pub async fn handle_admin_session_transcript(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((client_id, session_id)): axum::extract::Path<(String, String)>,
+) -> Response {
+    if client_id.is_empty() || session_id.is_empty() {
+        return data_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_session",
+            "a session needs a client and a session id",
+        );
+    }
+    let Some(dir) = state.config.get().logging.dir.clone() else {
+        return data_error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "logging_not_configured",
+            "logging is not configured",
+        );
+    };
+    let db_path = Path::new(&dir).join("any-converter.sqlite3");
+    if !db_path.exists() {
+        return Json(sessions::Transcript::default()).into_response();
+    }
+    match SqliteStorage::open_readonly_in_log_dir(&dir).and_then(|storage| {
+        storage.session_records(&client_id, &session_id, sessions::SESSION_PAGE * 4)
+    }) {
+        Ok(records) => Json(sessions::fold_transcript(&records)).into_response(),
+        Err(err) if err.is_missing_table() => Json(sessions::Transcript::default()).into_response(),
+        Err(err) => {
+            error!("session transcript failed dir={dir}: {err}");
+            data_error_response(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", err)
+        }
+    }
+}
+
+fn parse_offset(value: Option<&str>) -> Result<u64, InvalidLimit> {
+    let Some(raw) = value else {
+        return Ok(0);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(parsed) => Ok(parsed),
+        Err(_) => Err(InvalidLimit),
+    }
 }
 
 /// `GET /v1/admin/logs?limit=N` — the request log, newest first.
@@ -58,7 +151,8 @@ pub async fn handle_admin_logs(
             );
         }
     };
-    let Some(dir) = state.config.logging.dir.as_deref() else {
+    let config = state.config.get();
+    let Some(dir) = config.logging.dir.as_deref() else {
         return data_error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "logging_not_configured",
@@ -149,8 +243,9 @@ fn jsonl_request_logs(dir: &str, limit: u64) -> std::io::Result<Vec<RequestLogRe
 /// Always 200: if this handler runs, the gateway is up. Everything else is
 /// best-effort detail over the configured log directory.
 pub async fn handle_admin_status(State(state): State<Arc<AppState>>) -> Response {
-    let dir = state.config.logging.dir.as_deref();
-    let disk = disk_usage(dir, state.config.logging.max_disk_mb);
+    let config = state.config.get();
+    let dir = config.logging.dir.as_deref();
+    let disk = disk_usage(dir, config.logging.max_disk_mb);
     let uptime_seconds = STARTED
         .get()
         .map_or(0, |started| started.elapsed().as_secs());
@@ -164,7 +259,7 @@ pub async fn handle_admin_status(State(state): State<Arc<AppState>>) -> Response
         "recentErrors": recent_error_lines(dir),
         "version": env!("CARGO_PKG_VERSION"),
         "pid": std::process::id(),
-        "address": display_address(&state.config.server.host, state.config.server.port),
+        "address": display_address(&state.config.get().server.host, state.config.get().server.port),
         "uptime_seconds": uptime_seconds,
     }))
     .into_response()

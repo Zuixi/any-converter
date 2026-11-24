@@ -19,15 +19,33 @@ use crate::request_log::{RequestLogContext, RequestLogger, log_streaming};
 
 /// Build the upstream URL for a provider request.
 pub fn build_upstream_url(format: Format, base_url: &str, model: &str, streaming: bool) -> String {
-    let base = base_url.trim_end_matches('/');
-    match format {
-        Format::OpenAIChat => format!("{base}/v1/chat/completions"),
-        Format::Claude => format!("{base}/v1/messages"),
-        Format::OpenAIResponses => format!("{base}/v1/responses"),
+    let path = match format {
+        Format::OpenAIChat => "/v1/chat/completions".to_owned(),
+        Format::Claude => "/v1/messages".to_owned(),
+        Format::OpenAIResponses => "/v1/responses".to_owned(),
         Format::Gemini if streaming => {
-            format!("{base}/v1beta/models/{model}:streamGenerateContent")
+            format!("/v1beta/models/{model}:streamGenerateContent")
         }
-        Format::Gemini => format!("{base}/v1beta/models/{model}:generateContent"),
+        Format::Gemini => format!("/v1beta/models/{model}:generateContent"),
+    };
+    append_api_path(base_url, &path)
+}
+
+fn append_api_path(base_url: &str, path: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let endpoint = path.rsplit('/').next().unwrap_or(path);
+    if base.ends_with(path) || base.ends_with(&format!("/{endpoint}")) {
+        return base.to_owned();
+    }
+    let version = path.split('/').nth(1).unwrap_or_default();
+    let prefix = format!("/{version}");
+    if base.ends_with(&prefix) {
+        format!(
+            "{base}/{}",
+            path.trim_start_matches(&prefix).trim_start_matches('/')
+        )
+    } else {
+        format!("{base}{path}")
     }
 }
 
@@ -807,6 +825,41 @@ mod tests {
         assert_eq!(
             url,
             "https://api.example.com/v1beta/models/gemini-pro:generateContent"
+        );
+    }
+
+    #[test]
+    fn build_url_does_not_duplicate_version_or_endpoint_suffix() {
+        assert_eq!(
+            build_upstream_url(Format::OpenAIChat, "https://api.example.com/v1", "m", false),
+            "https://api.example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_upstream_url(
+                Format::OpenAIChat,
+                "https://api.example.com/v1/chat/completions",
+                "m",
+                false
+            ),
+            "https://api.example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_upstream_url(
+                Format::Claude,
+                "https://api.example.com/v1/messages",
+                "m",
+                false
+            ),
+            "https://api.example.com/v1/messages"
+        );
+        assert_eq!(
+            build_upstream_url(
+                Format::OpenAIResponses,
+                "https://api.example.com/v1",
+                "m",
+                false
+            ),
+            "https://api.example.com/v1/responses"
         );
     }
 

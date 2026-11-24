@@ -5,6 +5,8 @@ import type {
   Heatmap,
   LedgerPage,
   RequestLogRecord,
+  SessionPage,
+  SessionTranscript,
   StatusData,
   UsageSummary,
 } from "@any-converter/shared";
@@ -31,6 +33,26 @@ export function createDesktopApiClient(): ApiClient {
         path: `/v1/admin/logs${suffix}`,
       });
       return data.records;
+    },
+    async getSessions(query, offset) {
+      const params = new URLSearchParams();
+      if (query) {
+        params.set("q", query);
+      }
+      if (offset !== undefined && offset > 0) {
+        params.set("offset", String(offset));
+      }
+      const suffix = params.size > 0 ? `?${params}` : "";
+      return requestServer<SessionPage>({
+        method: "GET",
+        path: `/v1/admin/sessions${suffix}`,
+      });
+    },
+    async getSessionTranscript(clientId, sessionId) {
+      return requestServer<SessionTranscript>({
+        method: "GET",
+        path: `/v1/admin/sessions/${encodeURIComponent(clientId)}/${encodeURIComponent(sessionId)}`,
+      });
     },
     async getUsage(query) {
       const data = await requestServer<{ summary: UsageSummary }>({

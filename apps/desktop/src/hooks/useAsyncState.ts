@@ -10,9 +10,13 @@ export function useAsyncState<T>(
   React.Dispatch<React.SetStateAction<T | undefined>>,
   string | undefined,
   React.Dispatch<React.SetStateAction<string | undefined>>,
+  boolean,
 ] {
   const [value, setValue] = useState<T | undefined>(fallback);
   const [error, setError] = useState<string | undefined>();
+  // Starts true: a page must be able to tell "still loading" apart from
+  // "loaded, and the collection is genuinely empty".
+  const [loading, setLoading] = useState(true);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -27,13 +31,17 @@ export function useAsyncState<T>(
           // Transports reject with `{kind, message}` objects, not `Error`s.
           setError(errorMessage(cause));
         }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
     return () => {
       cancelled = true;
     };
     // Intentionally run once on mount for page-level data loads.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return [value, setValue, error, setError];
+  return [value, setValue, error, setError, loading];
 }

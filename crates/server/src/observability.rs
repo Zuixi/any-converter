@@ -17,7 +17,7 @@ pub struct TraceBodySummary {
     pub tool_results: Vec<TraceToolResult>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceMessage {
     pub role: String,
     pub content_preview: String,

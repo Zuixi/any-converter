@@ -6,7 +6,7 @@ use any_converter_core::convert::Format;
 use axum::{
     Extension, Json,
     body::Body,
-    extract::{Path, Query, rejection::JsonRejection},
+    extract::{Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, Request, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -14,12 +14,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::agents::catalog_from_config;
 use crate::config::ServerConfig;
 use crate::config_store::{ConfigRevision, ConfigStoreError};
 use crate::control_plane::{
     AdminConfigView, ConfigPatch, ControlPlane, ControlPlaneError, ControlPlaneStatus,
     ManagementAuthority, SecretMutationResult,
 };
+use crate::handlers::AppState;
 use crate::model_discovery::{
     DiscoveryCache, DiscoveryError, DiscoveryErrorKind, DiscoveryReport, DiscoveryStatus,
     cache_key, discover,
@@ -166,8 +168,29 @@ pub async fn get_config(Extension(runtime): Extension<AdminRuntime>) -> Response
     }
 }
 
+/// Point the running process at the document the control plane just saved.
+///
+/// Without this the server keeps serving its start-up snapshot: a provider
+/// added through the admin surface would be visible to the config view but
+/// unknown to inference, `/v1/models`, and agent wiring — the split-brain
+/// behind `model <provider>/<model> is not in the catalog` right after the
+/// provider is added. Start-up-only resources keep their original settings
+/// (see [`crate::handlers::LiveConfig`]), so those still require a restart.
+fn apply_live_config(state: &AppState, control_plane: &ControlPlane) {
+    match control_plane.runtime_config() {
+        Ok((_, config)) => {
+            // Wiring validates models against the registry catalog, so it
+            // moves with the served snapshot rather than lagging behind it.
+            state.agents.set_catalog(catalog_from_config(&config));
+            state.config.set(config);
+        }
+        Err(error) => log::warn!("config saved but could not be applied live: {error}"),
+    }
+}
+
 /// `PATCH /v1/admin/config`
 pub async fn patch_config(
+    State(state): State<Arc<AppState>>,
     Extension(runtime): Extension<AdminRuntime>,
     headers: HeaderMap,
     body: Result<Json<ConfigPatch>, JsonRejection>,
@@ -191,7 +214,10 @@ pub async fn patch_config(
         Err(response) => return *response,
     };
     match control_plane.patch_config(&expected, patch) {
-        Ok(view) => with_config_etag(StatusCode::OK, &view),
+        Ok(view) => {
+            apply_live_config(&state, &control_plane);
+            with_config_etag(StatusCode::OK, &view)
+        }
         Err(error) => control_plane_error(error),
     }
 }
@@ -468,9 +494,9 @@ fn build_catalog(
             exposed_count += 1;
             let routed = config.resolve_provider(model).is_some_and(|route| {
                 route
-                    .provider_names
+                    .members
                     .iter()
-                    .any(|name| name == &provider.name)
+                    .any(|member| member.provider == provider.name)
             });
             models.push(CatalogModel {
                 id: model.clone(),
@@ -524,6 +550,7 @@ fn build_catalog(
 
 /// `PUT /v1/admin/secrets/provider/{provider}`
 pub async fn put_provider_secret(
+    State(state): State<Arc<AppState>>,
     Extension(runtime): Extension<AdminRuntime>,
     Path(provider): Path<String>,
     headers: HeaderMap,
@@ -548,13 +575,17 @@ pub async fn put_provider_secret(
         Err(response) => return *response,
     };
     match control_plane.put_provider_key(&expected, &provider, &body.api_key) {
-        Ok(result) => secret_result_response(result),
+        Ok(result) => {
+            apply_live_config(&state, &control_plane);
+            secret_result_response(result)
+        }
         Err(error) => control_plane_error(error),
     }
 }
 
 /// `DELETE /v1/admin/secrets/provider/{provider}`
 pub async fn delete_provider_secret(
+    State(state): State<Arc<AppState>>,
     Extension(runtime): Extension<AdminRuntime>,
     Path(provider): Path<String>,
     headers: HeaderMap,
@@ -567,13 +598,17 @@ pub async fn delete_provider_secret(
         Err(response) => return *response,
     };
     match control_plane.delete_provider_key(&expected, &provider) {
-        Ok(result) => secret_result_response(result),
+        Ok(result) => {
+            apply_live_config(&state, &control_plane);
+            secret_result_response(result)
+        }
         Err(error) => control_plane_error(error),
     }
 }
 
 /// `PUT /v1/admin/secrets/inference`
 pub async fn put_inference_secret(
+    State(state): State<Arc<AppState>>,
     Extension(runtime): Extension<AdminRuntime>,
     headers: HeaderMap,
     body: Result<Json<ApiKeyBody>, JsonRejection>,
@@ -597,13 +632,17 @@ pub async fn put_inference_secret(
         Err(response) => return *response,
     };
     match control_plane.put_inference_key(&expected, &body.api_key) {
-        Ok(result) => secret_result_response(result),
+        Ok(result) => {
+            apply_live_config(&state, &control_plane);
+            secret_result_response(result)
+        }
         Err(error) => control_plane_error(error),
     }
 }
 
 /// `DELETE /v1/admin/secrets/inference`
 pub async fn delete_inference_secret(
+    State(state): State<Arc<AppState>>,
     Extension(runtime): Extension<AdminRuntime>,
     headers: HeaderMap,
 ) -> Response {
@@ -615,7 +654,10 @@ pub async fn delete_inference_secret(
         Err(response) => return *response,
     };
     match control_plane.delete_inference_key(&expected) {
-        Ok(result) => secret_result_response(result),
+        Ok(result) => {
+            apply_live_config(&state, &control_plane);
+            secret_result_response(result)
+        }
         Err(error) => control_plane_error(error),
     }
 }

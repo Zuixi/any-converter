@@ -73,19 +73,52 @@ pub fn set(original: &str, kvs: &[KV]) -> Result<String, EditError> {
 /// Returns [`EditError::Parse`] for invalid TOML, a non-table intermediate
 /// path, or a JSON value with no TOML equivalent.
 pub fn set_table(original: &str, table_path: &str, kvs: &[KV]) -> Result<String, EditError> {
+    let table_segments: Vec<&str> = table_path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    set_table_keys(original, &table_segments, kvs)
+}
+
+/// Writes one or more values inside a table addressed by literal key segments.
+///
+/// Unlike [`set_table`], every segment is used verbatim as one key: a dot inside
+/// a segment does not start a nested table. This addresses tables such as
+/// `[models."any-converter/glm-4.6"]`, where the key itself contains a dot.
+/// [`KV::path`] values remain relative dot-separated paths inside that table.
+///
+/// # Errors
+///
+/// Returns [`EditError::Parse`] for invalid TOML, a non-table intermediate key,
+/// or a JSON value with no TOML equivalent.
+///
+/// # Examples
+///
+/// ```
+/// use agent_wiring::edit::{KV, toml};
+/// use serde_json::json;
+///
+/// let text = toml::set_table_keys(
+///     "",
+///     &["models", "any-converter/glm-4.6"],
+///     &[KV::new("provider", json!("any-converter"))],
+/// )
+/// .unwrap();
+/// assert!(text.contains("[models.\"any-converter/glm-4.6\"]"), "{text}");
+/// ```
+pub fn set_table_keys(
+    original: &str,
+    table_keys: &[&str],
+    kvs: &[KV],
+) -> Result<String, EditError> {
     let (bom, body) = split_bom(original);
     let crlf = body.contains("\r\n");
     let mut document: Document = body
         .parse()
         .map_err(|error: toml_edit::TomlError| EditError::Parse(error.to_string()))?;
 
-    let table_segments: Vec<&str> = table_path
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .collect();
-
     for kv in kvs {
-        let target = ensure_table(document.as_table_mut(), &table_segments)?;
+        let target = ensure_table_keys(document.as_table_mut(), table_keys)?;
         let segments: Vec<&str> = kv
             .path
             .split('.')
@@ -96,6 +129,54 @@ pub fn set_table(original: &str, table_path: &str, kvs: &[KV]) -> Result<String,
             .ok_or_else(|| EditError::Parse("empty key path".into()))?;
         let parent = ensure_table(target, parent_path)?;
         set_key(parent, key, &kv.value)?;
+    }
+
+    Ok(render(&document, bom, crlf))
+}
+
+/// Reads a value using literal key segments.
+///
+/// Unlike [`get`], each segment is one key, so a dot inside a segment does not
+/// start a nested table.
+///
+/// # Examples
+///
+/// ```
+/// let text = "[models.\"any-converter/glm-4.6\"]\nname = \"GLM 4.6\"\n";
+/// assert_eq!(
+///     agent_wiring::edit::toml::get_keys(
+///         text,
+///         &["models", "any-converter/glm-4.6", "name"]
+///     )
+///     .as_deref(),
+///     Some("GLM 4.6")
+/// );
+/// ```
+pub fn get_keys(original: &str, keys: &[&str]) -> Option<String> {
+    let (_, body) = split_bom(original);
+    let document: Document = body.parse().ok()?;
+    lookup_table(document.as_table(), keys)
+}
+
+/// Deletes paths whose segments are literal keys.
+///
+/// Each inner vector is one path, for example
+/// `vec!["models".to_owned(), "any-converter/glm-4.6".to_owned()]`. Missing
+/// paths are no-ops and tables emptied by the deletion are removed.
+///
+/// # Errors
+///
+/// Returns [`EditError::Parse`] when the original text is not valid TOML.
+pub fn del_key_paths(original: &str, paths: &[Vec<String>]) -> Result<String, EditError> {
+    let (bom, body) = split_bom(original);
+    let crlf = body.contains("\r\n");
+    let mut document: Document = body
+        .parse()
+        .map_err(|error: toml_edit::TomlError| EditError::Parse(error.to_string()))?;
+
+    for path in paths {
+        let segments: Vec<&str> = path.iter().map(String::as_str).collect();
+        remove_path(document.as_table_mut(), &segments);
     }
 
     Ok(render(&document, bom, crlf))
@@ -151,6 +232,27 @@ fn ensure_table<'a>(root: &'a mut Table, segments: &[&str]) -> Result<&'a mut Ta
             Item::Table(child) => child,
             _ => {
                 return Err(EditError::Parse(format!("`{segment}` is not a TOML table")));
+            }
+        };
+    }
+    Ok(table)
+}
+
+/// Like [`ensure_table`], but each key is used verbatim (no dot splitting).
+fn ensure_table_keys<'a>(root: &'a mut Table, keys: &[&str]) -> Result<&'a mut Table, EditError> {
+    let mut table = root;
+    let last_index = keys.len().saturating_sub(1);
+    for (index, key) in keys.iter().enumerate() {
+        let explicit = index == last_index;
+        let item = table.entry(key).or_insert_with(|| {
+            let mut child = Table::new();
+            child.set_implicit(!explicit);
+            Item::Table(child)
+        });
+        table = match item {
+            Item::Table(child) => child,
+            _ => {
+                return Err(EditError::Parse(format!("`{key}` is not a TOML table")));
             }
         };
     }

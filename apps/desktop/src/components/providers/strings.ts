@@ -31,6 +31,12 @@ export const STRINGS = {
     probe: "probe",
     delete: "Delete",
     deleteConfirm: "Remove this provider? Routes naming it stop matching.",
+    deleteInUseTitle: "Remove {provider}?",
+    deleteInUseBody: "These agents are wired to this provider:",
+    deleteInUseHint:
+      "Continuing restores each agent's pre-connect configuration first, then removes the provider — no agent is left pointing at a provider that no longer exists.",
+    deleteInUseConfirm: "Stop agents and remove",
+    deleting: "Removing…",
     // detail dialog
     detail: "Provider",
     website: "Website",
@@ -200,6 +206,12 @@ export const STRINGS = {
     probe: "探测",
     delete: "删除",
     deleteConfirm: "移除此供应商？引用它的路由将不再匹配。",
+    deleteInUseTitle: "移除 {provider}？",
+    deleteInUseBody: "以下 agent 正在使用这个供应商：",
+    deleteInUseHint:
+      "继续会先把这些 agent 还原到接入前的配置，再移除该供应商——不会留下指向已删除供应商的 agent。",
+    deleteInUseConfirm: "停止 agent 并移除",
+    deleting: "移除中…",
     // detail dialog
     detail: "供应商",
     website: "官网",

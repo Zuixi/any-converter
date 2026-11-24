@@ -24,7 +24,7 @@ use any_converter_server::credentials::copilot::CopilotSessions;
 use any_converter_server::credentials::{
     AccountResolver, Credential, FileSecretStore, SecretStore,
 };
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::home::Home;
 use any_converter_server::router::create_router_with_control_plane;
 use any_converter_server::secrets::{
@@ -83,6 +83,7 @@ fn server_config() -> ServerConfig {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: HashMap::new(),
@@ -114,7 +115,7 @@ impl TestEnv {
         let client = Client::builder().no_proxy().build().unwrap();
         let accounts = Arc::new(AccountResolver::new(store, client.clone()));
         let state = Arc::new(AppState {
-            config: server_config(),
+            config: LiveConfig::new(server_config()),
             client,
             accounts,
             copilot: Arc::new(CopilotSessions::new(Client::new())),

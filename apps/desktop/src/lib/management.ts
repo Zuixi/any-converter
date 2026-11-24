@@ -152,13 +152,7 @@ export type ConfigFormat = "openai_chat" | "openai_responses" | "claude" | "gemi
  * wire format, such as Anthropic-compatible gateways that want Bearer.
  */
 export type AuthSchemeOption =
-  | "auto"
-  | "bearer"
-  | "api_key_header"
-  | "x_api_key"
-  | "google_api_key"
-  | "anthropic"
-  | "none";
+  "auto" | "bearer" | "api_key_header" | "x_api_key" | "google_api_key" | "anthropic" | "none";
 
 export interface AdminConfigView {
   revision: string;
@@ -187,7 +181,14 @@ export interface AdminConfigView {
     pattern: string;
     providers: string[];
     upstream_model?: string | null;
-    strategy: "priority" | "round_robin";
+    strategy: "priority" | "round_robin" | "weighted";
+    members: Array<{
+      provider: string;
+      model?: string | null;
+      weight: number;
+      enabled: boolean;
+      fallback: boolean;
+    }>;
   }>;
   logging: {
     dir?: string | null;
@@ -217,9 +218,16 @@ export interface ConfigPatch {
   remove_providers?: string[];
   upsert_model_routes?: Array<{
     pattern: string;
-    providers: string[];
+    providers?: string[];
     upstream_model?: string | null;
-    strategy?: "priority" | "round_robin";
+    strategy?: "priority" | "round_robin" | "weighted";
+    members?: Array<{
+      provider: string;
+      model?: string | null;
+      weight?: number;
+      enabled?: boolean;
+      fallback?: boolean;
+    }>;
   }>;
   remove_model_routes?: string[];
 }
@@ -465,19 +473,13 @@ export const management = {
     };
   },
 
-  agentAction(
-    id: string,
-    action: AgentAction,
-    body?: object,
-  ): Promise<ConnectReport> {
+  agentAction(id: string, action: AgentAction, body?: object): Promise<ConnectReport> {
     return call(`/v1/agents/${encodeURIComponent(id)}/${action}`, "POST", JSON.stringify(body ?? {}));
   },
 
   /** The files this agent's wiring changed, with pristine contents. */
   async agentDiff(id: string): Promise<AgentFileDiff[]> {
-    const body = await call<{ files: AgentFileDiff[] }>(
-      `/v1/agents/${encodeURIComponent(id)}/diff`,
-    );
+    const body = await call<{ files: AgentFileDiff[] }>(`/v1/agents/${encodeURIComponent(id)}/diff`);
     return body.files ?? [];
   },
 };

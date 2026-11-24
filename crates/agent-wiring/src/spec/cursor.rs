@@ -107,7 +107,11 @@ impl AgentSpec for CursorSpec {
             };
             let text = match old.get(CHANGED) {
                 Some(value) if !value.is_empty() => {
-                    json::set(&text, &[KV::new(CHANGED, json!(value))])?
+                    // The stash holds compact JSON text; writing it as a
+                    // string would turn `true`/`false` into `"true"`/`"false"`.
+                    let value: Value = serde_json::from_str(value)
+                        .unwrap_or_else(|_| Value::String(value.clone()));
+                    json::set(&text, &[KV::new(CHANGED, value)])?
                 }
                 _ => json::del(&text, &[CHANGED])?,
             };

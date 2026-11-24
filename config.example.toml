@@ -88,17 +88,23 @@ provider = "deepseek"
 pattern = "gemini-*"
 provider = "gemini"
 
-# Failover example: try openai first, then deepseek as backup
+# Legacy failover example: try openai first, then deepseek as backup
 # [[model_routes]]
 # pattern = "gpt-*"
 # providers = ["openai", "deepseek"]
 # strategy = "priority"
 #
-# Load-balance start provider while retaining failover order
+# Member routes allow each provider to use its own upstream model. A weighted
+# route chooses a starting primary by weight, then tries remaining members on
+# retryable failures. Fallback members are only tried after primary members.
 # [[model_routes]]
-# pattern = "gpt-*"
-# providers = ["openai", "deepseek"]
-# strategy = "round_robin"
+# pattern = "coding-*"
+# strategy = "weighted"
+# members = [
+#   { provider = "openai", model = "gpt-4.1", weight = 3 },
+#   { provider = "deepseek", model = "deepseek-chat", weight = 1 },
+#   { provider = "anthropic", model = "claude-sonnet-4", fallback = true },
+# ]
 
 # Wildcard fallback: any unmatched model goes to openai
 [[model_routes]]

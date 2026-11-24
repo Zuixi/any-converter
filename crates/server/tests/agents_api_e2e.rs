@@ -8,7 +8,7 @@ use any_converter_server::config::ServerConfig;
 use any_converter_server::control_plane::ControlPlane;
 use any_converter_server::credentials::copilot::CopilotSessions;
 use any_converter_server::credentials::{AccountResolver, CopilotAllowances, FileSecretStore};
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::home::Home;
 use any_converter_server::plugins::{ManagedHosts, PluginAuthStore};
 use any_converter_server::router::create_router_with_control_plane;
@@ -99,7 +99,7 @@ fn app_with(config: ServerConfig, registry: Arc<AgentRegistry>, data_dir: &Path)
     )
     .unwrap();
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         client: Client::builder().no_proxy().build().unwrap(),
         accounts: AccountResolver::with_default_store(Client::new()),
         copilot: Arc::new(CopilotSessions::new(Client::new())),
@@ -249,20 +249,62 @@ async fn list_reports_all_agents_absent_in_empty_home() {
     let (status, body) = send(&fixture.app, "GET", "/v1/agents", None, None).await;
     assert_eq!(status, StatusCode::OK);
     let body = json(&body);
-    assert_eq!(body["agents"].as_array().unwrap().len(), 12);
+    assert_eq!(body["agents"].as_array().unwrap().len(), 54);
     for id in [
         "claude-code",
         "codex",
         "droid",
         "gemini-cli",
         "pi",
+        "omo",
+        "prime-agent",
+        "mu",
         "qwen",
         "opencode",
+        "mimocode",
+        "deveco",
         "vscode",
         "antigravity",
         "agy",
         "cursor",
         "hermes",
+        "stepcode",
+        "mothx",
+        "omp",
+        "morph",
+        "minimax-code",
+        "liveagent",
+        "openchamber",
+        "goose",
+        "crush",
+        "openclaw",
+        "snow",
+        "qwenpaw",
+        "commandcode",
+        "fx",
+        "empryo",
+        "nanobot",
+        "miniq",
+        "paimon",
+        "ante",
+        "muse",
+        "qoder",
+        "qoder-cn",
+        "copilot",
+        "copilot-jetbrains",
+        "kimi",
+        "grok",
+        "atomcode",
+        "pencil",
+        "openpencil",
+        "openbot",
+        "craft-agents",
+        "tuanjie-cowork",
+        "workbuddy",
+        "workbuddy-ai",
+        "codebuddy",
+        "claude-science",
+        "openmausbot",
     ] {
         assert_eq!(agent_status(&body, id), "absent", "{id}");
     }
@@ -625,7 +667,7 @@ async fn sync_rewrites_agent_after_provider_change() {
         &fixture.app,
         "POST",
         "/v1/agents/claude-code/connect",
-        Some("{}"),
+        Some(r#"{"roleModels":{"opus":"deepseek/deepseek-chat"}}"#),
         None,
     )
     .await;
@@ -643,6 +685,11 @@ async fn sync_rewrites_agent_after_provider_change() {
     let text = std::fs::read_to_string(&settings).unwrap();
     assert!(text.contains("kimi/kimi-k2"), "{text}");
     assert!(!text.contains("deepseek/deepseek-chat"), "{text}");
+    assert!(!text.contains("ANTHROPIC_DEFAULT_OPUS_MODEL"), "{text}");
+    assert_eq!(
+        fixture.state()["agents"]["claude-code"]["role_models"],
+        serde_json::json!({})
+    );
 }
 
 #[tokio::test]

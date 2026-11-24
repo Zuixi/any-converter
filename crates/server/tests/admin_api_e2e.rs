@@ -7,7 +7,7 @@ use any_converter_server::config::ServerConfig;
 use any_converter_server::control_plane::{ConfigPatch, ControlPlane, ProviderPatch, ServerPatch};
 use any_converter_server::credentials::AccountResolver;
 use any_converter_server::credentials::copilot::CopilotSessions;
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::home::Home;
 use any_converter_server::router::create_router_with_control_plane;
 use any_converter_server::secrets::{
@@ -31,7 +31,7 @@ fn temp_home(tag: &str) -> Home {
 fn state(config: ServerConfig) -> Arc<AppState> {
     let client = Client::new();
     Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         client: client.clone(),
         accounts: AccountResolver::with_default_store(client.clone()),
         copilot: Arc::new(CopilotSessions::new(client.clone())),
@@ -78,8 +78,9 @@ async fn admin_config_uses_management_auth_etag_and_typed_patches() {
     let prepared = ControlPlane::prepare(home.clone(), keys).unwrap();
     let management_key = prepared.control_plane.management_key();
     let runtime_config = prepared.config.clone();
+    let app_state = state(runtime_config);
     let control_plane = Arc::clone(&prepared.control_plane);
-    let app = create_router_with_control_plane(state(runtime_config), control_plane);
+    let app = create_router_with_control_plane(Arc::clone(&app_state), control_plane);
 
     let response = send(app.clone(), "GET", "/v1/admin/config", "", None, None).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -172,6 +173,17 @@ async fn admin_config_uses_management_auth_etag_and_typed_patches() {
     let updated: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(updated["server"]["port"], 1229);
     assert_eq!(updated["restart_required"], true);
+
+    // The running process serves the document the patch just wrote: without
+    // this, a newly added provider is missing from inference and agent
+    // wiring until a restart ("model <provider>/<model> is not in the
+    // catalog").
+    let live = app_state.config.get();
+    assert!(
+        live.find_provider("openai").is_some(),
+        "patched provider missing from the served config"
+    );
+    assert_eq!(live.server.port, 1229);
 
     let source = std::fs::read_to_string(home.config_path()).unwrap();
     assert!(source.contains("keychain:any-converter:provider:openai"));

@@ -1,7 +1,7 @@
 //! Versioned sqlite schema migrations, tracked in `pragma user_version`.
 
 /// Bump when adding a new `apply` arm so existing databases get the new DDL.
-pub(super) const SCHEMA_VERSION: i64 = 11;
+pub(super) const SCHEMA_VERSION: i64 = 12;
 
 /// Ensures incremental auto-vacuum, then every migration newer than `user_version`.
 ///
@@ -281,6 +281,21 @@ fn apply(conn: &rusqlite::Connection, version: i64) -> Result<(), rusqlite::Erro
                     ))?;
                 }
             }
+            Ok(())
+        }
+        // The first user message of a turn, kept beside the row so a session
+        // list can be titled without reading `request_bodies`.
+        12 => {
+            if !has_column(conn, "request_logs", "title")? {
+                conn.execute_batch("alter table request_logs add column title text;")?;
+            }
+            // The session list groups by `(client_id, session_id)` and reads the
+            // newest activity of each group; this index serves both without a
+            // temporary b-tree over the whole log.
+            conn.execute_batch(
+                "create index if not exists idx_request_logs_session_ts \
+                 on request_logs(client_id, session_id, timestamp);",
+            )?;
             Ok(())
         }
         _ => unreachable!("no migration defined for schema version {version}"),

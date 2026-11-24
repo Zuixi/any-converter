@@ -17,10 +17,10 @@ pub async fn handle_models(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let mut available = state.config.available_models();
+    let mut available = state.config.get().available_models();
     // Plugin providers list their models at runtime (P6.2): fold the ids
     // into the catalog. A plugin that cannot answer only loses its entries.
-    for provider in &state.config.providers {
+    for provider in &state.config.get().providers {
         let Some(plugin_ref) = &provider.plugin else {
             continue;
         };
@@ -47,7 +47,7 @@ pub async fn handle_models(
     // static catalog. `list_models` itself falls back to the full static
     // table when Code Assist can't be asked; the Err arm only guards
     // against a future strictness change and keeps the static catalog.
-    for provider in &state.config.providers {
+    for provider in &state.config.get().providers {
         if provider.effective_api() != UpstreamApi::CodeAssist {
             continue;
         }
@@ -79,7 +79,7 @@ pub async fn handle_models(
     if is_codex {
         let models: Vec<_> = available
             .iter()
-            .map(|m| build_codex_model_object(m, state.config.model_metadata.get(m.as_str())))
+            .map(|m| build_codex_model_object(m, state.config.get().model_metadata.get(m.as_str())))
             .collect();
         return Json(serde_json::json!({ "models": models }));
     }
@@ -89,8 +89,8 @@ pub async fn handle_models(
         .map(|m| {
             build_model_object(
                 m,
-                model_owner(&state.config, m),
-                state.config.model_metadata.get(m.as_str()),
+                model_owner(&state.config.get(), m),
+                state.config.get().model_metadata.get(m.as_str()),
             )
         })
         .collect();
@@ -110,14 +110,15 @@ pub async fn handle_model_retrieve(
     // that cannot be enumerated). Neither is narrower than the other.
     let listed = state
         .config
+        .get()
         .available_models()
         .iter()
         .any(|model| model == &model_id);
-    if listed || state.config.resolve_provider(&model_id).is_some() {
+    if listed || state.config.get().resolve_provider(&model_id).is_some() {
         return Json(build_model_object(
             &model_id,
-            model_owner(&state.config, &model_id),
-            state.config.model_metadata.get(&model_id),
+            model_owner(&state.config.get(), &model_id),
+            state.config.get().model_metadata.get(&model_id),
         ))
         .into_response();
     }
@@ -140,8 +141,8 @@ fn model_owner<'a>(config: &'a crate::config::ServerConfig, model: &str) -> &'a 
         return provider.name.as_str();
     }
     if let Some(route) = config.resolve_provider(model) {
-        if let Some(name) = route.provider_names.first() {
-            if let Some(provider) = config.find_provider(name) {
+        if let Some(member) = route.members.first() {
+            if let Some(provider) = config.find_provider(&member.provider) {
                 return provider.name.as_str();
             }
         }

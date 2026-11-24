@@ -188,6 +188,7 @@ impl AgentSpec for DroidSpec {
 
 /// One custom model entry as Droid reads it.
 fn entry(wiring: &WiringCtx<'_>, id: &str, name: &str, context: Option<u64>) -> Value {
+    let provider = provider_for(id);
     let mut entry = serde_json::Map::new();
     entry.insert("model".to_owned(), json!(id));
     entry.insert("id".to_owned(), json!(format!("{ID_PREFIX}{id}")));
@@ -195,20 +196,95 @@ fn entry(wiring: &WiringCtx<'_>, id: &str, name: &str, context: Option<u64>) -> 
         "displayName".to_owned(),
         json!(if name.is_empty() { id } else { name }),
     );
+    // Droid's OpenAI SDKs join their path to `/v1`; its Anthropic client adds
+    // the `/v1` itself, so that provider takes the gateway root.
     entry.insert(
         "baseUrl".to_owned(),
-        json!(super::gateway_path(wiring.gateway_url, "v1")),
+        json!(base_url(wiring.gateway_url, provider)),
     );
     entry.insert("apiKey".to_owned(), json!(wiring.agent_key));
-    entry.insert("provider".to_owned(), json!(PROVIDER));
+    entry.insert("provider".to_owned(), json!(provider));
     if let Some(context) = context {
         entry.insert("maxContextLimit".to_owned(), json!(context));
     }
     if let Some(effort) = wiring.effort.filter(|effort| !effort.is_empty()) {
         entry.insert("reasoningEffort".to_owned(), json!(effort));
     }
+    // The catalog carries no image flag, so every entry is text-only (the
+    // magpie default for a model whose `Images` is false). Droid warns at
+    // session start about a model it reads as OpenAI's or Claude's on
+    // another provider, which is why those get a provider of their own.
     entry.insert("noImageSupport".to_owned(), json!(true));
     Value::Object(entry)
+}
+
+/// The provider Droid is told a custom model speaks.
+fn provider_for(id: &str) -> &'static str {
+    let lower = id.to_ascii_lowercase();
+    if looks_like_gpt(&lower) {
+        "openai"
+    } else if ["claude", "haiku", "sonnet", "opus"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        "anthropic"
+    } else {
+        PROVIDER
+    }
+}
+
+fn base_url(gateway_url: &str, provider: &str) -> String {
+    if provider == "anthropic" {
+        gateway_url.trim_end_matches('/').to_owned()
+    } else {
+        super::gateway_path(gateway_url, "v1")
+    }
+}
+
+/// Matches the model names Droid itself reads as OpenAI's: `gpt-5`,
+/// `gpt_5`, `gpt.5`, any `codex`, or `o3`/`o4-mini` (`\bgpt[-_.]?\d`,
+/// `codex`, `\bo[1-9](?:[-_.]|$)` case-insensitively).
+fn looks_like_gpt(lower: &str) -> bool {
+    if lower.contains("codex") {
+        return true;
+    }
+    let chars: Vec<char> = lower.chars().collect();
+    let word = |index: usize| -> bool { index == 0 || !is_word_char(chars[index - 1]) };
+    for index in 0..chars.len() {
+        if chars[index] == 'g'
+            && chars.get(index + 1) == Some(&'p')
+            && chars.get(index + 2) == Some(&'t')
+            && word(index)
+        {
+            let mut next = index + 3;
+            if chars
+                .get(next)
+                .is_some_and(|ch| matches!(*ch, '-' | '_' | '.'))
+            {
+                next += 1;
+            }
+            if chars.get(next).is_some_and(char::is_ascii_digit) {
+                return true;
+            }
+        }
+        if chars[index] == 'o'
+            && word(index)
+            && chars
+                .get(index + 1)
+                .is_some_and(|ch| matches!(*ch, '1'..='9'))
+        {
+            match chars.get(index + 2) {
+                None => return true,
+                Some(ch) if matches!(*ch, '-' | '_' | '.') => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
 }
 
 /// Reads `path` as an array, refusing to clobber a non-array value.

@@ -1,10 +1,12 @@
 //! OpenCode specification (`opencode.jsonc` in the OpenCode config dir).
 //!
-//! OpenCode loads OpenAI-compatible providers from `provider` (1.x) or
-//! `providers` (2.x). Both shapes point at the gateway's `/v1` base URL with
-//! the agent key, list the catalog under `models`, and select one through the
-//! top-level `model` field (`<provider>/<model>`). Writing both shapes keeps a
-//! single config working across the migration.
+//! OpenCode loads OpenAI-compatible providers from `provider` (1.x, and 2.x
+//! migrates it on load) or `providers` (2.x native). 1.x rejects unknown
+//! top-level keys outright, so `providers` is written ONLY where the file
+//! already keeps our provider there — never added to a 1.x file. Both shapes
+//! point at the gateway's `/v1` base URL with the agent key, list the catalog
+//! under `models`, and select one through the top-level `model` field
+//! (`<provider>/<model>`).
 //!
 //! The config file is chosen the way OpenCode chooses it: the first existing
 //! file among `opencode.jsonc`, `opencode.json`, and `config.json`, otherwise
@@ -98,19 +100,29 @@ impl AgentSpec for OpenCodeSpec {
         record_old_values(&mut stash, self.id(), old);
 
         let base = gateway_path(wiring.gateway_url, "v1");
-        let v1 = v1_provider(wiring, &base);
-        let v2 = v2_provider(wiring, &base);
         let selected = format!("{PROVIDER_ID}/{}", wiring.default_model);
 
-        let text = json::set(
-            &settings,
-            &[
-                KV::new(V1_PATH, v1),
-                KV::new(V2_PATH, v2),
-                KV::new(MODEL, json!(selected)),
-                KV::new(SMALL_MODEL, json!(selected)),
-            ],
-        )?;
+        let mut kvs = vec![
+            KV::new(MODEL, json!(selected.clone())),
+            KV::new(SMALL_MODEL, json!(selected)),
+        ];
+        let native = json::get(&settings, V2_PATH).is_some();
+        if native {
+            // OpenCode 2 reads `providers` whole; refresh only that block and
+            // drop the 1.x entry, as OpenCode 2 itself does on load.
+            let block = v2_provider(wiring, &base, supports_cache_key(&settings));
+            kvs.push(KV::new(V2_PATH, block));
+        } else {
+            // 1.x schema-validates the top level and rejects unknown keys, so
+            // the 2.x-native `providers` block is only refreshed where it
+            // already exists; a file without one must not grow one.
+            let block = v1_provider(wiring, &base, cache_key(&settings));
+            kvs.push(KV::new(V1_PATH, block));
+        }
+        let mut text = json::set(&settings, &kvs)?;
+        if native {
+            text = json::del(&text, &[V1_PATH])?;
+        }
         let written = write_config(&path, &text)?;
         save_stash(ctx, &stash)?;
         Ok(vec![written])
@@ -124,8 +136,12 @@ impl AgentSpec for OpenCodeSpec {
 
         if let Some(current) = read_config(&path)? {
             let mut text = json::del(&current, &[V1_PATH, V2_PATH])?;
-            text = restore(&text, MODEL, old.get(MODEL))?;
-            text = restore(&text, SMALL_MODEL, old.get(SMALL_MODEL))?;
+            text = restore_value(&text, MODEL, old.get(MODEL))?;
+            text = restore_value(&text, SMALL_MODEL, old.get(SMALL_MODEL))?;
+            // Provider blocks stash raw JSON, not scalars: restore the user's
+            // pre-connect block whole instead of leaving it deleted.
+            text = restore_block(&text, V1_PATH, old.get(V1_PATH))?;
+            text = restore_block(&text, V2_PATH, old.get(V2_PATH))?;
             text = prune_empty(&text, "provider")?;
             text = prune_empty(&text, "providers")?;
             written.push(write_config(&path, &text)?);
@@ -158,7 +174,7 @@ impl AgentSpec for OpenCodeSpec {
             })
             .and_then(Value::as_str)
             .is_some_and(|value| !value.is_empty());
-        let selected = json::get(&settings, MODEL);
+        let selected = selection(&settings);
         let model_known = block
             .as_ref()
             .and_then(|value| value.get("models"))
@@ -196,20 +212,20 @@ impl AgentSpec for OpenCodeSpec {
     }
 }
 
-fn v1_provider(wiring: &WiringCtx<'_>, base: &str) -> Value {
+fn v1_provider(wiring: &WiringCtx<'_>, base: &str, cache_key: bool) -> Value {
     json!({
         "npm": "@ai-sdk/openai-compatible",
         "name": "Any Converter",
         "options": {
             "baseURL": base,
             "apiKey": wiring.agent_key,
-            "setCacheKey": true,
+            "setCacheKey": cache_key,
         },
         "models": models(wiring),
     })
 }
 
-fn v2_provider(wiring: &WiringCtx<'_>, base: &str) -> Value {
+fn v2_provider(wiring: &WiringCtx<'_>, base: &str, supports_cache_key: bool) -> Value {
     json!({
         "name": "Any Converter",
         "package": "aisdk:@ai-sdk/openai-compatible",
@@ -217,9 +233,27 @@ fn v2_provider(wiring: &WiringCtx<'_>, base: &str) -> Value {
             "baseURL": base,
             "apiKey": wiring.agent_key,
         },
-        "compatibility": { "supportsPromptCacheKey": true },
+        "compatibility": { "supportsPromptCacheKey": supports_cache_key },
         "models": models(wiring),
     })
+}
+
+/// A user's existing `options.setCacheKey`, defaulting to ours.
+fn cache_key(settings: &str) -> bool {
+    json::get(settings, "provider.any-converter.options.setCacheKey")
+        .and_then(|value| value.parse::<bool>().ok())
+        .unwrap_or(true)
+}
+
+/// A user's existing `compatibility.supportsPromptCacheKey`, defaulting to
+/// ours.
+fn supports_cache_key(settings: &str) -> bool {
+    json::get(
+        settings,
+        "providers.any-converter.compatibility.supportsPromptCacheKey",
+    )
+    .and_then(|value| value.parse::<bool>().ok())
+    .unwrap_or(true)
 }
 
 /// Model metadata keyed by catalog id; keying by id keeps user edits visible.
@@ -239,15 +273,43 @@ fn models(wiring: &WiringCtx<'_>) -> Value {
     Value::Object(entries)
 }
 
+/// The file's model as `provider/model`, accepting OpenCode 2's object form.
+fn selection(settings: &str) -> Option<String> {
+    let raw = json::get(settings, MODEL)?;
+    if !raw.trim_start().starts_with('{') {
+        return Some(raw);
+    }
+    let value: Value = serde_json::from_str(&raw).ok()?;
+    let provider = value.get("providerID").and_then(Value::as_str)?;
+    let model = value.get("model").and_then(Value::as_str)?;
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some(format!("{provider}/{model}"))
+}
+
 /// Reads whichever provider shape the file uses.
 fn provider_block(settings: &str) -> Option<Value> {
     let raw = json::get(settings, V2_PATH).or_else(|| json::get(settings, V1_PATH))?;
     serde_json::from_str(&raw).ok()
 }
 
-fn restore(text: &str, path: &str, old: Option<&String>) -> Result<String, WiringError> {
+/// Restores a stashed value, or removes the key when there was none.
+///
+/// OpenCode 2 may keep `model` as `{providerID, model, variant}`; a stashed
+/// value that is compact JSON is written back as an object, not as a quoted
+/// string.
+fn restore_value(text: &str, path: &str, old: Option<&String>) -> Result<String, WiringError> {
     Ok(match old {
-        Some(value) if !value.is_empty() => json::set(text, &[KV::new(path, json!(value))])?,
+        Some(value) if !value.is_empty() => {
+            let trimmed = value.trim_start();
+            let parsed = if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                serde_json::from_str(value).unwrap_or_else(|_| json!(value))
+            } else {
+                json!(value)
+            };
+            json::set(text, &[KV::new(path, parsed)])?
+        }
         _ => json::del(text, &[path])?,
     })
 }
@@ -255,6 +317,18 @@ fn restore(text: &str, path: &str, old: Option<&String>) -> Result<String, Wirin
 fn prune_empty(text: &str, path: &str) -> Result<String, WiringError> {
     match json::get(text, path) {
         Some(value) if value.trim() == "{}" => Ok(json::del(text, &[path])?),
+        _ => Ok(text.to_owned()),
+    }
+}
+
+/// Writes back a stashed provider block, whose stashed value is raw JSON.
+fn restore_block(text: &str, path: &str, old: Option<&String>) -> Result<String, WiringError> {
+    match old {
+        Some(value) if !value.is_empty() => {
+            let parsed: Value = serde_json::from_str(value)
+                .map_err(|error| WiringError::Refused(format!("invalid stashed value: {error}")))?;
+            json::set(text, &[KV::new(path, parsed)]).map_err(WiringError::from)
+        }
         _ => Ok(text.to_owned()),
     }
 }

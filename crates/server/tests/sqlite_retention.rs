@@ -384,7 +384,7 @@ fn schema_v6_backfills_the_timestamps_of_bodies_written_before_it() {
     }
 
     let storage = SqliteStorage::open(&db_path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let backfilled: Option<String> = conn

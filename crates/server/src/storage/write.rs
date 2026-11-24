@@ -70,7 +70,7 @@ fn insert_request_log_row(
                 attempt, handed_on, error, err_type,
                 own_ms, sent_ms, retried_ms, queued_ms, masking_ms, flow_ms,
                 upstream, effort, tier_asked, tier_sent, tier_served,
-                subagent, parent_agent, kind
+                subagent, parent_agent, kind, title
             ) values (
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9,
@@ -83,7 +83,7 @@ fn insert_request_log_row(
                 ?34, ?35, ?36, ?37,
                 ?38, ?39, ?40, ?41,
                 ?42, ?43, ?44, ?45,
-                ?46, ?47
+                ?46, ?47, ?48
             )
             on conflict(request_id) do update set
                 timestamp = excluded.timestamp,
@@ -131,7 +131,8 @@ fn insert_request_log_row(
                 tier_served = excluded.tier_served,
                 subagent = excluded.subagent,
                 parent_agent = excluded.parent_agent,
-                kind = excluded.kind
+                kind = excluded.kind,
+                title = coalesce(excluded.title, request_logs.title)
             "#,
         params![
             record.request_id,
@@ -181,6 +182,7 @@ fn insert_request_log_row(
             record.subagent,
             record.parent_agent,
             record.kind,
+            crate::sessions::session_title(record),
         ],
     )?;
     // The body carries its own copy of the timestamp: bodies age on a shorter

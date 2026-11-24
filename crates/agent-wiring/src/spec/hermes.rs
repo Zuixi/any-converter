@@ -12,11 +12,12 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
 use super::{
     AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, expand_tilde, gateway_path,
-    gw_base_match, load_stash, read_config, record_old_values, save_stash, write_config,
+    gw_base_match, load_stash, local_app_data_dir, read_config, record_old_values, save_stash,
+    write_config,
 };
 use crate::edit::{KV, yaml};
 use crate::error::WiringError;
@@ -163,6 +164,10 @@ impl AgentSpec for HermesSpec {
         let mut written = Vec::new();
         let active = Self::active(ctx);
 
+        // Unlike magpie, this spec writes no `any-converter-anthropic`
+        // companion entry: routing individual models through the Anthropic
+        // messages endpoint needs per-model API information the catalog does
+        // not carry here, so every model goes through chat completions.
         let mut provider = serde_json::Map::new();
         provider.insert("name".to_owned(), json!(PROVIDER_ID));
         provider.insert(
@@ -197,13 +202,21 @@ impl AgentSpec for HermesSpec {
                 }
             }
 
-            let mut next = yaml::set(
-                &text,
-                &[KV::new(
-                    PROVIDER_PATH,
-                    serde_json::Value::Object(provider.clone()),
-                )],
-            )?;
+            // Write the merged entry one key at a time. Replacing the whole
+            // mapping would leave an empty `providers:` parent behind when
+            // ours was its only entry, and YAML then has two `providers`
+            // keys.
+            let merged = merged_provider(&text, &provider);
+            let mut provider_kvs = Vec::new();
+            if let Value::Object(entries) = merged {
+                for (key, value) in entries {
+                    provider_kvs.push(KV::new(
+                        format!("{PROVIDER_PATH}.{}", yaml_key(&key)),
+                        value,
+                    ));
+                }
+            }
+            let mut next = yaml::set(&text, &provider_kvs)?;
             if path.parent() == Some(active.as_path()) {
                 next = yaml::set(
                     &next,
@@ -212,7 +225,8 @@ impl AgentSpec for HermesSpec {
                         KV::new(MODEL_DEFAULT, json!(wiring.default_model)),
                     ],
                 )?;
-                next = yaml::del(&next, &[MODEL_MODEL])?;
+                // `model.model` is Hermes' fallback when `model.default` is
+                // unset; only disconnect (unwire) removes it, never connect.
                 next = apply_effort(&next, wiring.effort)?;
             }
             written.push(write_config(&path, &next)?);
@@ -297,6 +311,52 @@ impl AgentSpec for HermesSpec {
     fn efforts(&self) -> &'static [&'static str] {
         EFFORTS
     }
+}
+
+/// Escapes a key that itself contains a dot or a backslash for a YAML path.
+fn yaml_key(key: &str) -> String {
+    key.replace('\\', "\\\\").replace('.', "\\.")
+}
+
+/// Lays our provider entry over the one already in the file.
+///
+/// Hermes and its dashboard write keys into the entry itself
+/// (`default_model`, `key_env`, `request_timeout_seconds`, `extra_body`,
+/// `context_length`, `enabled`, `ssl_*`, a custom `name`); only the address,
+/// key, API mode, and model list are ours. A user's extra headers survive
+/// beside our `User-Agent`.
+fn merged_provider(text: &str, ours: &Map<String, Value>) -> Value {
+    let mut provider = yaml::get(text, PROVIDER_PATH)
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    if !provider
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| !name.trim().is_empty())
+    {
+        if let Some(name) = ours.get("name") {
+            provider.insert("name".to_owned(), name.clone());
+        }
+    }
+    for key in ["base_url", "api_key", "api_mode", "models"] {
+        if let Some(value) = ours.get(key) {
+            provider.insert(key.to_owned(), value.clone());
+        }
+    }
+    let mut headers = provider
+        .get("extra_headers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(ours) = ours.get("extra_headers").and_then(Value::as_object) {
+        for (key, value) in ours {
+            headers.insert(key.clone(), value.clone());
+        }
+    }
+    provider.insert("extra_headers".to_owned(), Value::Object(headers));
+    Value::Object(provider)
 }
 
 /// Writes `agent.reasoning_effort`; `None` leaves the file untouched and

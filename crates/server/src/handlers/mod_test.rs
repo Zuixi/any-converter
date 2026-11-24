@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 fn sample_state() -> AppState {
     AppState {
-        config: ServerConfig {
+        config: LiveConfig::new(ServerConfig {
             pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
@@ -46,7 +46,7 @@ fn sample_state() -> AppState {
             }],
             model_metadata: HashMap::new(),
             logging: LoggingConfig::default(),
-        },
+        }),
         client: Client::new(),
         accounts: AccountResolver::with_default_store(Client::new()),
         usage_logger: None,
@@ -138,7 +138,7 @@ fn estimate_input_tokens_of_empty_body_is_zero() {
 #[tokio::test]
 async fn test_missing_route_returns_404() {
     let state = Arc::new(AppState {
-        config: ServerConfig {
+        config: LiveConfig::new(ServerConfig {
             pricing: Default::default(),
             server: ServerSettings {
                 host: "127.0.0.1".into(),
@@ -152,7 +152,7 @@ async fn test_missing_route_returns_404() {
             routes: vec![],
             model_metadata: HashMap::new(),
             logging: LoggingConfig::default(),
-        },
+        }),
         client: Client::new(),
         accounts: AccountResolver::with_default_store(Client::new()),
         usage_logger: None,
@@ -197,6 +197,7 @@ fn test_non_streaming_flow_helpers() {
     assert_eq!(
         state
             .config
+            .get()
             .find_provider("openai")
             .unwrap()
             .resolve_model("claude-3"),

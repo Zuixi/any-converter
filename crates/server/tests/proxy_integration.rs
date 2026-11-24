@@ -6,7 +6,7 @@ use any_converter_server::config::{
     PassThroughHeadersConfig, ProviderConfig, RouteStrategy, ServerConfig, ServerSettings,
 };
 use any_converter_server::credentials::AccountResolver;
-use any_converter_server::handlers::AppState;
+use any_converter_server::handlers::{AppState, LiveConfig};
 use any_converter_server::router::create_router_with_state;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -63,6 +63,7 @@ async fn non_streaming_proxy() {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -70,7 +71,7 @@ async fn non_streaming_proxy() {
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
         copilot_allowances: Arc::new(
@@ -173,6 +174,7 @@ async fn client_headers_passthrough_to_upstream() {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -180,7 +182,7 @@ async fn client_headers_passthrough_to_upstream() {
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
         copilot_allowances: Arc::new(
@@ -267,6 +269,7 @@ async fn streaming_proxy_text() {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -274,7 +277,7 @@ async fn streaming_proxy_text() {
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
         copilot_allowances: Arc::new(
@@ -346,6 +349,7 @@ async fn provider_failover_priority() {
             providers: vec!["bad".into(), "good".into()],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -353,7 +357,7 @@ async fn provider_failover_priority() {
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
         copilot_allowances: Arc::new(
@@ -408,6 +412,7 @@ async fn auth_missing_returns_401() {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -415,7 +420,7 @@ async fn auth_missing_returns_401() {
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
         copilot_allowances: Arc::new(
@@ -465,6 +470,7 @@ async fn auth_invalid_returns_401() {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -472,7 +478,7 @@ async fn auth_invalid_returns_401() {
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
         copilot_allowances: Arc::new(
@@ -532,6 +538,7 @@ async fn upstream_error_returns_502() {
             providers: vec![],
             upstream_model: None,
             strategy: RouteStrategy::Priority,
+            members: vec![],
         }],
         routes: vec![],
         model_metadata: Default::default(),
@@ -539,7 +546,7 @@ async fn upstream_error_returns_502() {
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
         copilot_allowances: Arc::new(
@@ -590,7 +597,7 @@ async fn health_returns_ok() {
         logging: Default::default(),
     };
     let state = Arc::new(AppState {
-        config,
+        config: LiveConfig::new(config),
         accounts: AccountResolver::with_default_store(client.clone()),
         client,
         copilot_allowances: Arc::new(

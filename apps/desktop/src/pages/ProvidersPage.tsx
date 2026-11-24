@@ -4,6 +4,7 @@ import { useI18n } from "@any-converter/core";
 import { Input } from "@any-converter/ui";
 
 import { AddProviderSheet } from "../components/providers/AddProviderSheet";
+import { DeleteProviderDialog } from "../components/providers/DeleteProviderDialog";
 import { ProviderCard } from "../components/providers/ProviderCard";
 import { ProviderDetailDialog } from "../components/providers/ProviderDetailDialog";
 import { UnboundSection } from "../components/providers/UnboundSection";
@@ -11,7 +12,8 @@ import { useProvidersStrings } from "../components/providers/strings";
 import { ErrorBanner } from "../components/layout/ErrorBanner";
 import { Header } from "../components/layout/Header";
 import { useProvidersOverview } from "../hooks/useProvidersOverview";
-import { management, useServerRequest } from "../lib/management";
+import { agentUsesProvider } from "../lib/agents";
+import { management, useServerRequest, type AgentSummary } from "../lib/management";
 
 /**
  * The one providers page (design: docs/design/2026-11-12-providers-page-ia.md):
@@ -27,6 +29,11 @@ export function ProvidersPage() {
   const [filter, setFilter] = useState("");
   const [openProvider, setOpenProvider] = useState<string>();
   const [actionError, setActionError] = useState<string>();
+  const [pendingDelete, setPendingDelete] = useState<{
+    provider: string;
+    agents: AgentSummary[];
+  }>();
+  const [deleting, setDeleting] = useState(false);
 
   const cards = useMemo(() => {
     const words = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -50,19 +57,64 @@ export function ProvidersPage() {
   const open = overview.cards.find((card) => card.provider.name === openProvider);
 
   const removeProvider = async (name: string) => {
+    // Revision read at click time: a cached view may predate another
+    // mutation, and an empty If-Match is rejected by the gateway.
+    const current = await management.getConfig();
+    const next = await management.patchConfig(current.revision, { remove_providers: [name] });
+    await management.deleteProviderSecret(next.revision, name).catch(() => undefined);
+    if (openProvider === name) {
+      setOpenProvider(undefined);
+    }
+    await overview.refresh();
+  };
+
+  /**
+   * Deleting a provider an agent is wired to would leave that agent pointing
+   * at a provider that no longer exists. Find those agents first: with none,
+   * a plain confirm is enough; with some, the dialog restores them before
+   * the provider is removed.
+   */
+  const requestDelete = async (name: string) => {
     setActionError(undefined);
     try {
-      // Revision read at click time: a cached view may predate another
-      // mutation, and an empty If-Match is rejected by the gateway.
-      const current = await management.getConfig();
-      const next = await management.patchConfig(current.revision, { remove_providers: [name] });
-      await management.deleteProviderSecret(next.revision, name).catch(() => undefined);
-      if (openProvider === name) {
-        setOpenProvider(undefined);
+      const agents = await management.listAgents();
+      const wired = agents.filter(
+        (agent) =>
+          (agent.status === "connected" || agent.status === "drifted") &&
+          agentUsesProvider(agent, name),
+      );
+      if (wired.length > 0) {
+        setPendingDelete({ provider: name, agents: wired });
+        return;
       }
-      await overview.refresh();
+      if (!window.confirm(s.deleteConfirm)) {
+        return;
+      }
+      await removeProvider(name);
     } catch (cause) {
       setActionError(describeError(cause));
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) {
+      return;
+    }
+    setActionError(undefined);
+    setDeleting(true);
+    try {
+      // Restore the agents before the provider disappears. A failed
+      // disconnect aborts the delete, so no agent is ever left wired to a
+      // provider this action removed.
+      for (const agent of pendingDelete.agents) {
+        await management.agentAction(agent.id, "disconnect");
+      }
+      await removeProvider(pendingDelete.provider);
+      setPendingDelete(undefined);
+    } catch (cause) {
+      setActionError(describeError(cause));
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -111,7 +163,7 @@ export function ProvidersPage() {
               card={card}
               quotaOf={(id) => overview.quotas[id]}
               onOpen={() => setOpenProvider(card.provider.name)}
-              onDelete={() => void removeProvider(card.provider.name)}
+              onDelete={() => void requestDelete(card.provider.name)}
             />
           ))}
         </div>
@@ -122,6 +174,20 @@ export function ProvidersPage() {
 
       {/* Zone 3 */}
       <AddProviderSheet accounts={overview.accounts} onChanged={overview.refresh} />
+
+      {pendingDelete && (
+        <DeleteProviderDialog
+          provider={pendingDelete.provider}
+          agents={pendingDelete.agents}
+          busy={deleting}
+          onCancel={() => {
+            if (!deleting) {
+              setPendingDelete(undefined);
+            }
+          }}
+          onConfirm={() => void confirmDelete()}
+        />
+      )}
 
       {open && (
         <ProviderDetailDialog

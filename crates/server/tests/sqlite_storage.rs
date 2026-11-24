@@ -11,7 +11,7 @@ fn sqlite_storage_initializes_schema_and_persists_logs() {
     let temp = tempfile::tempdir().unwrap();
     let db_path = temp.path().join("any-converter.sqlite3");
     let storage = SqliteStorage::open(&db_path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
 
     let request = RequestLogRecord {
         request_id: "req-1".to_string(),
@@ -159,7 +159,7 @@ fn sqlite_storage_tracks_schema_version_and_reopens_idempotently() {
     let db_path = temp.path().join("any-converter.sqlite3");
 
     let storage = SqliteStorage::open(&db_path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
     storage
         .insert_request_log(&test_request_record("req-1"))
         .unwrap();
@@ -167,7 +167,7 @@ fn sqlite_storage_tracks_schema_version_and_reopens_idempotently() {
 
     // Re-opening an already migrated database must not re-run migrations or lose rows.
     let reopened = SqliteStorage::open(&db_path).unwrap();
-    assert_eq!(reopened.schema_version().unwrap(), 11);
+    assert_eq!(reopened.schema_version().unwrap(), 12);
     assert_eq!(reopened.recent_request_logs(10).unwrap().len(), 1);
 }
 
@@ -176,7 +176,7 @@ fn sqlite_storage_round_trips_statistics_columns() {
     let temp = tempfile::tempdir().unwrap();
     let db_path = temp.path().join("any-converter.sqlite3");
     let storage = SqliteStorage::open(&db_path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
 
     let mut record = test_request_record("req-stats");
     record.client_id = Some("claude-code".to_string());
@@ -409,7 +409,7 @@ fn migration_v1_to_v2_moves_record_json_into_request_bodies() {
     }
 
     let storage = SqliteStorage::open(&db_path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
 
     // The payload survived the copy, and the wide columns are gone from `request_logs`.
     let records = storage.recent_request_logs(10).unwrap();
@@ -438,8 +438,8 @@ fn migration_v1_to_v2_moves_record_json_into_request_bodies() {
         );
     }
     // 25 columns at v1, 6 dropped by v2, 11 added by v4, 4 failover columns by v8,
-    // 14 by v10 (the time split plus the labels).
-    assert_eq!(narrow_columns.len(), 48);
+    // 14 by v10 (the time split plus the labels), 1 by v12 (the session title).
+    assert_eq!(narrow_columns.len(), 49);
 }
 
 #[test]
@@ -750,7 +750,7 @@ fn fresh_database_enables_incremental_auto_vacuum() {
     let temp = tempfile::tempdir().unwrap();
     let db_path = temp.path().join("any-converter.sqlite3");
     let storage = SqliteStorage::open(&db_path).unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 11);
+    assert_eq!(storage.schema_version().unwrap(), 12);
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let auto_vacuum: i64 = conn
@@ -896,6 +896,92 @@ fn usage_summary_filters_by_provider() {
     assert_eq!(summary.series[0].totals.input_tokens, 100);
     assert_eq!(summary.by_provider.len(), 1);
     assert_eq!(summary.by_provider[0].id, "a");
+}
+
+/// A session is `client_id` plus `session_id`. The list groups by the pair and
+/// sums the requests; a request that named neither is not a session.
+#[test]
+fn session_page_groups_requests_by_client_and_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = SqliteStorage::open(temp.path().join("any-converter.sqlite3")).unwrap();
+
+    let mut first = test_request_record("req-a1");
+    first.client_id = Some("claude".to_string());
+    first.session_id = Some("session-a".to_string());
+    first.timestamp = "2026-07-16T12:00:00Z".to_string();
+    first.usage.input_tokens = 100;
+    first.usage.output_tokens = 10;
+    first.trace = Some(trace_with_user("first ask"));
+
+    let mut second = test_request_record("req-a2");
+    second.client_id = Some("claude".to_string());
+    second.session_id = Some("session-a".to_string());
+    second.timestamp = "2026-07-16T12:05:00Z".to_string();
+    second.usage.input_tokens = 50;
+    second.usage.output_tokens = 5;
+    second.response_status = 500;
+
+    let mut third = test_request_record("req-b1");
+    third.client_id = Some("codex".to_string());
+    third.session_id = Some("session-b".to_string());
+    third.timestamp = "2026-07-16T13:00:00Z".to_string();
+    third.trace = Some(trace_with_user("other ask"));
+
+    // No identity: a bare request, never guessed into a session.
+    let anonymous = test_request_record("req-anon");
+    storage
+        .insert_request_logs(&[first, second, third, anonymous])
+        .unwrap();
+
+    let page = storage.session_page("", 0, 50).unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(page.sessions.len(), 2);
+    // Newest activity first.
+    assert_eq!(page.sessions[0].client_id, "codex");
+    assert_eq!(page.sessions[0].title, "other ask");
+    let session_a = &page.sessions[1];
+    assert_eq!(session_a.session_id, "session-a");
+    assert_eq!(session_a.title, "first ask");
+    assert_eq!(session_a.requests, 2);
+    assert_eq!(session_a.input_tokens, 150);
+    assert_eq!(session_a.output_tokens, 15);
+    assert_eq!(session_a.errors, 1);
+    assert_eq!(session_a.started, "2026-07-16T12:00:00Z");
+    assert_eq!(session_a.last, "2026-07-16T12:05:00Z");
+
+    // Search reads the title, the session id, and the client id.
+    let found = storage.session_page("first", 0, 50).unwrap();
+    assert_eq!(found.total, 1);
+    assert_eq!(found.sessions[0].session_id, "session-a");
+    let by_client = storage.session_page("codex", 0, 50).unwrap();
+    assert_eq!(by_client.total, 1);
+    assert_eq!(by_client.sessions[0].session_id, "session-b");
+    assert_eq!(storage.session_page("missing", 0, 50).unwrap().total, 0);
+
+    // The transcript reads the bodies of one session, oldest first.
+    let records = storage.session_records("claude", "session-a", 10).unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].request_id, "req-a1");
+    assert_eq!(records[1].request_id, "req-a2");
+}
+
+fn trace_with_user(text: &str) -> any_converter_server::observability::RequestTraceSummary {
+    use any_converter_server::observability::{
+        RequestTraceSummary, TraceBodySummary, TraceMessage,
+    };
+    RequestTraceSummary {
+        client: TraceBodySummary {
+            messages: vec![TraceMessage {
+                role: "user".to_string(),
+                content_preview: text.to_string(),
+            }],
+            tool_definitions: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+        },
+        upstream: TraceBodySummary::default(),
+        response: TraceBodySummary::default(),
+    }
 }
 
 fn test_request_record(request_id: &str) -> RequestLogRecord {

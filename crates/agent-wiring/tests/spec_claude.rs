@@ -54,10 +54,13 @@ fn connect_writes_gateway_keys_and_state() {
         json::get(&text, "env.ANTHROPIC_AUTH_TOKEN").as_deref(),
         Some(common::AGENT_KEY)
     );
+    // The model lives at the top level, which `/model` reads and writes;
+    // `env.ANTHROPIC_MODEL` would outrank it.
     assert_eq!(
-        json::get(&text, "env.ANTHROPIC_MODEL").as_deref(),
+        json::get(&text, "model").as_deref(),
         Some(common::DEFAULT_MODEL)
     );
+    assert_eq!(json::get(&text, "env.ANTHROPIC_MODEL"), None);
     assert_eq!(
         json::get(&text, "env.ANTHROPIC_DEFAULT_SONNET_MODEL").as_deref(),
         Some("claude-sonnet-4-5")
@@ -164,6 +167,91 @@ fn anthropic_api_key_is_stashed_removed_and_restored() {
         Some("sk-ant-old")
     );
     assert_eq!(json::get(&text, "env.KEEP").as_deref(), Some("yes"));
+}
+
+#[test]
+fn connect_removes_anthropic_model_and_disconnect_restores_it() {
+    let dir = tempdir().unwrap();
+    let ctx = common::home(dir.path());
+    let settings = dir.path().join(".claude/settings.json");
+    common::write(
+        &settings,
+        "{\"env\": {\"ANTHROPIC_MODEL\": \"claude-opus-4-5\", \"KEEP\": \"yes\"}}",
+    );
+    let catalog = common::catalog();
+
+    ClaudeSpec.connect(&ctx, &wiring_ctx(&catalog)).unwrap();
+    let text = common::read(&settings);
+    assert_eq!(json::get(&text, "env.ANTHROPIC_MODEL"), None);
+    assert_eq!(
+        json::get(&text, "model").as_deref(),
+        Some(common::DEFAULT_MODEL)
+    );
+
+    ClaudeSpec.disconnect(&ctx).unwrap();
+    let text = common::read(&settings);
+    assert_eq!(
+        json::get(&text, "env.ANTHROPIC_MODEL").as_deref(),
+        Some("claude-opus-4-5")
+    );
+    assert_eq!(json::get(&text, "model"), None);
+    assert_eq!(json::get(&text, "env.KEEP").as_deref(), Some("yes"));
+}
+
+#[test]
+fn claude_config_dir_takes_the_settings_file() {
+    let dir = tempdir().unwrap();
+    let config_dir = dir.path().join("elsewhere/claude-config");
+    let settings = config_dir.join("settings.json");
+    common::write(&settings, "{\"theme\": \"dark\"}");
+    let ctx = common::home_with(
+        dir.path(),
+        &[("CLAUDE_CONFIG_DIR", config_dir.display().to_string())],
+    );
+    let catalog = common::catalog();
+
+    assert_eq!(
+        ClaudeSpec.detect(&ctx),
+        DetectResult::Detected {
+            config_dir: config_dir.clone()
+        }
+    );
+    let written = ClaudeSpec.connect(&ctx, &wiring_ctx(&catalog)).unwrap();
+    assert_eq!(written, vec![settings.clone()]);
+    let text = common::read(&settings);
+    assert_eq!(
+        json::get(&text, "env.ANTHROPIC_BASE_URL").as_deref(),
+        Some(common::GATEWAY)
+    );
+    assert_eq!(json::get(&text, "theme").as_deref(), Some("dark"));
+    // ~/.claude is never created.
+    assert!(!dir.path().join(".claude").exists());
+}
+
+#[test]
+fn dotted_model_version_writes_its_dashed_effort_key() {
+    let dir = tempdir().unwrap();
+    let ctx = common::home(dir.path());
+    let settings = dir.path().join(".claude/settings.json");
+    common::write(&settings, "{}");
+    let catalog = common::catalog();
+    let mut wiring_ctx = wiring_ctx(&catalog);
+    wiring_ctx.default_model = "claude-opus-4.6";
+    wiring_ctx.effort = Some("high");
+
+    ClaudeSpec.connect(&ctx, &wiring_ctx).unwrap();
+
+    let text = common::read(&settings);
+    assert_eq!(
+        json::get(&text, "model").as_deref(),
+        Some("claude-opus-4.6")
+    );
+    // Claude Code keys `modelSettings` by the dashed spelling.
+    assert_eq!(
+        json::get(&text, "modelSettings.claude-opus-4-6.effortLevel").as_deref(),
+        Some("high")
+    );
+    assert_eq!(json::get(&text, "effortLevel").as_deref(), Some("high"));
 }
 
 #[test]

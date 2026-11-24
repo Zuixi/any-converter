@@ -56,7 +56,13 @@ fn roundtrip(
     assert_eq!(spec.read_state(ctx, common::GATEWAY), WiredState::Connected);
 
     let report = wiring.disconnect(spec, ctx).unwrap();
-    assert!(report.kept_backup.is_empty(), "{}", wire_id(spec));
+    assert!(
+        report.kept_backup.is_empty(),
+        "{}: kept {:?}, file now:\n{}",
+        wire_id(spec),
+        report.kept_backup,
+        fs::read_to_string(file).unwrap_or_default()
+    );
     assert_eq!(fs::read(file).unwrap(), before, "{}", wire_id(spec));
     assert_eq!(
         spec.read_state(ctx, common::GATEWAY),
@@ -87,11 +93,57 @@ fn opencode_roundtrip_restores_user_json() {
         || {
             let text = common::read(&file);
             assert!(text.contains("\"provider\""), "{text}");
-            assert!(text.contains("\"providers\""), "{text}");
+            // 1.x rejects unknown top-level keys, so a v1 file must NOT gain
+            // a `providers` block: only files that already have one get it
+            // refreshed.
+            assert!(!text.contains("\"providers\""), "{text}");
             assert!(text.contains("any-converter/claude-sonnet-4-5"), "{text}");
             assert!(text.contains(common::GATEWAY), "{text}");
             assert!(text.contains(common::AGENT_KEY), "{text}");
         },
+    );
+}
+
+#[test]
+fn opencode_refreshes_an_existing_v2_block_in_its_own_shape() {
+    let home = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let ctx = ctx_for(home.path(), &[]);
+    let catalog = common::catalog();
+    let file = home.path().join(".config/opencode/opencode.json");
+    // A 2.x-native file already keeps our provider under `providers`; the
+    // connect refreshes it there (with settings, not options) and drops the
+    // 1.x entry, as OpenCode 2 itself does on load.
+    let seed = "{\n  \"providers\": {\n    \"any-converter\": {\n      \"settings\": {\n        \"baseURL\": \"http://old\"\n      }\n    }\n  }\n}\n";
+    common::write(&file, seed);
+    let before = fs::read(&file).unwrap();
+
+    let wiring = Wiring::new(data.path());
+    wiring
+        .connect(
+            &OpenCodeSpec,
+            &ctx,
+            &wiring_ctx(&catalog, common::DEFAULT_MODEL),
+        )
+        .unwrap();
+    let text = common::read(&file);
+    assert!(text.contains("\"providers\""), "{text}");
+    assert!(text.contains("\"settings\""), "{text}");
+    assert!(text.contains("\"compatibility\""), "{text}");
+    assert!(!text.contains("\"provider\""), "{text}");
+    assert_eq!(
+        OpenCodeSpec.read_state(&ctx, common::GATEWAY),
+        WiredState::Connected
+    );
+
+    wiring.disconnect(&OpenCodeSpec, &ctx).unwrap();
+    assert_eq!(fs::read(&file).unwrap(), before);
+    // The user's pre-connect block (pointing at http://old) is restored, so
+    // the state reader honestly reports drift: a provider named like ours
+    // that no longer points at the gateway.
+    assert_eq!(
+        OpenCodeSpec.read_state(&ctx, common::GATEWAY),
+        WiredState::Drifted
     );
 }
 
@@ -167,8 +219,138 @@ fn antigravity_roundtrip_restores_gateway_block() {
             let text = common::read(&file);
             assert!(text.contains(common::GATEWAY), "{text}");
             assert!(text.contains(common::AGENT_KEY), "{text}");
+            // A reasoning model is listed once per level, never by its bare
+            // id; medium is the safe default.
+            assert!(
+                text.contains("\"defaultModelId\": \"claude-sonnet-4-5:medium\""),
+                "{text}"
+            );
         },
     );
+}
+
+#[test]
+fn antigravity_non_reasoning_model_is_written_bare() {
+    let home = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let ctx = ctx_for(home.path(), &[]);
+    let catalog = common::catalog();
+    let file = home.path().join(".gemini/config/config.json");
+    common::write(&file, "{}");
+
+    let wiring = Wiring::new(data.path());
+    wiring
+        .connect(
+            &AntigravitySpec,
+            &ctx,
+            &wiring_ctx(&catalog, "claude-haiku-4-5"),
+        )
+        .unwrap();
+    let text = common::read(&file);
+    assert!(
+        text.contains("\"defaultModelId\": \"claude-haiku-4-5\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn vscode_custom_endpoint_uses_context_window() {
+    let home = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let app_data = home.path().join("appdata");
+    // VS Code's `User/` dir follows the platform's app-data convention:
+    // `%APPDATA%` on Windows and `$XDG_CONFIG_HOME` on Linux (both overridden
+    // here), `~/Library/Application Support` on macOS.
+    let ctx = ctx_for(
+        home.path(),
+        &[
+            ("APPDATA", app_data.display().to_string()),
+            ("XDG_CONFIG_HOME", app_data.display().to_string()),
+        ],
+    );
+    let catalog = common::catalog();
+    let dir = if cfg!(target_os = "macos") {
+        home.path().join("Library/Application Support/Code/User")
+    } else {
+        app_data.join("Code/User")
+    };
+    common::write(&dir.join("settings.json"), "{}");
+
+    let wiring = Wiring::new(data.path());
+    wiring
+        .connect(
+            &VSCodeSpec,
+            &ctx,
+            &wiring_ctx(&catalog, common::DEFAULT_MODEL),
+        )
+        .unwrap();
+
+    let models: serde_json::Value =
+        serde_json::from_str(&common::read(&dir.join("chatLanguageModels.json"))).unwrap();
+    let group = models["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["name"] == "Any Converter")
+        .unwrap();
+    assert_eq!(group["vendor"], "customendpoint");
+    let model = group["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "claude-sonnet-4-5")
+        .unwrap();
+    assert_eq!(model["contextWindow"], 200_000);
+    assert_eq!(model["maxOutputTokens"], 16_384);
+    // Not a customendpoint field.
+    assert!(model.get("maxInputTokens").is_none(), "{model}");
+    assert_eq!(model["vision"], false);
+}
+
+#[test]
+fn vscode_vscodium_counts_input_as_window_minus_output() {
+    let home = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let app_data = home.path().join("appdata");
+    let ctx = ctx_for(
+        home.path(),
+        &[
+            ("APPDATA", app_data.display().to_string()),
+            ("XDG_CONFIG_HOME", app_data.display().to_string()),
+        ],
+    );
+    let catalog = common::catalog();
+    let dir = if cfg!(target_os = "macos") {
+        home.path()
+            .join("Library/Application Support/VSCodium/User")
+    } else {
+        app_data.join("VSCodium/User")
+    };
+    common::write(&dir.join("settings.json"), "{}");
+
+    let wiring = Wiring::new(data.path());
+    wiring
+        .connect(
+            &VSCodeSpec,
+            &ctx,
+            &wiring_ctx(&catalog, common::DEFAULT_MODEL),
+        )
+        .unwrap();
+
+    let models: serde_json::Value =
+        serde_json::from_str(&common::read(&dir.join("chatLanguageModels.json"))).unwrap();
+    let group = &models["models"][0];
+    assert_eq!(group["vendor"], "customoai");
+    let model = group["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "claude-sonnet-4-5")
+        .unwrap();
+    assert_eq!(model["maxOutputTokens"], 16_384);
+    assert_eq!(model["maxInputTokens"], 200_000 - 16_384);
+    // The customoai vendor has no contextWindow.
+    assert!(model.get("contextWindow").is_none(), "{model}");
 }
 
 #[test]
@@ -250,6 +432,36 @@ fn cursor_roundtrip_restores_model_block() {
             );
             assert!(text.contains("\"hasChangedDefaultModel\": true"), "{text}");
         },
+    );
+}
+
+#[test]
+fn cursor_restores_the_changed_flag_as_a_boolean() {
+    let home = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let ctx = ctx_for(home.path(), &[]);
+    let catalog = common::catalog();
+    let file = home.path().join(".cursor/cli-config.json");
+    common::write(&file, "{\n  \"hasChangedDefaultModel\": false\n}\n");
+
+    let wiring = Wiring::new(data.path());
+    wiring
+        .connect(
+            &CursorSpec,
+            &ctx,
+            &wiring_ctx(&catalog, common::DEFAULT_MODEL),
+        )
+        .unwrap();
+    let connected: serde_json::Value = serde_json::from_str(&common::read(&file)).unwrap();
+    assert_eq!(connected["hasChangedDefaultModel"], true);
+
+    wiring.disconnect(&CursorSpec, &ctx).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&common::read(&file)).unwrap();
+    // A string "false" would neither parse nor mean what the CLI expects.
+    assert_eq!(
+        parsed["hasChangedDefaultModel"],
+        serde_json::Value::Bool(false),
+        "{parsed}"
     );
 }
 

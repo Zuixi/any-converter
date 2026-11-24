@@ -20,10 +20,7 @@ export interface SanitizedBody {
 }
 
 export type ResponseBodyKind =
-  | { text: string }
-  | { lines: string[] }
-  | { type: "Json"; text: string }
-  | { type: "SseLines"; lines: string[] };
+  { text: string } | { lines: string[] } | { type: "Json"; text: string } | { type: "SseLines"; lines: string[] };
 
 export interface RequestLogRecord {
   request_id: string;
@@ -45,6 +42,69 @@ export interface RequestLogRecord {
   usage: UsageRecord;
   trace?: RequestTraceSummary;
   truncated: boolean;
+}
+
+/** One conversation the client named: `client_id` plus its `session_id`. */
+export interface SessionSummary {
+  client_id: string;
+  session_id: string;
+  title: string;
+  started: string;
+  last: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cost_usd: number;
+  errors: number;
+  model: string;
+}
+
+export interface SessionPage {
+  sessions: SessionSummary[];
+  total: number;
+}
+
+/**
+ * One block of a turn: `text`, `thinking`, `tool_use`, `tool_result`, or
+ * `image`. `cut` is the characters left off `text`.
+ */
+export interface TranscriptPart {
+  role: string;
+  kind: string;
+  name?: string;
+  /** Tool call / result id, so a call and its answer can be matched. */
+  id?: string;
+  media_type?: string;
+  is_error?: boolean;
+  text: string;
+  cut?: number;
+}
+
+/** One request the gateway logged: what was asked, what came back, and how. */
+export interface TranscriptTurn {
+  request_id: string;
+  timestamp: string;
+  model: string;
+  provider: string;
+  status: number;
+  ttft_ms: number;
+  flow_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cost_usd?: number;
+  error?: string;
+  parts: TranscriptPart[];
+}
+
+/** A session's conversation with replayed history removed. */
+export interface SessionTranscript {
+  turns: TranscriptTurn[];
+  /** A turn or a character was left off. */
+  cut: boolean;
+  /** Turns whose bodies the log still holds. */
+  captured: number;
 }
 
 export interface RequestTraceSummary {

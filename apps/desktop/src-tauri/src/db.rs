@@ -232,6 +232,7 @@ impl DesktopDb {
                     .collect(),
                 upstream_model: route.upstream_model,
                 strategy: route.strategy,
+                members: Vec::new(),
             })
             .collect();
         let logging = LoggingConfig {
@@ -441,6 +442,7 @@ fn parse_strategy(value: &str) -> Result<RouteStrategy, DbError> {
     match value {
         "priority" => Ok(RouteStrategy::Priority),
         "round_robin" => Ok(RouteStrategy::RoundRobin),
+        "weighted" => Ok(RouteStrategy::Weighted),
         other => Err(DbError::InvalidRouteStrategy(other.to_string())),
     }
 }
@@ -449,6 +451,7 @@ fn route_strategy_to_str(value: &RouteStrategy) -> &'static str {
     match value {
         RouteStrategy::Priority => "priority",
         RouteStrategy::RoundRobin => "round_robin",
+        RouteStrategy::Weighted => "weighted",
     }
 }
 

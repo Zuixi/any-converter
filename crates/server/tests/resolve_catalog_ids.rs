@@ -43,7 +43,7 @@ fn catalog_id_resolves_through_concrete_pattern() {
     let config = ServerConfig::from_toml(CONFIG).unwrap();
     // The exact form agent wiring writes into Claude Code's ANTHROPIC_MODEL.
     let resolved = config.resolve_provider("deepseek/deepseek-chat").unwrap();
-    assert_eq!(resolved.provider_names, vec!["deepseek"]);
+    assert_eq!(resolved.provider_names(), vec!["deepseek"]);
     assert_eq!(resolved.upstream_model, "deepseek-chat");
 }
 
@@ -51,7 +51,7 @@ fn catalog_id_resolves_through_concrete_pattern() {
 fn catalog_id_resolves_through_glob_pattern() {
     let config = ServerConfig::from_toml(CONFIG).unwrap();
     let resolved = config.resolve_provider("openai/gpt-4o").unwrap();
-    assert_eq!(resolved.provider_names, vec!["openai"]);
+    assert_eq!(resolved.provider_names(), vec!["openai"]);
     assert_eq!(resolved.upstream_model, "gpt-4o");
 }
 
@@ -59,7 +59,7 @@ fn catalog_id_resolves_through_glob_pattern() {
 fn bare_model_names_still_resolve_unchanged() {
     let config = ServerConfig::from_toml(CONFIG).unwrap();
     let resolved = config.resolve_provider("deepseek-chat").unwrap();
-    assert_eq!(resolved.provider_names, vec!["deepseek"]);
+    assert_eq!(resolved.provider_names(), vec!["deepseek"]);
     assert_eq!(resolved.upstream_model, "deepseek-chat");
 }
 
@@ -69,7 +69,7 @@ fn slash_model_without_matching_provider_prefix_keeps_full_name() {
     // A vendor's own dated id containing a slash: no provider is named
     // "claude", so the full string must be matched as-is (catch-all here).
     let resolved = config.resolve_provider("claude/claude-opus-4-5").unwrap();
-    assert_eq!(resolved.provider_names, vec!["deepseek"]);
+    assert_eq!(resolved.provider_names(), vec!["deepseek"]);
     // Catch-all pins the upstream model explicitly.
     assert_eq!(resolved.upstream_model, "deepseek-chat");
 }
@@ -78,7 +78,7 @@ fn slash_model_without_matching_provider_prefix_keeps_full_name() {
 fn catalog_id_through_catch_all_keeps_pinned_upstream() {
     let config = ServerConfig::from_toml(CONFIG).unwrap();
     let resolved = config.resolve_provider("deepseek/whatever").unwrap();
-    assert_eq!(resolved.provider_names, vec!["deepseek"]);
+    assert_eq!(resolved.provider_names(), vec!["deepseek"]);
     assert_eq!(resolved.upstream_model, "deepseek-chat");
 }
 
