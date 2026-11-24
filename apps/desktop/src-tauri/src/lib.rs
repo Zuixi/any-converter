@@ -7,14 +7,77 @@ pub mod server_proxy;
 pub mod state;
 
 use tauri::{
-    LogicalSize, Manager,
+    LogicalSize, Manager, WebviewWindow,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_window_state::{Builder as WindowStateBuilder, StateFlags};
 
 /// Minimum logical window size — keep in sync with `tauri.conf.json` `minWidth`/`minHeight`.
 const MIN_WINDOW_WIDTH: f64 = 1024.0;
 const MIN_WINDOW_HEIGHT: f64 = 700.0;
+
+/// A window rectangle in physical pixels; `Rect` positions are top-left.
+#[derive(Clone, Copy, Debug)]
+struct Rect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+/// Restored geometry can point at a display that is no longer attached. If
+/// too little of the window would land on any current monitor, fall back to
+/// the minimum size, centered, rather than opening off-screen.
+fn ensure_on_screen(window: &WebviewWindow) -> tauri::Result<()> {
+    let position = window.outer_position()?;
+    let size = window.outer_size()?;
+    let window_rect = Rect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    let reachable = window.available_monitors()?.iter().any(|monitor| {
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        intersects_enough(
+            window_rect,
+            Rect {
+                x: monitor_position.x,
+                y: monitor_position.y,
+                width: monitor_size.width,
+                height: monitor_size.height,
+            },
+        )
+    });
+    if !reachable {
+        window.set_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT))?;
+        window.center()?;
+    }
+    Ok(())
+}
+
+/// `true` when at least [`MIN_VISIBLE_WIDTH`]×[`MIN_VISIBLE_HEIGHT`] of the
+/// window — or the whole window, if it is smaller than that — overlaps the
+/// monitor. Uses `i64` so a far-off saved position cannot overflow.
+fn intersects_enough(window: Rect, monitor: Rect) -> bool {
+    const MIN_VISIBLE_WIDTH: i64 = 200;
+    const MIN_VISIBLE_HEIGHT: i64 = 100;
+    let window_left = i64::from(window.x);
+    let window_top = i64::from(window.y);
+    let monitor_left = i64::from(monitor.x);
+    let monitor_top = i64::from(monitor.y);
+    let overlap_width = (window_left + i64::from(window.width))
+        .min(monitor_left + i64::from(monitor.width))
+        - window_left.max(monitor_left);
+    let overlap_height = (window_top + i64::from(window.height))
+        .min(monitor_top + i64::from(monitor.height))
+        - window_top.max(monitor_top);
+    let needed_width = MIN_VISIBLE_WIDTH.min(i64::from(window.width));
+    let needed_height = MIN_VISIBLE_HEIGHT.min(i64::from(window.height));
+    overlap_width >= needed_width && overlap_height >= needed_height
+}
 
 /// Where a bundled Node runtime lives, when the app ships one
 /// (`bundle.externalBin` + `scripts/fetch-node.mjs`): beside the app
@@ -66,6 +129,14 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        // Restore the user's last window size/position. `VISIBLE` is
+        // deliberately excluded: this app hides to the tray on close, so a
+        // hidden window must not be restored hidden at next launch.
+        .plugin(
+            WindowStateBuilder::default()
+                .with_state_flags(StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED)
+                .build(),
+        )
         .setup(|app| {
             let state = state::AppState::initialize(app.handle())?;
             let server_manager = state.server_manager();
@@ -82,11 +153,19 @@ pub fn run() {
             }
             if let Some(window) = app.get_webview_window("main") {
                 window.set_min_size(Some(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)))?;
+                ensure_on_screen(&window)?;
+                // `visible: false` in tauri.conf.json; show only after the
+                // restored geometry has been applied, so the window never
+                // flashes at the default position first.
+                window.show()?;
+                window.set_focus()?;
             }
 
             let show = MenuItem::with_id(app, "show", "Show AnyConverter", true, None::<&str>)?;
+            let reset =
+                MenuItem::with_id(app, "reset-window", "Reset Window Size", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &reset, &quit])?;
             let icon = app
                 .default_window_icon()
                 .ok_or("desktop icon is missing")?
@@ -98,6 +177,16 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "reset-window" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unmaximize();
+                            let _ = window
+                                .set_size(LogicalSize::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT));
+                            let _ = window.center();
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -147,5 +236,92 @@ pub fn run() {
         .run(tauri::generate_context!())
     {
         log::error!("failed to run any-converter desktop: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    const MONITOR: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1080,
+    };
+
+    #[test]
+    fn window_fully_on_monitor_is_reachable() {
+        assert!(intersects_enough(
+            Rect {
+                x: 100,
+                y: 100,
+                width: 1024,
+                height: 700,
+            },
+            MONITOR
+        ));
+    }
+
+    #[test]
+    fn sliver_of_window_on_monitor_is_not_reachable() {
+        // Only 50 px of width remain on-screen, below the 200 px threshold.
+        assert!(!intersects_enough(
+            Rect {
+                x: -974,
+                y: 100,
+                width: 1024,
+                height: 700,
+            },
+            MONITOR
+        ));
+    }
+
+    #[test]
+    fn window_off_screen_is_not_reachable() {
+        assert!(!intersects_enough(
+            Rect {
+                x: 5000,
+                y: 5000,
+                width: 1024,
+                height: 700,
+            },
+            MONITOR
+        ));
+    }
+
+    #[test]
+    fn monitor_with_negative_origin_is_supported() {
+        // A secondary display placed to the left of the primary one.
+        let monitor = Rect {
+            x: -1920,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        assert!(intersects_enough(
+            Rect {
+                x: -1500,
+                y: 100,
+                width: 1024,
+                height: 700,
+            },
+            monitor
+        ));
+    }
+
+    #[test]
+    fn window_smaller_than_threshold_needs_only_itself_on_screen() {
+        assert!(intersects_enough(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 80,
+            },
+            MONITOR
+        ));
     }
 }
