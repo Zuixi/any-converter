@@ -329,24 +329,6 @@ pub(crate) fn app_data_dir(ctx: &HomeCtx) -> PathBuf {
     }
 }
 
-/// The local (non-roaming) application data directory for the platform.
-pub(crate) fn local_app_data_dir(ctx: &HomeCtx) -> PathBuf {
-    #[cfg(windows)]
-    {
-        env_dir(ctx, "LOCALAPPDATA", |ctx| {
-            join_relative(&ctx.home, "AppData/Local")
-        })
-    }
-    #[cfg(target_os = "macos")]
-    {
-        join_relative(&ctx.home, "Library/Application Support")
-    }
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        xdg_config_home(ctx)
-    }
-}
-
 /// Reports whether `name` resolves to a file on `PATH` as `ctx` sees it.
 ///
 /// Agents that share a configuration directory with another product (Gemini

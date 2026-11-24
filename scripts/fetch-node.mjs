@@ -12,7 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,7 +105,10 @@ async function main() {
     });
   }
   await mkdir(outDir, { recursive: true });
-  await rename(join(extractDir, binary), destination);
+  // Windows archives strip to `node.exe` at the root; the Unix tarballs keep
+  // the binary under `bin/`. Accept either layout.
+  const extracted = join(extractDir, "bin", binary);
+  await rename(existsSync(extracted) ? extracted : join(extractDir, binary), destination);
   await rm(join(root, "tmp-node"), { recursive: true, force: true });
   console.log(`node ${version} → ${destination}`);
 }

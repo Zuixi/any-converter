@@ -102,6 +102,7 @@ fn disconnect_without_stash_warns_but_keeps_user_file() {
 #[cfg(unix)]
 #[test]
 fn backup_failure_aborts_connect_before_any_write() {
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempdir().unwrap();
