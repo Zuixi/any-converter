@@ -31,6 +31,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # `bundle.externalBin` makes tauri-build require the platform's bundled
+      # Node binary; `binaries/` is gitignored, so fetch it the same way a
+      # desktop build does before anything compiles the desktop crate.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch bundled Node for the desktop crate
+        run: node scripts/fetch-node.mjs
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all -- --check
