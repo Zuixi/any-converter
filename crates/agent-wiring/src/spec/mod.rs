@@ -410,6 +410,7 @@ pub(crate) fn app_data_dir(ctx: &HomeCtx) -> PathBuf {
 }
 
 /// The local (non-roaming) application data directory for the platform.
+#[cfg(windows)]
 pub(crate) fn local_app_data_dir(ctx: &HomeCtx) -> PathBuf {
     #[cfg(windows)]
     {

@@ -14,10 +14,11 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value, json};
 
+#[cfg(windows)]
+use super::local_app_data_dir;
 use super::{
     AgentSpec, DetectResult, HomeCtx, WiredState, WiringCtx, expand_tilde, gateway_path,
-    gw_base_match, load_stash, local_app_data_dir, read_config, record_old_values, save_stash,
-    write_config,
+    gw_base_match, load_stash, read_config, record_old_values, save_stash, write_config,
 };
 use crate::edit::{KV, yaml};
 use crate::error::WiringError;
