@@ -100,9 +100,22 @@ fn vscode_roundtrip_restores_settings_and_keeps_other_groups() {
     let home = tempdir().unwrap();
     let data = tempdir().unwrap();
     let app_data = home.path().join("appdata");
-    let ctx = ctx_for(home.path(), &[("APPDATA", app_data.display().to_string())]);
+    // VS Code's `User/` dir follows the platform's app-data convention:
+    // `%APPDATA%` on Windows and `$XDG_CONFIG_HOME` on Linux (both overridden
+    // here), `~/Library/Application Support` on macOS.
+    let ctx = ctx_for(
+        home.path(),
+        &[
+            ("APPDATA", app_data.display().to_string()),
+            ("XDG_CONFIG_HOME", app_data.display().to_string()),
+        ],
+    );
     let catalog = common::catalog();
-    let dir = app_data.join("Code/User");
+    let dir = if cfg!(target_os = "macos") {
+        home.path().join("Library/Application Support/Code/User")
+    } else {
+        app_data.join("Code/User")
+    };
     let settings = dir.join("settings.json");
     let models = dir.join("chatLanguageModels.json");
     common::write(
