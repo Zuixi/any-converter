@@ -243,13 +243,15 @@ pub async fn discover(
     // list and requires `Authorization: Bearer` for messages). A read-only
     // probe can afford one retry with the other common scheme before we
     // tell the user their key is wrong.
-    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-        && let Some(alternate) = alternate_auth_headers(format, api_key, &primary)
-        && let Ok(retry) = send(&alternate).await
-        && retry.status().is_success()
-    {
-        response = retry;
-        status = response.status();
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        if let Some(alternate) = alternate_auth_headers(format, api_key, &primary) {
+            if let Ok(retry) = send(&alternate).await {
+                if retry.status().is_success() {
+                    response = retry;
+                    status = response.status();
+                }
+            }
+        }
     }
     let bytes = match response.bytes().await {
         Ok(bytes) => bytes,

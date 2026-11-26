@@ -332,10 +332,10 @@ fn merged_provider(text: &str, ours: &Map<String, Value>) -> Value {
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
 
-    if !provider
+    if provider
         .get("name")
         .and_then(Value::as_str)
-        .is_some_and(|name| !name.trim().is_empty())
+        .is_none_or(|name| name.trim().is_empty())
     {
         if let Some(name) = ours.get("name") {
             provider.insert("name".to_owned(), name.clone());

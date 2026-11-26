@@ -6,6 +6,12 @@
 
 ## Current Contents
 
+- `build.mjs`:
+  cross-platform (macOS / Linux / Windows) build runner with RAM-aware Cargo/Node concurrency limits and process-tree cleanup
+- `fetch-node.mjs`:
+  downloads the bundled Node runtime sidecar required by Tauri desktop builds
+- `guard-no-loopback-fetch.sh`:
+  guard script ensuring frontend code uses same-origin paths instead of hardcoded loopback URLs
 - `om-any-converter-tunnel.sh`:
   helper for starting the service and wiring SSH port forwarding for remote testing
 
